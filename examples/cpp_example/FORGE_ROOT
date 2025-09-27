@@ -1,0 +1,16 @@
+[project]
+name = "cpp_example"
+version = "0.1.0"
+
+[discovery]
+include = [
+    ".",
+]
+exclude = []
+use_gitignore = true
+max_depth = 10
+
+[build]
+cache_dir = "forge-out"
+
+[build.global_env]

@@ -1,0 +1,50 @@
+local cpp = require("@prelude/cpp/cpp.lua")
+
+cpp.library({
+	name = "string_utils",
+	targets = {
+		linux_x64_cpp17 = {
+			target = cpp.predefined_targets.linux_x64,
+			compiler = "gcc",
+			standard = cpp.standards.cpp17,
+		},
+		linux_x64_clang_cpp20 = {
+			target = cpp.predefined_targets.linux_x64,
+			compiler = "clang",
+			standard = cpp.standards.cpp20,
+		},
+		linux_x64_zig_cpp17 = {
+			target = cpp.predefined_targets.linux_x64,
+			compiler = "zig",
+			standard = cpp.standards.cpp17,
+		},
+	},
+	srcs = { "lib/string_utils.cpp" },
+	includes = { "lib" },
+})
+
+cpp.binary({
+	name = "text_processor",
+	targets = {
+		linux_x64_cpp17 = {
+			target = cpp.predefined_targets.linux_x64,
+			compiler = "gcc",
+			standard = cpp.standards.cpp17,
+		},
+		linux_x64_clang_cpp20 = {
+			target = cpp.predefined_targets.linux_x64,
+			compiler = "clang",
+			standard = cpp.standards.cpp20,
+		},
+		linux_x64_zig_cpp17 = {
+			target = cpp.predefined_targets.linux_x64,
+			compiler = "zig",
+			standard = cpp.standards.cpp17,
+		},
+	},
+	srcs = { "src/main.cpp" },
+	includes = { "lib" },
+	dependencies = {
+		string_utils = { path = "lib" },
+	},
+})

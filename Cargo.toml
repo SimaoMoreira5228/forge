@@ -1,0 +1,41 @@
+[package]
+name = "forge"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = ["forge-macros"]
+
+[dependencies]
+anyhow = "1"
+blake3 = { version = "1.8", features = ["rayon", "serde"] }
+chrono = { version = "0.4.42", features = ["serde"] }
+clap = { version = "4.5", features = ["derive"] }
+clap-verbosity-flag = { version = "3.0.4", features = ["serde"] }
+dashmap = { version = "6", features = ["serde", "rayon"] }
+dirs = "6.0"
+env_logger = "0.11"
+flate2 = "1.1"
+forge-macros = { path = "./forge-macros" }
+glob = "0.3"
+ignore = "0.4"
+log = { version = "0.4", features = ["serde"] }
+lz4 = "1.24"
+mlua = { version = "0.11", features = ["lua54", "serde", "anyhow", "userdata-wrappers", "vendored", "send"] }
+num_cpus = "1.16"
+proc-macro2 = "1.0"
+quote = "1.0"
+rayon = "1.11"
+semver = { version = "1.0", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+syn = { version = "2.0", features = ["full"] }
+tar = "0.4"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+toml = "0.9"
+ureq = { version = "3.1", features = ["json"] }
+uuid = { version = "1.10", features = ["v4"] }
+walkdir = "2.5"
+zip = "5.1"

@@ -1,0 +1,4 @@
+**/target
+**/forge-out
+.vscode
+temp/

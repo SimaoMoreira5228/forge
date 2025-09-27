@@ -1,0 +1,132 @@
+local c = require("@prelude/c/c.lua")
+local rust = require("@prelude/rust/rust.lua")
+
+c.library({
+	name = "math_native",
+	targets = {
+		linux_x64_debug = {
+			target = c.predefined_targets.linux_x64,
+			compiler = "gcc",
+		},
+		linux_x64_release = {
+			target = c.predefined_targets.linux_x64,
+			compiler = "gcc",
+		},
+		linux_x64_bench = {
+			target = c.predefined_targets.linux_x64,
+			compiler = "gcc",
+		},
+	},
+	srcs = forge.fs.glob("lib/math_native/**/*.c"),
+	includes = { "lib/math_native" },
+	cflags = { "-O2", "-fPIC", "-Wall", "-Wextra" },
+})
+
+rust.library({
+	name = "crypto_utils",
+	path = "lib/crypto_utils",
+	version = "0.1.0",
+	edition = "2024",
+	targets = {
+		linux_x64_debug = {
+			triple = rust.predefined_targets.linux_x64,
+			opt_level = "0",
+			debug_info = "2",
+		},
+		linux_x64_release = {
+			triple = rust.predefined_targets.linux_x64,
+			opt_level = "3",
+			debug_info = "1",
+			lto = "thin",
+		},
+	},
+	root = "lib/crypto_utils/src/lib.rs",
+	srcs = forge.fs.glob("lib/crypto_utils/src/**/*.rs"),
+	dependencies = {
+		["blake3"] = { version = "^1.8" },
+		["serde"] = { version = "^1.0", features = { "derive" } },
+	},
+})
+
+rust.binary({
+	name = "complex_app",
+	version = "0.1.0",
+	edition = "2024",
+	targets = {
+		linux_x64_debug = {
+			triple = rust.predefined_targets.linux_x64,
+			opt_level = "0",
+			debug_info = "2",
+		},
+		linux_x64_release = {
+			triple = rust.predefined_targets.linux_x64,
+			opt_level = "3",
+			debug_info = "1",
+			lto = "thin",
+			panic = "abort",
+		},
+	},
+	root = "src/main.rs",
+	srcs = forge.fs.glob("src/**/*.rs"),
+	dependencies = {
+		["crypto_utils"] = {
+			path = "lib/crypto_utils",
+		},
+		["math_native"] = {
+			path = "lib/math_native",
+			type = "c_library",
+			kind = "static",
+		},
+		["serde"] = {
+			version = "^1.0",
+			features = { "derive" },
+		},
+		["serde_json"] = { version = "^1.0" },
+		["blake3"] = { version = "^1.8" },
+	},
+	features = {
+		["crypto"] = true,
+		["native-math"] = true,
+	},
+	build_script = "build.rs",
+})
+
+rust.binary({
+	name = "complex_app_bench",
+	version = "0.1.0",
+	edition = "2024",
+	targets = {
+		linux_x64_bench = {
+			triple = rust.predefined_targets.linux_x64,
+			opt_level = "3",
+			debug_info = "0",
+			lto = "fat",
+			codegen_units = 1,
+			panic = "abort",
+		},
+	},
+	root = "src/main.rs",
+	srcs = forge.fs.glob("src/**/*.rs"),
+	dependencies = {
+		["crypto_utils"] = {
+			path = "lib/crypto_utils",
+		},
+		["math_native"] = {
+			path = "lib/math_native",
+			type = "c_library",
+			kind = "static",
+		},
+		["serde"] = {
+			version = "^1.0",
+			features = { "derive" },
+		},
+		["serde_json"] = { version = "^1.0" },
+		["blake3"] = { version = "^1.8" },
+	},
+	features = {
+		["crypto"] = true,
+		["native-math"] = true,
+		["benchmark-mode"] = true,
+	},
+	build_script = "build.rs",
+})
