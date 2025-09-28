@@ -1,0 +1,69 @@
+local build_common = require("@prelude/build_common.lua")
+local cpp = require("@prelude/cpp/cpp.lua")
+local debug_profile = build_common.get_build_profile("debug")
+
+local function combine_flags(opt_flags, debug_flags)
+	local combined = {}
+
+	for _, flag in ipairs(opt_flags) do
+		table.insert(combined, flag)
+	end
+
+	for _, flag in ipairs(debug_flags) do
+		table.insert(combined, flag)
+	end
+
+	return combined
+end
+
+local function get_defines()
+	local defines = {}
+
+	if forge.config and forge.config.test_mode then
+		table.insert(defines, "ENABLE_TESTS")
+	end
+
+	for _, define in ipairs(debug_profile.defines) do
+		table.insert(defines, define)
+	end
+
+	return defines
+end
+
+cpp.library({
+	name = "string_utils",
+	targets = {
+		linux_x64_cpp17 = {
+			target = cpp.predefined_targets.linux_x64,
+			compiler = "gcc",
+			standard = cpp.standards.cpp17,
+			cxxflags = combine_flags(
+				build_common.get_optimization_flags("cpp", debug_profile.optimization),
+				build_common.get_debug_flags("cpp", debug_profile.debug_info)
+			),
+			defines = get_defines(),
+		},
+		linux_x64_clang_cpp20 = {
+			target = cpp.predefined_targets.linux_x64,
+			compiler = "clang",
+			standard = cpp.standards.cpp20,
+			cxxflags = combine_flags(
+				build_common.get_optimization_flags("cpp", debug_profile.optimization),
+				build_common.get_debug_flags("cpp", debug_profile.debug_info)
+			),
+			defines = get_defines(),
+		},
+		linux_x64_zig_cpp17 = {
+			target = cpp.predefined_targets.linux_x64,
+			compiler = "zig",
+			standard = cpp.standards.cpp17,
+			cxxflags = combine_flags(
+				build_common.get_optimization_flags("cpp", debug_profile.optimization),
+				build_common.get_debug_flags("cpp", debug_profile.debug_info)
+			),
+			defines = get_defines(),
+		},
+	},
+	srcs = { "lib/string_utils.cpp" },
+	includes = { "lib" },
+})

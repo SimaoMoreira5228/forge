@@ -1,0 +1,8 @@
+[project]
+name = "zig_raylib_example"
+
+[build]
+cache_dir = "forge-out"
+
+[discovery]
+exclude = ["target", "node_modules", ".git"]

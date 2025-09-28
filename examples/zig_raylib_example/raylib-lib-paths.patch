@@ -1,0 +1,13 @@
+--- a/build.zig
++++ b/build.zig
+@@ -311,6 +311,10 @@
+ 
+                 if (options.linux_display_backend == .X11 or options.linux_display_backend == .Both) {
+                     raylib.root_module.addCMacro("_GLFW_X11", "");
++                    raylib.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
++                    raylib.root_module.addSystemIncludePath(.{ .cwd_relative = "/usr/include/X11" });
++                    raylib.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib64" });
++                    raylib.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+                     raylib.root_module.linkSystemLibrary("GLX", .{});
+                     raylib.root_module.linkSystemLibrary("X11", .{});
+                     raylib.root_module.linkSystemLibrary("Xcursor", .{});

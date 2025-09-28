@@ -1,0 +1,122 @@
+local bash = require("@prelude/bash/bash.lua")
+local zig = require("@prelude/zig/zig.lua")
+
+bash.run_inline({
+    name = "download_raylib",
+    code = [[
+		set -euo pipefail
+		mkdir -p vendor
+		rm -rf vendor/raylib
+		git clone https://github.com/raysan5/raylib vendor/raylib
+		cd vendor/raylib
+		git checkout 166420429106692f2f66d9bec39121ed9617f00f
+	]],
+    outputs = { "vendor/raylib/build.zig", "vendor/raylib/src/raylib.h" },
+})
+
+bash.run_command({
+    name = "patch_raylib",
+    command = "patch",
+    args = {
+        "-d",
+        forge.path.join({ forge.project.root, "vendor/raylib" }),
+        "-p1",
+        "-i",
+        forge.path.join({ forge.project.root, "raylib-lib-paths.patch" }),
+    },
+    inputs = { "vendor/raylib/build.zig", "raylib-lib-paths.patch" },
+    outputs = {},
+    dependencies = { "download_raylib" },
+})
+
+local function get_system_libs_for_target(target)
+    if target.os == "windows" then
+        if target.abi == "msvc" then
+            return { "gdi32", "winmm", "opengl32", "user32", "shell32", "kernel32" }
+        else
+            return { "c", "gdi32", "winmm", "opengl32", "user32", "shell32", "kernel32" }
+        end
+    elseif target.os == "linux" then
+        return { "c", "GL", "m", "pthread", "dl", "rt", "X11" }
+    elseif target.os == "macos" then
+        return { "c" }
+    else
+        return { "c" }
+    end
+end
+
+local build_targets = {
+    {
+        name = "linux_x64",
+        target = zig.predefined_targets.linux_x64,
+        raylib_filename = "libraylib.a",
+    },
+    {
+        name = "windows_x64",
+        target = zig.predefined_targets.windows_x64_gnu,
+        raylib_filename = "raylib.lib",
+    },
+}
+
+if forge.platform.os() == "windows" then
+    local index = table.find(build_targets, function(target)
+        return target.target == zig.predefined_targets.windows_x64_gnu
+    end)
+
+    table.remove(build_targets, index)
+
+    table.insert(build_targets, {
+        name = "windows_x64",
+        target = zig.predefined_targets.windows_x64,
+        raylib_filename = "raylib.lib",
+    })
+end
+
+for _, target_info in ipairs(build_targets) do
+    local output_dir = "zig-out-" .. target_info.name
+
+    zig.build_zig({
+        name = "raylib_" .. target_info.name,
+        targets = {
+            [target_info.name] = {
+                target = target_info.target,
+                mode = "ReleaseFast",
+                compiler_path = forge.path.join({ forge.project.root, "tools/zig" }),
+            },
+        },
+        build_file = "build.zig",
+        path = "vendor/raylib",
+        prefix = forge.path.join({ forge.project.root, "vendor/raylib", output_dir }),
+        steps = { "install" },
+        outputs = {
+            output_dir .. "/lib/" .. target_info.raylib_filename,
+        },
+        srcs = { "vendor/raylib/**/*" },
+        dependencies = { "patch_raylib" },
+    })
+end
+
+for _, target_info in ipairs(build_targets) do
+    local output_dir = "zig-out-" .. target_info.name
+    local raylib_path = forge.path.join({ forge.project.root, "vendor/raylib", output_dir, "lib", target_info
+        .raylib_filename })
+
+    zig.executable({
+        name = "game",
+        targets = {
+            [target_info.name] = {
+                target = target_info.target,
+                mode = "ReleaseFast",
+                compiler_path = forge.path.join({ forge.project.root, "tools/zig" }),
+                system_libs = get_system_libs_for_target(target_info.target),
+            }
+        },
+        main = "src/main.zig",
+        zig_flags = {
+            "-I" .. forge.path.join({ forge.project.root, "vendor/raylib/src" }),
+            raylib_path,
+        },
+        srcs = { "src/**/*.zig" },
+        rule_dependencies = { "raylib_" .. target_info.name .. "-build-" .. target_info.name },
+    })
+end

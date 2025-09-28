@@ -1,0 +1,19 @@
+local rust = require("@prelude/rust/rust.lua")
+
+rust.binary({
+	name = "minimal_app",
+	version = "0.1.0",
+	edition = "2024",
+	targets = {
+		linux_x64_debug = {
+			triple = rust.predefined_targets.linux_x64,
+			opt_level = "0",
+			debug_info = "2",
+		},
+	},
+	root = "src/main.rs",
+	srcs = forge.fs.glob("src/**/*.rs"),
+	dependencies = {
+		["blake3"] = { version = "^1.8" },
+	},
+})

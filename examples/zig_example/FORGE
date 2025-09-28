@@ -1,0 +1,34 @@
+local zig = require("@prelude/zig/zig.lua")
+
+zig.library({
+	name = "math_utils",
+	targets = {
+		linux_x64 = {
+			target = zig.predefined_targets.linux_x64,
+			mode = "Debug",
+		},
+		linux_x64_release = {
+			target = zig.predefined_targets.linux_x64,
+			mode = "ReleaseFast",
+		},
+	},
+	root = "lib/math_utils.zig",
+})
+
+zig.executable({
+	name = "calculator",
+	targets = {
+		linux_x64 = {
+			target = zig.predefined_targets.linux_x64,
+			mode = "Debug",
+		},
+		linux_x64_release = {
+			target = zig.predefined_targets.linux_x64,
+			mode = "ReleaseFast",
+		},
+	},
+	main = "src/main.zig",
+	dependencies = {
+		math_utils = { path = "lib" },
+	},
+})

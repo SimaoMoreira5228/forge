@@ -1,0 +1,9 @@
+[project]
+name = "bash_example"
+
+[build]
+cache_dir = "forge-out"
+
+[discovery]
+use_gitignore = true
+exclude = ["target", "node_modules", ".git", "downloads", "generated", "processed", "archive"]

@@ -1,0 +1,18 @@
+local cmake = require("@prelude/external/cmake.lua")
+
+cmake.build({
+	name = "hello-cmake",
+	targets = {
+		linux_x64 = {
+			configure_args = {
+				"-DCMAKE_BUILD_TYPE=Release",
+			},
+		},
+	},
+	source_dir = ".",
+	build_args = { "--parallel", "4" },
+	outputs = {
+		"build/linux_x64/hello",
+		"build/linux_x64/libgreetings.a",
+	},
+})

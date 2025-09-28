@@ -1,0 +1,53 @@
+local c = require("@prelude/c/c.lua")
+
+c.library({
+	name = "math_utils",
+	targets = {
+		linux_x64 = {
+			target = c.predefined_targets.linux_x64,
+			compiler = "gcc",
+		},
+		windows_x64 = {
+			target = c.predefined_targets.windows_x64_gnu,
+			compiler = "gcc",
+		},
+		linux_x64_clang = {
+			target = c.predefined_targets.linux_x64,
+			compiler = "clang",
+		},
+		linux_x64_zig = {
+			target = c.predefined_targets.linux_x64,
+			compiler = "zig",
+		},
+	},
+	srcs = { "lib/math_utils.c" },
+	includes = { "lib" },
+})
+
+c.binary({
+	name = "calc",
+	targets = {
+		linux_x64 = {
+			target = c.predefined_targets.linux_x64,
+			compiler = "gcc",
+		},
+		windows_x64 = {
+			target = c.predefined_targets.windows_x64,
+			compiler = "gcc",
+		},
+		linux_x64_clang = {
+			target = c.predefined_targets.linux_x64,
+			compiler = "clang",
+		},
+		linux_x64_zig = {
+			target = c.predefined_targets.linux_x64,
+			compiler = "zig",
+		},
+	},
+	srcs = { "src/main.c" },
+	includes = { "lib" },
+	dependencies = {
+		math_utils = { path = "lib" },
+	},
+	system_libs = { "m" },
+})
