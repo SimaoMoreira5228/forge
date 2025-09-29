@@ -30,8 +30,8 @@ local function get_defines()
 	return defines
 end
 
-cpp.binary({
-	name = "text_processor",
+cpp.library({
+	name = "string_utils",
 	targets = {
 		linux_x64_cpp17 = {
 			target = cpp.predefined_targets.linux_x64,
@@ -64,9 +64,6 @@ cpp.binary({
 			defines = get_defines(),
 		},
 	},
-	srcs = { "src/main.cpp" },
+	srcs = { "lib/string_utils.cpp" },
 	includes = { "lib" },
-	dependencies = {
-		string_utils = { path = "lib" },
-	},
 })

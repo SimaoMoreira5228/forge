@@ -51,14 +51,6 @@ local function validate_binary(tbl)
 		end
 	end
 
-	if tbl.dependencies then
-		for name, details in pairs(tbl.dependencies) do
-			if details.path and not defined_libraries[name] then
-				error(("Dependency '%s' not found. Make sure it's defined before the binary."):format(name))
-			end
-		end
-	end
-
 	return true
 end
 

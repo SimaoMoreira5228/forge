@@ -9,6 +9,8 @@ mod forge_root_config;
 mod lua_api;
 mod project;
 
+use std::process::Command;
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = "A universal, concurrent build system powered by Lua")]
 struct Cli {
@@ -44,6 +46,14 @@ enum Commands {
 		target: Option<String>,
 
 		#[arg(short, long, help = "Run specific component")]
+		component: Option<String>,
+	},
+
+	Test {
+		#[arg(short, long, help = "Target to be used for testing (required)")]
+		target: String,
+
+		#[arg(short, long, help = "Test specific component")]
 		component: Option<String>,
 	},
 
@@ -90,6 +100,7 @@ fn main() -> Result<()> {
 				verbosity: config::VerbosityWrapper(cli.verbose),
 				target_filters: target,
 				component_filters: component,
+				test_mode: false,
 			};
 
 			log::info!("Building project at: {}", project_path.display());
@@ -114,6 +125,7 @@ fn main() -> Result<()> {
 				} else {
 					vec![]
 				},
+				test_mode: false,
 			};
 
 			log::info!("Building and running project at: {}", project_path.display());
@@ -134,6 +146,37 @@ fn main() -> Result<()> {
 			}
 
 			println!("\nBuild and run completed successfully!");
+		}
+		Some(Commands::Test { target, component }) => {
+			let config = config::Config {
+				verbosity: config::VerbosityWrapper(cli.verbose),
+				target_filters: vec![target.clone()],
+				component_filters: if let Some(ref comp) = component {
+					vec![comp.clone()]
+				} else {
+					vec![]
+				},
+				test_mode: true,
+			};
+
+			log::info!("Building and testing project at: {}", project_path.display());
+			log::info!("Test target: {}", target);
+			if let Some(ref comp) = component {
+				log::info!("Test component: {}", comp);
+			}
+
+			let mut project = project::Project::new(project_path.clone(), config)?;
+			project.run()?;
+
+			if let Some(comp) = component {
+				log::info!("Running test component '{}' with target: {}", comp, target);
+				run_component_target_test_mode(&project_path, &comp, &target)?;
+			} else {
+				log::info!("Running test target: {}", target);
+				run_target_test_mode(&project_path, &target)?;
+			}
+
+			println!("\nTest completed successfully!");
 		}
 		Some(Commands::Clean) => {
 			log::info!("Cleaning project at: {}", project_path.display());
@@ -164,6 +207,7 @@ fn main() -> Result<()> {
 				verbosity: config::VerbosityWrapper(cli.verbose),
 				target_filters: cli.target,
 				component_filters: vec![],
+				test_mode: false,
 			};
 
 			log::info!("Building project at: {}", project_path.display());
@@ -256,30 +300,8 @@ fn run_target(project_path: &PathBuf, target_name: &str) -> Result<()> {
 		let forge_out = project_path.join("forge-out");
 		if forge_out.exists() {
 			let target_dir = forge_out.join(target_name);
-			if target_dir.exists() && target_dir.is_dir() {
-				for entry in std::fs::read_dir(&target_dir)? {
-					let entry = entry?;
-					let path = entry.path();
-					if path.is_file() {
-						#[cfg(unix)]
-						{
-							use std::os::unix::fs::PermissionsExt;
-							if let Ok(metadata) = std::fs::metadata(&path) {
-								if metadata.permissions().mode() & 0o111 != 0 {
-									target_path = path;
-									break;
-								}
-							}
-						}
-						#[cfg(not(unix))]
-						{
-							if path.extension().map_or(true, |ext| ext == "exe") {
-								target_path = path;
-								break;
-							}
-						}
-					}
-				}
+			if let Some(executable) = find_executable_in_dir(&target_dir, None) {
+				target_path = executable;
 			}
 		}
 	}
@@ -296,34 +318,7 @@ fn run_target(project_path: &PathBuf, target_name: &str) -> Result<()> {
 		return Err(anyhow::anyhow!("Target '{}' is not a file", target_name));
 	}
 
-	#[cfg(unix)]
-	{
-		use std::os::unix::fs::PermissionsExt;
-		let mut perms = std::fs::metadata(&target_path)?.permissions();
-		perms.set_mode(0o755);
-		std::fs::set_permissions(&target_path, perms)?;
-	}
-
-	log::info!("Executing target: {}", target_path.display());
-	let output = std::process::Command::new(&target_path).current_dir(project_path).output()?;
-
-	if !output.status.success() {
-		let stderr = String::from_utf8_lossy(&output.stderr);
-		let stdout = String::from_utf8_lossy(&output.stdout);
-		return Err(anyhow::anyhow!(
-			"Target execution failed with exit code {:?}\nSTDOUT:\n{}\n\nSTDERR:\n{}",
-			output.status.code(),
-			stdout,
-			stderr
-		));
-	}
-
-	let stdout = String::from_utf8_lossy(&output.stdout);
-	if !stdout.is_empty() {
-		print!("{}", stdout);
-	}
-
-	Ok(())
+	execute_binary(&target_path, project_path)
 }
 
 fn run_component_target(project_path: &PathBuf, component_name: &str, target_name: &str) -> Result<()> {
@@ -342,48 +337,12 @@ fn run_component_target(project_path: &PathBuf, component_name: &str, target_nam
 	}
 
 	let component_executable = target_dir.join(component_name);
-	if component_executable.exists() && component_executable.is_file() {
-		#[cfg(unix)]
-		{
-			use std::os::unix::fs::PermissionsExt;
-			if let Ok(metadata) = std::fs::metadata(&component_executable) {
-				if metadata.permissions().mode() & 0o111 != 0 {
-					return run_executable(&component_executable, project_path);
-				}
-			}
-		}
-		#[cfg(not(unix))]
-		{
-			if component_executable.extension().map_or(true, |ext| ext == "exe") {
-				return run_executable(&component_executable, project_path);
-			}
-		}
+	if is_executable(&component_executable) {
+		return run_executable(&component_executable, project_path);
 	}
 
-	for entry in std::fs::read_dir(&target_dir)? {
-		let entry = entry?;
-		let path = entry.path();
-		if path.is_file() {
-			if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
-				if filename.starts_with(component_name) {
-					#[cfg(unix)]
-					{
-						use std::os::unix::fs::PermissionsExt;
-						if let Ok(metadata) = std::fs::metadata(&path) {
-							if metadata.permissions().mode() & 0o111 != 0 {
-								return run_executable(&path, project_path);
-							}
-						}
-					}
-					#[cfg(not(unix))]
-					{
-						if path.extension().map_or(true, |ext| ext == "exe") {
-							return run_executable(&path, project_path);
-						}
-					}
-				}
-			}
-		}
+	if let Some(executable) = find_executable_in_dir(&target_dir, Some(component_name)) {
+		return run_executable(&executable, project_path);
 	}
 
 	return Err(anyhow::anyhow!(
@@ -394,36 +353,7 @@ fn run_component_target(project_path: &PathBuf, component_name: &str, target_nam
 }
 
 fn run_executable(executable_path: &PathBuf, project_path: &PathBuf) -> Result<()> {
-	#[cfg(unix)]
-	{
-		use std::os::unix::fs::PermissionsExt;
-		let mut perms = std::fs::metadata(executable_path)?.permissions();
-		perms.set_mode(0o755);
-		std::fs::set_permissions(executable_path, perms)?;
-	}
-
-	log::info!("Executing: {}", executable_path.display());
-	let output = std::process::Command::new(executable_path)
-		.current_dir(project_path)
-		.output()?;
-
-	if !output.status.success() {
-		let stderr = String::from_utf8_lossy(&output.stderr);
-		let stdout = String::from_utf8_lossy(&output.stdout);
-		return Err(anyhow::anyhow!(
-			"Executable failed with exit code {:?}\nSTDOUT:\n{}\n\nSTDERR:\n{}",
-			output.status.code(),
-			stdout,
-			stderr
-		));
-	}
-
-	let stdout = String::from_utf8_lossy(&output.stdout);
-	if !stdout.is_empty() {
-		print!("{}", stdout);
-	}
-
-	Ok(())
+	execute_binary(executable_path, project_path)
 }
 
 fn run_main_executable(project_path: &PathBuf) -> Result<()> {
@@ -449,32 +379,10 @@ fn run_main_executable(project_path: &PathBuf) -> Result<()> {
 			let path = entry.path();
 			if path.is_dir() && path.file_name().unwrap().to_string_lossy().contains("unknown-linux-gnu") {
 				let debug_dir = path.join("debug");
-				if debug_dir.exists() {
-					for debug_entry in std::fs::read_dir(&debug_dir)? {
-						let debug_entry = debug_entry?;
-						let debug_path = debug_entry.path();
-						if debug_path.is_file() {
-							#[cfg(unix)]
-							{
-								use std::os::unix::fs::PermissionsExt;
-								if let Ok(metadata) = std::fs::metadata(&debug_path) {
-									if metadata.permissions().mode() & 0o111 != 0 {
-										let name = debug_path.file_name().unwrap().to_string_lossy().to_string();
-										log::info!("Found executable in forge-out: {}", debug_path.display());
-										return run_target(project_path, &name);
-									}
-								}
-							}
-							#[cfg(not(unix))]
-							{
-								if debug_path.extension().is_none() {
-									let name = debug_path.file_name().unwrap().to_string_lossy().to_string();
-									log::info!("Found potential executable in forge-out: {}", debug_path.display());
-									return run_target(project_path, &name);
-								}
-							}
-						}
-					}
+				if let Some(executable) = find_executable_in_dir(&debug_dir, None) {
+					let name = executable.file_name().unwrap().to_string_lossy().to_string();
+					log::info!("Found executable in forge-out: {}", executable.display());
+					return run_target(project_path, &name);
 				}
 			}
 		}
@@ -486,30 +394,9 @@ fn run_main_executable(project_path: &PathBuf) -> Result<()> {
 	];
 
 	for target_dir in target_dirs {
-		if target_dir.exists() {
-			for entry in std::fs::read_dir(&target_dir)? {
-				let entry = entry?;
-				let path = entry.path();
-				if path.is_file() {
-					#[cfg(unix)]
-					{
-						use std::os::unix::fs::PermissionsExt;
-						if let Ok(metadata) = std::fs::metadata(&path) {
-							if metadata.permissions().mode() & 0o111 != 0 {
-								log::info!("Found executable in target directory: {}", path.display());
-								return run_target(project_path, &path.file_name().unwrap().to_string_lossy());
-							}
-						}
-					}
-					#[cfg(not(unix))]
-					{
-						if path.extension().is_none() {
-							log::info!("Found potential executable in target directory: {}", path.display());
-							return run_target(project_path, &path.file_name().unwrap().to_string_lossy());
-						}
-					}
-				}
-			}
+		if let Some(executable) = find_executable_in_dir(&target_dir, None) {
+			log::info!("Found executable in target directory: {}", executable.display());
+			return run_target(project_path, &executable.file_name().unwrap().to_string_lossy());
 		}
 	}
 
@@ -535,4 +422,254 @@ fn clean_project(project_path: &PathBuf) -> Result<()> {
 	}
 
 	Ok(())
+}
+
+fn run_target_test_mode(project_path: &PathBuf, target_name: &str) -> Result<()> {
+	let forge_out = project_path.join("forge-out");
+	if !forge_out.exists() {
+		return Err(anyhow::anyhow!("forge-out directory not found at {}", forge_out.display()));
+	}
+
+	let target_dir = forge_out.join(target_name);
+	let test_executables = find_all_test_executables_in_dir(&target_dir);
+
+	if test_executables.is_empty() {
+		return Err(anyhow::anyhow!(
+			"No test executables found for target '{}' (looking for binaries with '_test' suffix)",
+			target_name
+		));
+	}
+
+	println!("Running {} test(s) for target '{}'...", test_executables.len(), target_name);
+
+	let mut all_passed = true;
+	for test_executable in test_executables {
+		println!(
+			"\n=== Running test: {} ===",
+			test_executable.file_name().unwrap().to_str().unwrap()
+		);
+		match run_executable(&test_executable, project_path) {
+			Ok(_) => {}
+			Err(e) => {
+				eprintln!("Test failed: {}", e);
+				all_passed = false;
+			}
+		}
+	}
+
+	if !all_passed {
+		return Err(anyhow::anyhow!("One or more tests failed"));
+	}
+
+	Ok(())
+}
+
+fn run_component_target_test_mode(project_path: &PathBuf, component_name: &str, target_name: &str) -> Result<()> {
+	let forge_out = project_path.join("forge-out");
+	if !forge_out.exists() {
+		return Err(anyhow::anyhow!("forge-out directory not found at {}", forge_out.display()));
+	}
+
+	let target_dir = forge_out.join(target_name);
+	if !target_dir.exists() || !target_dir.is_dir() {
+		return Err(anyhow::anyhow!(
+			"Target directory '{}' not found at {}",
+			target_name,
+			target_dir.display()
+		));
+	}
+
+	if let Some(test_executable) = find_test_executable_in_dir(&target_dir, Some(component_name)) {
+		return run_executable(&test_executable, project_path);
+	}
+
+	return Err(anyhow::anyhow!(
+		"Test component executable '{}_test' not found in target directory {} (looking for binaries with '_test' suffix)",
+		component_name,
+		target_dir.display()
+	));
+}
+
+#[cfg(unix)]
+fn set_executable_permissions(path: &PathBuf) -> Result<()> {
+	use std::os::unix::fs::PermissionsExt;
+	let mut perms = std::fs::metadata(path)?.permissions();
+	perms.set_mode(0o755);
+	std::fs::set_permissions(path, perms)?;
+	Ok(())
+}
+
+fn is_executable(path: &PathBuf) -> bool {
+	if !path.is_file() {
+		return false;
+	}
+
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		if let Ok(metadata) = std::fs::metadata(path) {
+			return metadata.permissions().mode() & 0o111 != 0;
+		}
+	}
+
+	#[cfg(not(unix))]
+	{
+		return path.extension().map_or(true, |ext| ext == "exe");
+	}
+
+	false
+}
+
+fn execute_binary(executable_path: &PathBuf, project_path: &PathBuf) -> Result<()> {
+	#[cfg(unix)]
+	set_executable_permissions(executable_path)?;
+
+	log::info!("Executing: {}", executable_path.display());
+	let output = Command::new(executable_path).current_dir(project_path).output()?;
+
+	if !output.status.success() {
+		let stderr = String::from_utf8_lossy(&output.stderr);
+		let stdout = String::from_utf8_lossy(&output.stdout);
+		return Err(anyhow::anyhow!(
+			"Executable failed with exit code {:?}\nSTDOUT:\n{}\n\nSTDERR:\n{}",
+			output.status.code(),
+			stdout,
+			stderr
+		));
+	}
+
+	let stdout = String::from_utf8_lossy(&output.stdout);
+	if !stdout.is_empty() {
+		print!("{}", stdout);
+	}
+
+	Ok(())
+}
+
+fn find_executable_in_dir(dir: &PathBuf, name_pattern: Option<&str>) -> Option<PathBuf> {
+	if !dir.exists() || !dir.is_dir() {
+		return None;
+	}
+
+	let read_dir = match std::fs::read_dir(dir) {
+		Ok(rd) => rd,
+		Err(_) => return None,
+	};
+
+	for entry in read_dir {
+		let entry = match entry {
+			Ok(e) => e,
+			Err(_) => continue,
+		};
+
+		let path = entry.path();
+		if !path.is_file() {
+			continue;
+		}
+
+		let filename = match path.file_name().and_then(|n| n.to_str()) {
+			Some(name) => name,
+			None => continue,
+		};
+
+		if let Some(pattern) = name_pattern {
+			if !filename.starts_with(pattern) {
+				continue;
+			}
+		}
+
+		if is_executable(&path) {
+			return Some(path);
+		}
+	}
+
+	None
+}
+
+fn find_all_test_executables_in_dir(dir: &PathBuf) -> Vec<PathBuf> {
+	let mut test_executables = Vec::new();
+
+	if !dir.exists() || !dir.is_dir() {
+		return test_executables;
+	}
+
+	let read_dir = match std::fs::read_dir(dir) {
+		Ok(rd) => rd,
+		Err(_) => return test_executables,
+	};
+
+	for entry in read_dir {
+		let entry = match entry {
+			Ok(e) => e,
+			Err(_) => continue,
+		};
+
+		let path = entry.path();
+		if !path.is_file() {
+			continue;
+		}
+
+		let filename = match path.file_name().and_then(|n| n.to_str()) {
+			Some(name) => name,
+			None => continue,
+		};
+
+		let is_test_executable = filename.ends_with("_test") || filename.ends_with("_test.exe");
+		if !is_test_executable {
+			continue;
+		}
+
+		if is_executable(&path) {
+			test_executables.push(path);
+		}
+	}
+
+	test_executables.sort();
+	test_executables
+}
+
+fn find_test_executable_in_dir(dir: &PathBuf, component_pattern: Option<&str>) -> Option<PathBuf> {
+	if !dir.exists() || !dir.is_dir() {
+		return None;
+	}
+
+	let read_dir = match std::fs::read_dir(dir) {
+		Ok(rd) => rd,
+		Err(_) => return None,
+	};
+
+	for entry in read_dir {
+		let entry = match entry {
+			Ok(e) => e,
+			Err(_) => continue,
+		};
+
+		let path = entry.path();
+		if !path.is_file() {
+			continue;
+		}
+
+		let filename = match path.file_name().and_then(|n| n.to_str()) {
+			Some(name) => name,
+			None => continue,
+		};
+
+		let is_test_executable = filename.ends_with("_test") || filename.ends_with("_test.exe");
+		if !is_test_executable {
+			continue;
+		}
+
+		if let Some(pattern) = component_pattern {
+			let expected_test_name = format!("{}_test", pattern);
+			if !filename.starts_with(&expected_test_name) {
+				continue;
+			}
+		}
+
+		if is_executable(&path) {
+			return Some(path);
+		}
+	}
+
+	None
 }

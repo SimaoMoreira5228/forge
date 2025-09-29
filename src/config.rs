@@ -6,6 +6,7 @@ pub struct Config {
 	pub verbosity: VerbosityWrapper,
 	pub target_filters: Vec<String>,
 	pub component_filters: Vec<String>,
+	pub test_mode: bool,
 }
 
 #[derive(Debug, Clone)]

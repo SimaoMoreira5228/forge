@@ -514,6 +514,8 @@ impl Project {
 			.envs(&rule_ref.value().env)
 			.current_dir(&rule_ref.value().workdir);
 
+		log::debug!("Executing command: {:?} {:?}", cmd.get_program(), cmd.get_args());
+
 		let output = cmd.output()?;
 
 		if !output.status.success() {

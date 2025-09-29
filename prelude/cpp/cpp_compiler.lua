@@ -37,6 +37,11 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 	ensure_dir(out_dir)
 
 	local output_name = program_info.name
+
+	if forge.config and forge.config.test_mode then
+		output_name = output_name .. "_test"
+	end
+
 	if target.os == "windows" then
 		output_name = output_name .. ".exe"
 	end
@@ -197,7 +202,13 @@ function M.define_library_rules_for_target(library_info, target_name, target_con
 	})
 	ensure_dir(out_dir)
 
-	local output_name = "lib" .. library_info.name .. ".a"
+	local library_base_name = library_info.name
+
+	if forge.config and forge.config.test_mode then
+		library_base_name = library_base_name .. "_test"
+	end
+
+	local output_name = "lib" .. library_base_name .. ".a"
 	local output_path = forge.path.join({ out_dir, output_name })
 
 	local sources
