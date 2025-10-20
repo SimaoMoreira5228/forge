@@ -1,0 +1,73 @@
+local bash = require("@prelude/bash/bash.lua")
+local zig = require("@prelude/zig/zig.lua")
+
+bash.run_inline({
+	name = "download_raylib",
+	code = [[
+		set -euo pipefail
+		mkdir -p vendor
+		rm -rf vendor/raylib
+		git clone https://github.com/raysan5/raylib vendor/raylib
+		cd vendor/raylib
+		git checkout 166420429106692f2f66d9bec39121ed9617f00f
+	]],
+	outputs = { "vendor/raylib/build.zig", "vendor/raylib/src/raylib.h" },
+})
+
+bash.run_command({
+	name = "patch_raylib",
+	command = "patch",
+	args = {
+		"-d",
+		forge.path.join({ forge.project.root, "vendor/raylib" }),
+		"-p1",
+		"-i",
+		forge.path.join({ forge.project.root, "raylib-lib-paths.patch" }),
+	},
+	inputs = { "vendor/raylib/build.zig", "raylib-lib-paths.patch" },
+	outputs = {},
+	dependencies = { "download_raylib" },
+})
+
+zig.build_zig({
+	name = "raylib",
+	targets = {
+		linux_x64 = {
+			target = zig.predefined_targets.linux_x64,
+			mode = "ReleaseFast",
+			compiler_path = forge.path.join({ forge.project.root, "tools/zig" }),
+		},
+	},
+	build_file = "build.zig",
+	path = "vendor/raylib",
+	steps = { "install" },
+	outputs = {
+		"zig-out/lib/libraylib.a",
+	},
+	srcs = { "vendor/raylib/**/*" },
+	dependencies = { "patch_raylib" },
+})
+
+zig.executable({
+	name = "game",
+	targets = {
+		linux_x64 = {
+			target = zig.predefined_targets.linux_x64,
+			mode = "ReleaseFast",
+			compiler_path = forge.path.join({ forge.project.root, "tools/zig" }),
+		},
+		linux_x64_debug = {
+			target = zig.predefined_targets.linux_x64,
+			mode = "Debug",
+			compiler_path = forge.path.join({ forge.project.root, "tools/zig" }),
+		},
+	},
+	main = "src/main.zig",
+	system_libs = { "c", "GL", "m", "pthread", "dl", "rt", "X11" },
+	zig_flags = {
+		"-I" .. forge.path.join({ forge.project.root, "vendor/raylib/src" }),
+		forge.path.join({ forge.project.root, "vendor/raylib/zig-out/lib/libraylib.a" }),
+	},
+	srcs = { "src/**/*.zig" },
+	dependencies = { "raylib-build-linux_x64" },
+})

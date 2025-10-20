@@ -39,6 +39,7 @@ pub fn setup_lua_environment(lua: &Lua, project: &Project) -> Result<(), ForgeEr
 		let outputs: Vec<String> = tbl.get("outputs").unwrap_or_default();
 		let dependencies: Vec<String> = tbl.get("dependencies").unwrap_or_default();
 		let env: Option<Table> = tbl.get("env")?;
+		let workdir: Option<String> = tbl.get("workdir")?;
 
 		let env_map: std::collections::HashMap<String, String> = if let Some(env_table) = env {
 			env_table
@@ -49,6 +50,12 @@ pub fn setup_lua_environment(lua: &Lua, project: &Project) -> Result<(), ForgeEr
 			std::collections::HashMap::new()
 		};
 
+		let rule_workdir = if let Some(wd) = workdir {
+			PathBuf::from(wd)
+		} else {
+			project_path_for_rule.clone()
+		};
+
 		let rule = Rule {
 			name: name.clone(),
 			command,
@@ -57,7 +64,7 @@ pub fn setup_lua_environment(lua: &Lua, project: &Project) -> Result<(), ForgeEr
 			inputs,
 			outputs: outputs.clone(),
 			dependencies,
-			workdir: project_path_for_rule.clone(),
+			workdir: rule_workdir,
 		};
 
 		for output in &outputs {

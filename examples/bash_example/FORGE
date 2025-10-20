@@ -1,0 +1,57 @@
+local bash = require("@prelude/bash/bash.lua")
+
+bash.run_script({
+	name = "generate_files",
+	script = "scripts/generate.sh",
+	args = { "--count", "10" },
+	outputs = { "generated/data.txt" },
+})
+
+bash.run_command({
+	name = "download_example",
+	command = "curl",
+	args = {
+		"-L",
+		"-o",
+		"downloads/example.json",
+		"https://jsonplaceholder.typicode.com/todos/1",
+	},
+	outputs = { "downloads/example.json" },
+})
+
+bash.run_inline({
+	name = "create_archive",
+	code = [[
+		mkdir -p archive
+		echo "Archive created at: $(date)" > archive/info.txt
+		echo "Hostname: $(hostname)" >> archive/info.txt
+		echo "User: $(whoami)" >> archive/info.txt
+	]],
+	outputs = { "archive/info.txt" },
+})
+
+bash.run_inline({
+	name = "process_data",
+	code = [[
+		cat generated/data.txt | sort | uniq > processed/unique_data.txt
+		wc -l processed/unique_data.txt
+	]],
+	inputs = { "generated/data.txt" },
+	outputs = { "processed/unique_data.txt" },
+	dependencies = { "generate_files" },
+})
+
+bash.run_inline({
+	name = "env_test",
+	code = [[
+		echo "PROJECT_NAME: $PROJECT_NAME" > env_output.txt
+		echo "BUILD_TYPE: $BUILD_TYPE" >> env_output.txt
+		echo "VERSION: $VERSION" >> env_output.txt
+	]],
+	env = {
+		PROJECT_NAME = "forge-bash-example",
+		BUILD_TYPE = "debug",
+		VERSION = "1.0.0",
+	},
+	outputs = { "env_output.txt" },
+})

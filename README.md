@@ -13,6 +13,8 @@ This started as me being way too curious about how build systems actually work. 
 What actually works right now (surprisingly more than I expected):
 
 - 🔧 **C/C++ Support**: Can build C and C++ projects with GCC, Clang, or Zig
+- ⚡ **Zig Support**: Native Zig libraries, executables, and build.zig wrapper
+- _ **Bash/Shell Support**: Run scripts, commands, or inline shell code
 - 📦 **Content-Addressed Caching**: Files are cached by hash to avoid rebuilds
 - ⚡ **Parallel Execution**: Multiple compilation jobs run concurrently
 - 🐍 **Lua Configuration**: Build scripts are written in Lua (because JSON is boring)
@@ -45,6 +47,10 @@ Check out the examples to see what actually works (spoiler: more than you'd expe
 
 - `examples/c_example/` - Basic C project that actually compiles
 - `examples/cpp_example/` - C++ with different standards (fancy!)
+- `examples/zig_example/` - Native Zig compilation
+- `examples/zig_build_example/` - Wrapping build.zig projects
+- `examples/bash_example/` - Shell scripts and command execution
+- `examples/zig_raylib_example/` - Zig game with raylib (download, build, link!)
 - `examples/minimal_rust_example/` - Rust placeholder (doesn't work, see above)
 - `examples/complex_rust_example/` - Another Rust example (also doesn't work, but with more files!)
 

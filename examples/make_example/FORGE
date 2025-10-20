@@ -1,0 +1,16 @@
+local make = require("@prelude/external/make.lua")
+
+make.build({
+	name = "calculator",
+	targets = {
+		linux_x64 = {
+			jobs = 4,
+		},
+	},
+	source_dir = ".",
+	make_targets = { "all" },
+	outputs = {
+		"build/calculator",
+		"build/libmath.a",
+	},
+})

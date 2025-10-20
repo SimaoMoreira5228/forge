@@ -1,0 +1,11 @@
+[project]
+name = "make-example"
+version = "1.0.0"
+
+[build]
+cache_dir = "forge-out"
+
+[discovery]
+include = ["."]
+use_gitignore = true
+exclude = ["build", "forge-out"]

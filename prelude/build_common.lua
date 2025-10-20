@@ -7,6 +7,7 @@ M.optimization_levels = {
 		rust_flags = { "-C", "opt-level=0" },
 		c_flags = { "-O0", "-g" },
 		cpp_flags = { "-O0", "-g" },
+		zig_mode = "Debug",
 	},
 	basic = {
 		level = 1,
@@ -14,6 +15,7 @@ M.optimization_levels = {
 		rust_flags = { "-C", "opt-level=1" },
 		c_flags = { "-O1", "-g" },
 		cpp_flags = { "-O1", "-g" },
+		zig_mode = "Debug",
 	},
 	some = {
 		level = 2,
@@ -21,6 +23,7 @@ M.optimization_levels = {
 		rust_flags = { "-C", "opt-level=2" },
 		c_flags = { "-O2" },
 		cpp_flags = { "-O2" },
+		zig_mode = "ReleaseSafe",
 	},
 	full = {
 		level = 3,
@@ -28,6 +31,7 @@ M.optimization_levels = {
 		rust_flags = { "-C", "opt-level=3" },
 		c_flags = { "-O3" },
 		cpp_flags = { "-O3" },
+		zig_mode = "ReleaseFast",
 	},
 	size = {
 		level = "s",
@@ -35,6 +39,7 @@ M.optimization_levels = {
 		rust_flags = { "-C", "opt-level=s" },
 		c_flags = { "-Os" },
 		cpp_flags = { "-Os" },
+		zig_mode = "ReleaseSmall",
 	},
 	size_aggressive = {
 		level = "z",
@@ -42,6 +47,7 @@ M.optimization_levels = {
 		rust_flags = { "-C", "opt-level=z" },
 		c_flags = { "-Oz" }, -- Clang only
 		cpp_flags = { "-Oz" }, -- Clang only
+		zig_mode = "ReleaseSmall",
 	},
 }
 
@@ -224,6 +230,7 @@ M.source_patterns = {
 	rust = { "src/**/*.rs", "**/*.rs" },
 	c = { "src/**/*.c", "**/*.c" },
 	cpp = { "src/**/*.cpp", "src/**/*.cxx", "src/**/*.cc", "**/*.cpp", "**/*.cxx", "**/*.cc" },
+	zig = { "src/**/*.zig", "**/*.zig" },
 	header = { "src/**/*.h", "src/**/*.hpp", "**/*.h", "**/*.hpp" },
 }
 

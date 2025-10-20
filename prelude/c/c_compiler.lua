@@ -1,21 +1,12 @@
 local build_common = require("@prelude/build_common.lua")
 local common = require("@prelude/c/c_common.lua")
+local compiler_common = require("@prelude/compiler_common.lua")
 local target_common = require("@prelude/target_common.lua")
 
 local M = {}
 
-local function to_absolute_path(path, base_path)
-	if forge.path.is_absolute(path) then
-		return path
-	end
-	return forge.path.join({ base_path or forge.project.root, path })
-end
-
-local function ensure_dir(path)
-	if not forge.fs.exists(path) then
-		forge.fs.mkdir(path)
-	end
-end
+local to_absolute_path = compiler_common.to_absolute_path
+local ensure_dir = compiler_common.ensure_dir
 
 function M.define_program_rules_for_target(program_info, target_name, target_config)
 	if not build_common.should_build_component(program_info.name, target_name, program_info.dependencies) then
@@ -25,8 +16,9 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 	local program_path = program_info.path or forge.project.root
 	local target = target_config.target or common.get_host_target()
 	local compiler_name = target_config.compiler or "gcc"
+	local compiler_path = target_config.compiler_path or program_info.compiler_path
 
-	local compiler_info = common.get_compiler_for_target(compiler_name, target)
+	local compiler_info = common.get_compiler_for_target(compiler_name, target, compiler_path)
 
 	local out_dir = forge.path.join({
 		forge.project.root,
@@ -185,8 +177,9 @@ function M.define_library_rules_for_target(library_info, target_name, target_con
 	local library_path = library_info.path or forge.project.root
 	local target = target_config.target or common.get_host_target()
 	local compiler_name = target_config.compiler or "gcc"
+	local compiler_path = target_config.compiler_path or library_info.compiler_path
 
-	local compiler_info = common.get_compiler_for_target(compiler_name, target)
+	local compiler_info = common.get_compiler_for_target(compiler_name, target, compiler_path)
 
 	local out_dir = forge.path.join({
 		forge.project.root,

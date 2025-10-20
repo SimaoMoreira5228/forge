@@ -1,0 +1,46 @@
+#!/usr/bin/env dotslash
+{
+  "name": "zig",
+  "platforms": {
+    "linux-x86_64": {
+      "hash": "sha256",
+      "digest": "c61c5da6edeea14ca51ecd5e4520c6f4189ef5250383db33d01848293bfafe05",
+      "size": 53734456,
+      "format": "tar.xz",
+      "path": "zig-x86_64-linux-0.15.1/zig",
+      "providers": [
+        {"url": "https://ziglang.org/download/0.15.1/zig-x86_64-linux-0.15.1.tar.xz"}
+      ]
+    },
+    "macos-aarch64":{
+      "hash": "sha256",
+      "digest": "c4bd624d901c1268f2deb9d8eb2d86a2f8b97bafa3f118025344242da2c54d7b",
+      "size": 7875009,
+      "format": "tar.xz",
+      "path": "zig-aarch64-macos-0.15.1/zig",
+      "providers": [
+        {"url": "https://ziglang.org/download/0.15.1/zig-aarch64-macos-0.15.1.tar.xz"}
+      ]
+    },
+    "macos-x86_64": {
+      "hash": "sha256",
+      "digest": "9919392e0287cccc106dfbcbb46c7c1c3fa05d919567bb58d7eb16bca4116184",
+      "size": 8265462,
+      "format": "tar.xz",
+      "path": "zig-x86_64-macos-0.15.1/zig",
+      "providers": [
+        {"url": "https://ziglang.org/download/0.15.1/zig-x86_64-macos-0.15.1.tar.xz"}
+      ]
+    },
+    "windows-x86_64": {
+      "hash": "sha256",
+      "digest": "91e69e887ca8c943ce9a515df3af013d95a66a190a3df3f89221277ebad29e34",
+      "size": 7383585,
+      "format": "zip",
+      "path": "zig-x86_64-windows-0.15.1/zig.exe",
+      "providers": [
+        {"url": "https://ziglang.org/download/0.15.1/zig-x86_64-windows-0.15.1.zip"}
+      ]
+    }
+  }
+}

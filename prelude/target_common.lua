@@ -149,4 +149,18 @@ function M.validate_target(target_name)
 	return true
 end
 
+function M.get_predefined_targets()
+	local targets = {}
+	for name, canonical_info in pairs(M.canonical_targets) do
+		targets[name] = {
+			arch = canonical_info.arch,
+			os = canonical_info.os,
+			abi = canonical_info.abi,
+			vendor = canonical_info.vendor,
+			canonical_name = canonical_info.canonical_name,
+		}
+	end
+	return targets
+end
+
 return M
