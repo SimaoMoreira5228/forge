@@ -90,7 +90,7 @@ function M.library(tbl)
 	tbl.is_lib = true
 	defined_libraries[tbl.name] = tbl
 
-	forge.log.info(("Defining Zig library '%s' with %d targets"):format(tbl.name, table_length(tbl.targets)))
+	forge.log.info(("Defining Zig library '%s' with %d targets"):format(tbl.name, forge.table.length(tbl.targets)))
 
 	for target_name, target_config in pairs(tbl.targets) do
 		compiler.define_library_rules_for_target(tbl, target_name, target_config)
@@ -102,7 +102,7 @@ function M.executable(tbl)
 
 	tbl.is_lib = false
 
-	forge.log.info(("Defining Zig executable '%s' with %d targets"):format(tbl.name, table_length(tbl.targets)))
+	forge.log.info(("Defining Zig executable '%s' with %d targets"):format(tbl.name, forge.table.length(tbl.targets)))
 
 	for target_name, target_config in pairs(tbl.targets) do
 		compiler.define_executable_rules_for_target(tbl, target_name, target_config)
@@ -114,19 +114,11 @@ M.binary = M.executable
 function M.build_zig(tbl)
 	validate_build_zig(tbl)
 
-	forge.log.info(("Defining build.zig project '%s' with %d targets"):format(tbl.name, table_length(tbl.targets)))
+	forge.log.info(("Defining build.zig project '%s' with %d targets"):format(tbl.name, forge.table.length(tbl.targets)))
 
 	for target_name, target_config in pairs(tbl.targets) do
 		compiler.define_build_zig_rules_for_target(tbl, target_name, target_config)
 	end
-end
-
-function table_length(t)
-	local count = 0
-	for _ in pairs(t) do
-		count = count + 1
-	end
-	return count
 end
 
 M.utils = {

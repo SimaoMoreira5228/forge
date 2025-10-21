@@ -11,7 +11,7 @@ local function validate_make_project(tbl)
 		error(("Make project '%s' must specify targets"):format(tbl.name))
 	end
 
-	if not tbl.outputs or #tbl.outputs == 0 then
+	if not tbl.outputs or forge.table.length(tbl.outputs) == 0 then
 		error(("Make project '%s' must specify outputs"):format(tbl.name))
 	end
 
@@ -25,18 +25,10 @@ local function to_absolute_path(path, base_dir)
 	return forge.path.join({ base_dir, path })
 end
 
-local function table_length(t)
-	local count = 0
-	for _ in pairs(t) do
-		count = count + 1
-	end
-	return count
-end
-
 function M.build(tbl)
 	validate_make_project(tbl)
 
-	forge.log.info(("Defining Make project '%s' with %d targets"):format(tbl.name, table_length(tbl.targets)))
+	forge.log.info(("Defining Make project '%s' with %d targets"):format(tbl.name, forge.table.length(tbl.targets)))
 
 	for target_name, target_config in pairs(tbl.targets) do
 		M.build_for_target(tbl, target_name, target_config)
@@ -120,7 +112,9 @@ function M.build_for_target(tbl, target_name, target_config)
 		table.insert(outputs, output_path)
 	end
 
-	forge.log.info(("Make project '%s' target '%s' with %d outputs"):format(tbl.name, target_name, #outputs))
+	forge.log.info(
+		("Make project '%s' target '%s' with %d outputs"):format(tbl.name, target_name, forge.table.length(outputs))
+	)
 
 	forge.rule({
 		name = ("%s-build-%s"):format(tbl.name, target_name),

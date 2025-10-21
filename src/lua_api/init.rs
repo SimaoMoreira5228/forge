@@ -22,6 +22,7 @@ pub fn setup_lua_environment(lua: &Lua, project: &Project) -> Result<(), ForgeEr
 	forge_table.set("hash", lua_api::hash::create_hash_table(lua)?)?;
 	forge_table.set("time", lua_api::time::create_time_table(lua)?)?;
 	forge_table.set("log", lua_api::log::create_log_table(lua)?)?;
+	forge_table.set("table", lua_api::table::create_table_table(lua)?)?;
 	forge_table.set("project", lua_api::project::create_project_table(lua, project_path.clone())?)?;
 
 	let prelude_path = project.path.join("prelude");
@@ -140,6 +141,8 @@ pub fn generate_types_lua() -> String {
 	types.push('\n');
 	types.push_str(lua_api::log::LogApi::log_lua_type_definitions());
 	types.push('\n');
+	types.push_str(lua_api::table::TableApi::table_lua_type_definitions());
+	types.push('\n');
 	types.push_str(lua_api::project::ProjectApi::project_lua_type_definitions());
 	types.push('\n');
 
@@ -156,6 +159,7 @@ pub fn generate_types_lua() -> String {
 	types.push_str("---@field hash Hash Hashing operations\n");
 	types.push_str("---@field time Time Time operations\n");
 	types.push_str("---@field log Log Logging operations\n");
+	types.push_str("---@field table Table Table operations\n");
 	types.push_str("---@field project Project Project context and utilities\n");
 	types.push_str("---@field rule fun(rule: table): nil Add a build rule\n");
 	types.push_str("---@field sleep fun(seconds: number): nil Sleep for specified seconds\n");

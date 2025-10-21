@@ -10,4 +10,5 @@ mod platform;
 mod project;
 mod semver;
 mod string;
+mod table;
 mod time;

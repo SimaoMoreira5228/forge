@@ -60,7 +60,7 @@ function M.library(tbl)
 	tbl.is_lib = true
 	defined_libraries[tbl.name] = tbl
 
-	forge.log.info(("Defining C library '%s' with %d targets"):format(tbl.name, table_length(tbl.targets)))
+	forge.log.info(("Defining C library '%s' with %d targets"):format(tbl.name, forge.table.length(tbl.targets)))
 
 	for target_name, target_config in pairs(tbl.targets) do
 		compiler.define_library_rules_for_target(tbl, target_name, target_config)
@@ -72,7 +72,7 @@ function M.binary(tbl)
 
 	tbl.is_lib = false
 
-	forge.log.info(("Defining C binary '%s' with %d targets"):format(tbl.name, table_length(tbl.targets)))
+	forge.log.info(("Defining C binary '%s' with %d targets"):format(tbl.name, forge.table.length(tbl.targets)))
 
 	for target_name, target_config in pairs(tbl.targets) do
 		compiler.define_program_rules_for_target(tbl, target_name, target_config)
@@ -80,14 +80,6 @@ function M.binary(tbl)
 end
 
 M.executable = M.binary
-
-function table_length(t)
-	local count = 0
-	for _ in pairs(t) do
-		count = count + 1
-	end
-	return count
-end
 
 M.utils = {
 	resolve_sources = common.resolve_sources,

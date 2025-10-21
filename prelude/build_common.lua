@@ -241,7 +241,7 @@ end
 local requested_components_by_target = nil
 
 function M.should_target_be_built(target_name)
-	if forge.config.target_filters and #forge.config.target_filters > 0 then
+	if forge.config.target_filters and forge.table.length(forge.config.target_filters) > 0 then
 		for _, filter in ipairs(forge.config.target_filters) do
 			if filter == target_name then
 				return true
@@ -254,7 +254,7 @@ function M.should_target_be_built(target_name)
 end
 
 function M.should_build_component(component_name, target_name, dependencies)
-	if forge.config.target_filters and #forge.config.target_filters > 0 then
+	if forge.config.target_filters and forge.table.length(forge.config.target_filters) > 0 then
 		local should_build = false
 		for _, filter in ipairs(forge.config.target_filters) do
 			if filter == target_name then
@@ -267,7 +267,7 @@ function M.should_build_component(component_name, target_name, dependencies)
 		end
 	end
 
-	if not forge.config.component_filters or #forge.config.component_filters == 0 then
+	if not forge.config.component_filters or forge.table.length(forge.config.component_filters) == 0 then
 		return true
 	end
 

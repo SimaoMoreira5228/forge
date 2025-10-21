@@ -13,7 +13,7 @@ function M.run_script(config)
 		error(("Script '%s' must specify a script file"):format(config.name))
 	end
 
-	if not config.outputs or #config.outputs == 0 then
+	if not config.outputs or forge.table.length(config.outputs) == 0 then
 		forge.log.warn(("Script '%s' has no outputs specified - will always run"):format(config.name))
 	end
 
@@ -76,7 +76,7 @@ function M.run_command(config)
 		error(("Command '%s' must specify a command"):format(config.name))
 	end
 
-	if not config.outputs or #config.outputs == 0 then
+	if not config.outputs or forge.table.length(config.outputs) == 0 then
 		forge.log.warn(("Command '%s' has no outputs specified - will always run"):format(config.name))
 	end
 
@@ -133,7 +133,7 @@ function M.run_inline(config)
 		error(("Inline command '%s' must specify code"):format(config.name))
 	end
 
-	if not config.outputs or #config.outputs == 0 then
+	if not config.outputs or forge.table.length(config.outputs) == 0 then
 		forge.log.warn(("Inline command '%s' has no outputs specified - will always run"):format(config.name))
 	end
 

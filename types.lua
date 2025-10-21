@@ -216,6 +216,23 @@
 
 ---@type Log
 
+---@class Table
+---@field new fun(): any
+--- Get the length of a table (counts all key-value pairs) This works for both array-like and map-like tables
+---@field length fun(tbl: any): any
+--- Check if a table is empty
+---@field is_empty fun(tbl: any): any
+--- Get all keys from a table
+---@field keys fun(tbl: any): any
+--- Get all values from a table
+---@field values fun(tbl: any): any
+--- Check if a table contains a specific key
+---@field contains_key fun(tbl: any, key: any): any
+--- Merge two tables (second table overwrites values from first on key conflicts)
+---@field merge fun(tbl1: any, tbl2: any): any
+
+---@type Table
+
 ---@class Project
 ---@field new fun(): any
 --- Resolve a path relative to the project root
@@ -236,6 +253,7 @@
 ---@field hash Hash Hashing operations
 ---@field time Time Time operations
 ---@field log Log Logging operations
+---@field table Table Table operations
 ---@field project Project Project context and utilities
 ---@field rule fun(rule: table): nil Add a build rule
 ---@field sleep fun(seconds: number): nil Sleep for specified seconds
