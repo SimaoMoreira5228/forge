@@ -117,8 +117,15 @@ function M.define_executable_rules_for_target(executable_info, target_name, targ
 		end
 	end
 
-	if executable_info.system_libs then
-		for _, lib in ipairs(executable_info.system_libs) do
+	if executable_info.rule_dependencies then
+		for _, rule_name in ipairs(executable_info.rule_dependencies) do
+			table.insert(dep_rules, rule_name)
+		end
+	end
+
+	local system_libs = target_config.system_libs or executable_info.system_libs
+	if system_libs then
+		for _, lib in ipairs(system_libs) do
 			table.insert(args, "-l" .. lib)
 		end
 	end

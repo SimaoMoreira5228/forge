@@ -1,6 +1,5 @@
 local zig = require("@prelude/zig/zig.lua")
 
--- Wrap a build.zig project
 zig.build_zig({
 	name = "external_project",
 	targets = {
@@ -15,8 +14,7 @@ zig.build_zig({
 	},
 	build_file = "build.zig",
 	path = ".",
-	steps = { "install" }, -- Optional: specific build steps
-	-- Must specify outputs for cache tracking
+	steps = { "install" },
 	outputs = {
 		"zig-out/bin/myapp",
 	},

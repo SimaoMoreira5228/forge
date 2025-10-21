@@ -139,8 +139,15 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 		table.insert(args, "-l" .. lib)
 	end
 
-	if program_info.system_libs then
-		for _, lib in ipairs(program_info.system_libs) do
+	if program_info.rule_dependencies then
+		for _, rule_name in ipairs(program_info.rule_dependencies) do
+			table.insert(dep_rules, rule_name)
+		end
+	end
+
+	local system_libs = target_config.system_libs or program_info.system_libs
+	if system_libs then
+		for _, lib in ipairs(system_libs) do
 			table.insert(args, "-l" .. lib)
 		end
 	end

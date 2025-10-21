@@ -7,6 +7,10 @@ c.library({
 			target = c.predefined_targets.linux_x64,
 			compiler = "gcc",
 		},
+		windows_x64 = {
+			target = c.predefined_targets.windows_x64_gnu,
+			compiler = "gcc",
+		},
 		linux_x64_clang = {
 			target = c.predefined_targets.linux_x64,
 			compiler = "clang",
@@ -25,6 +29,10 @@ c.binary({
 	targets = {
 		linux_x64 = {
 			target = c.predefined_targets.linux_x64,
+			compiler = "gcc",
+		},
+		windows_x64 = {
+			target = c.predefined_targets.windows_x64,
 			compiler = "gcc",
 		},
 		linux_x64_clang = {
