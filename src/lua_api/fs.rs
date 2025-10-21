@@ -166,10 +166,10 @@ impl FsApi {
 			})
 		})?;
 
-		if let Ok(modified) = metadata.modified() {
-			if let Ok(duration) = modified.duration_since(SystemTime::UNIX_EPOCH) {
-				return Ok(Some(duration.as_secs()));
-			}
+		if let Ok(modified) = metadata.modified()
+			&& let Ok(duration) = modified.duration_since(SystemTime::UNIX_EPOCH)
+		{
+			return Ok(Some(duration.as_secs()));
 		}
 
 		Ok(None)
@@ -397,7 +397,7 @@ fn extract_archive(archive_path: &Path, dest_path: &Path) -> Result<(), FsError>
 			if archive_path
 				.file_name()
 				.and_then(|s| s.to_str())
-				.map_or(false, |s| s.contains(".tar.")) =>
+				.is_some_and(|s| s.contains(".tar.")) =>
 		{
 			let tar = GzDecoder::new(file);
 			let mut archive = Archive::new(tar);

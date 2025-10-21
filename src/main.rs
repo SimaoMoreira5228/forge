@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 mod cache;
 mod config;
@@ -223,7 +223,7 @@ fn main() -> Result<()> {
 	Ok(())
 }
 
-fn init_forge_root(project_path: &PathBuf, name: Option<String>, force: bool) -> Result<()> {
+fn init_forge_root(project_path: &Path, name: Option<String>, force: bool) -> Result<()> {
 	let forge_root_path = project_path.join("FORGE_ROOT");
 
 	if forge_root_path.exists() && !force {
@@ -247,7 +247,7 @@ fn init_forge_root(project_path: &PathBuf, name: Option<String>, force: bool) ->
 	Ok(())
 }
 
-fn migrate_to_forge_root(project_path: &PathBuf, force: bool) -> Result<()> {
+fn migrate_to_forge_root(project_path: &Path, force: bool) -> Result<()> {
 	let forge_root_path = project_path.join("FORGE_ROOT");
 
 	if forge_root_path.exists() && !force {
@@ -345,11 +345,11 @@ fn run_component_target(project_path: &PathBuf, component_name: &str, target_nam
 		return run_executable(&executable, project_path);
 	}
 
-	return Err(anyhow::anyhow!(
+	Err(anyhow::anyhow!(
 		"Component executable '{}' not found in target directory {}",
 		component_name,
 		target_dir.display()
-	));
+	))
 }
 
 fn run_executable(executable_path: &PathBuf, project_path: &PathBuf) -> Result<()> {
@@ -405,7 +405,7 @@ fn run_main_executable(project_path: &PathBuf) -> Result<()> {
 	))
 }
 
-fn clean_project(project_path: &PathBuf) -> Result<()> {
+fn clean_project(project_path: &Path) -> Result<()> {
 	let forge_out_path = project_path.join("forge-out");
 
 	if forge_out_path.exists() {
@@ -483,11 +483,11 @@ fn run_component_target_test_mode(project_path: &PathBuf, component_name: &str, 
 		return run_executable(&test_executable, project_path);
 	}
 
-	return Err(anyhow::anyhow!(
+	Err(anyhow::anyhow!(
 		"Test component executable '{}_test' not found in target directory {} (looking for binaries with '_test' suffix)",
 		component_name,
 		target_dir.display()
-	));
+	))
 }
 
 #[cfg(unix)]
@@ -572,10 +572,10 @@ fn find_executable_in_dir(dir: &PathBuf, name_pattern: Option<&str>) -> Option<P
 			None => continue,
 		};
 
-		if let Some(pattern) = name_pattern {
-			if !filename.starts_with(pattern) {
-				continue;
-			}
+		if let Some(pattern) = name_pattern
+			&& !filename.starts_with(pattern)
+		{
+			continue;
 		}
 
 		if is_executable(&path) {

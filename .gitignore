@@ -1,5 +1,6 @@
 **/target
 **/forge-out
-.vscode
+.vscode/
 temp/
 ignore/
+.zed/

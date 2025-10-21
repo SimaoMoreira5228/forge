@@ -32,10 +32,10 @@ impl BuildCache {
 	}
 
 	pub fn load(path: &Path) -> Self {
-		if let Ok(file) = File::open(path) {
-			if let Ok(cache) = serde_json::from_reader::<_, BuildCache>(BufReader::new(file)) {
-				return cache;
-			}
+		if let Ok(file) = File::open(path)
+			&& let Ok(cache) = serde_json::from_reader::<_, BuildCache>(BufReader::new(file))
+		{
+			return cache;
 		}
 		Self::new()
 	}

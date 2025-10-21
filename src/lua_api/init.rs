@@ -119,29 +119,29 @@ pub fn generate_types_lua() -> String {
 	types.push_str("-- This file provides type hints for Lua language servers\n\n");
 
 	types.push_str(lua_api::fs::FsApi::fs_lua_type_definitions());
-	types.push_str("\n");
+	types.push('\n');
 	types.push_str(lua_api::http::HttpApi::http_lua_type_definitions());
-	types.push_str("\n");
+	types.push('\n');
 	types.push_str(lua_api::parse::ParseApi::parse_lua_type_definitions());
-	types.push_str("\n");
+	types.push('\n');
 	types.push_str(lua_api::exec::ExecApi::exec_lua_type_definitions());
-	types.push_str("\n");
+	types.push('\n');
 	types.push_str(lua_api::semver::SemverApi::semver_lua_type_definitions());
-	types.push_str("\n");
+	types.push('\n');
 	types.push_str(lua_api::platform::PlatformApi::platform_lua_type_definitions());
-	types.push_str("\n");
+	types.push('\n');
 	types.push_str(lua_api::path::PathApi::path_lua_type_definitions());
-	types.push_str("\n");
+	types.push('\n');
 	types.push_str(lua_api::string::StringApi::string_lua_type_definitions());
-	types.push_str("\n");
+	types.push('\n');
 	types.push_str(lua_api::hash::HashApi::hash_lua_type_definitions());
-	types.push_str("\n");
+	types.push('\n');
 	types.push_str(lua_api::time::TimeApi::time_lua_type_definitions());
-	types.push_str("\n");
+	types.push('\n');
 	types.push_str(lua_api::log::LogApi::log_lua_type_definitions());
-	types.push_str("\n");
+	types.push('\n');
 	types.push_str(lua_api::project::ProjectApi::project_lua_type_definitions());
-	types.push_str("\n");
+	types.push('\n');
 
 	types.push_str("---@class Forge\n");
 	types.push_str("---@field config table Configuration table\n");
@@ -159,7 +159,7 @@ pub fn generate_types_lua() -> String {
 	types.push_str("---@field project Project Project context and utilities\n");
 	types.push_str("---@field rule fun(rule: table): nil Add a build rule\n");
 	types.push_str("---@field sleep fun(seconds: number): nil Sleep for specified seconds\n");
-	types.push_str("\n");
+	types.push('\n');
 
 	types.push_str("---@class Project\n");
 	types.push_str("---@field root string Absolute path to project root\n");

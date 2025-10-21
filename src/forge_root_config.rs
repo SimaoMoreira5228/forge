@@ -5,13 +5,13 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum ForgeRootConfigError {
 	#[error("Failed to read FORGE_ROOT file: {0}")]
-	IoError(#[from] std::io::Error),
+	Io(#[from] std::io::Error),
 
 	#[error("Failed to parse FORGE_ROOT TOML: {0}")]
-	TomlError(#[from] toml::de::Error),
+	Toml(#[from] toml::de::Error),
 
 	#[error("Invalid configuration: {0}")]
-	ValidationError(String),
+	Invalid(String),
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -101,20 +101,18 @@ impl ForgeRootConfig {
 
 	pub fn validate(&self) -> Result<(), ForgeRootConfigError> {
 		if self.project.name.trim().is_empty() {
-			return Err(ForgeRootConfigError::ValidationError(
-				"Project name cannot be empty".to_string(),
-			));
+			return Err(ForgeRootConfigError::Invalid("Project name cannot be empty".to_string()));
 		}
 
-		if let Err(_) = semver::Version::parse(&self.project.version) {
-			return Err(ForgeRootConfigError::ValidationError(format!(
+		if semver::Version::parse(&self.project.version).is_err() {
+			return Err(ForgeRootConfigError::Invalid(format!(
 				"Invalid version format: '{}'. Must be valid semver (e.g., '1.0.0')",
 				self.project.version
 			)));
 		}
 
 		if self.discovery.include.is_empty() {
-			return Err(ForgeRootConfigError::ValidationError(
+			return Err(ForgeRootConfigError::Invalid(
 				"Discovery include patterns cannot be empty".to_string(),
 			));
 		}
@@ -136,7 +134,7 @@ impl ForgeRootConfig {
 
 	pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), ForgeRootConfigError> {
 		let content = toml::to_string_pretty(self)
-			.map_err(|e| ForgeRootConfigError::ValidationError(format!("Failed to serialize TOML: {}", e)))?;
+			.map_err(|e| ForgeRootConfigError::Invalid(format!("Failed to serialize TOML: {}", e)))?;
 		std::fs::write(path, content)?;
 		Ok(())
 	}

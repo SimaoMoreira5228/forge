@@ -45,7 +45,7 @@ impl PathApi {
 		Ok(path
 			.extension()
 			.map(|ext| format!(".{}", ext.to_string_lossy()))
-			.unwrap_or_else(|| "".to_string()))
+			.unwrap_or_default())
 	}
 
 	/// Get file stem (name without extension)
@@ -54,7 +54,7 @@ impl PathApi {
 		Ok(path
 			.file_stem()
 			.map(|stem| stem.to_string_lossy().to_string())
-			.unwrap_or_else(|| "".to_string()))
+			.unwrap_or_default())
 	}
 
 	/// Check if path is absolute

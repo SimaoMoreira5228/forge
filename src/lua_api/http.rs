@@ -74,7 +74,7 @@ impl HttpApi {
 	/// Perform HTTP GET request
 	fn get(lua: &Lua, request: HttpGetRequest) -> Result<Value> {
 		let agent_config = ureq::Agent::config_builder()
-			.timeout_global(request.timeout.map(|t| std::time::Duration::from_secs(t)))
+			.timeout_global(request.timeout.map(std::time::Duration::from_secs))
 			.max_redirects(if request.follow_redirects.unwrap_or(true) { 10 } else { 0 })
 			.build();
 
@@ -109,7 +109,7 @@ impl HttpApi {
 	/// Perform HTTP POST request
 	fn post(lua: &Lua, request: HttpPostRequest) -> Result<Value> {
 		let agent_config = ureq::Agent::config_builder()
-			.timeout_global(request.timeout.map(|t| std::time::Duration::from_secs(t)))
+			.timeout_global(request.timeout.map(std::time::Duration::from_secs))
 			.max_redirects(if request.follow_redirects.unwrap_or(true) { 10 } else { 0 })
 			.build();
 
@@ -150,24 +150,22 @@ impl HttpApi {
 		let cache_dir = get_cache_dir()?;
 		let filename = request
 			.cache_key
-			.unwrap_or_else(|| request.url.split('/').last().unwrap_or("download").to_string());
+			.unwrap_or_else(|| request.url.split('/').next_back().unwrap_or("download").to_string());
 		let cache_path = cache_dir.join(&filename);
 
-		if cache_path.exists() {
-			if let Ok(cached_data) = std::fs::read(&cache_path) {
-				if verify_hash(&cached_data, request.blake3.clone(), request.sha256.clone(), &request.url).is_ok() {
-					if request.extract.unwrap_or(false) {
-						let extract_path =
-							cache_dir.join(request.extract_dir.unwrap_or_else(|| format!("{}_extracted", filename)));
-						if !extract_path.exists() {
-							fs::create_dir_all(&extract_path).map_err(mlua::Error::external)?;
-							extract_archive(&cache_path, &extract_path)?;
-						}
-						return Ok(extract_path.to_string_lossy().to_string());
-					} else {
-						return Ok(cache_path.to_string_lossy().to_string());
-					}
+		if cache_path.exists()
+			&& let Ok(cached_data) = std::fs::read(&cache_path)
+			&& verify_hash(&cached_data, request.blake3.clone(), request.sha256.clone(), &request.url).is_ok()
+		{
+			if request.extract.unwrap_or(false) {
+				let extract_path = cache_dir.join(request.extract_dir.unwrap_or_else(|| format!("{}_extracted", filename)));
+				if !extract_path.exists() {
+					fs::create_dir_all(&extract_path).map_err(mlua::Error::external)?;
+					extract_archive(&cache_path, &extract_path)?;
 				}
+				return Ok(extract_path.to_string_lossy().to_string());
+			} else {
+				return Ok(cache_path.to_string_lossy().to_string());
 			}
 		}
 
@@ -255,16 +253,13 @@ fn extract_archive(archive_path: &Path, dest_path: &Path) -> Result<()> {
 	if extension == Some("zip") {
 		let mut archive = zip::ZipArchive::new(file).map_err(mlua::Error::external)?;
 		archive.extract(dest_path).map_err(mlua::Error::external)?;
-	} else if extension == Some("gz")
+	} else if (extension == Some("gz")
 		&& archive_path
 			.file_name()
 			.and_then(|s| s.to_str())
-			.map_or(false, |s| s.contains(".tar."))
+			.is_some_and(|s| s.contains(".tar.")))
+		|| extension == Some("crate")
 	{
-		let tar = flate2::read::GzDecoder::new(file);
-		let mut archive = tar::Archive::new(tar);
-		archive.unpack(dest_path).map_err(mlua::Error::external)?;
-	} else if extension == Some("crate") {
 		let tar = flate2::read::GzDecoder::new(file);
 		let mut archive = tar::Archive::new(tar);
 		archive.unpack(dest_path).map_err(mlua::Error::external)?;

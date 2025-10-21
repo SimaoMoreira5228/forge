@@ -193,7 +193,7 @@ impl Project {
 			let entry = result.map_err(|e| ForgeError::Other(e.into()))?;
 
 			if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) && entry.file_name().to_str() == Some("FORGE") {
-				if self.is_path_excluded(&entry.path(), config) {
+				if self.is_path_excluded(entry.path(), config) {
 					continue;
 				}
 
@@ -282,11 +282,11 @@ impl Project {
 		}
 
 		let new_hash = self.calculate_rule_hash(rule)?;
-		if let Some(old_hash) = self.cache.rule_hashes.get(&rule.name) {
-			if *old_hash.value() == new_hash {
-				log::info!("Skipping rule '{}' (up-to-date)", rule.name);
-				return Ok((false, None));
-			}
+		if let Some(old_hash) = self.cache.rule_hashes.get(&rule.name)
+			&& *old_hash.value() == new_hash
+		{
+			log::info!("Skipping rule '{}' (up-to-date)", rule.name);
+			return Ok((false, None));
 		}
 
 		Ok((true, Some(new_hash)))
@@ -294,14 +294,12 @@ impl Project {
 
 	fn check_dependency_changes<'a>(&'a self, rule: &'a Rule) -> Result<bool, ForgeError> {
 		for input in &rule.inputs {
-			if let Some(dep_rule_name) = self.output_map.get(input) {
-				if let Some(artifact_metadata) = self.cache.artifact_metadata.get(dep_rule_name.value()) {
-					if let Some(rule_metadata) = self.cache.artifact_metadata.get(&rule.name) {
-						if artifact_metadata.created > rule_metadata.created {
-							return Ok(true);
-						}
-					}
-				}
+			if let Some(dep_rule_name) = self.output_map.get(input)
+				&& let Some(artifact_metadata) = self.cache.artifact_metadata.get(dep_rule_name.value())
+				&& let Some(rule_metadata) = self.cache.artifact_metadata.get(&rule.name)
+				&& artifact_metadata.created > rule_metadata.created
+			{
+				return Ok(true);
 			}
 		}
 		Ok(false)
@@ -327,12 +325,11 @@ impl Project {
 					let metadata = std::fs::metadata(&input_path)?;
 					let modified = metadata.modified()?;
 
-					if let Some(cached_hash) = self.cache.file_hashes.get(input) {
-						if let Some(last_modified) = self.cache.mtimes.get(input) {
-							if modified <= *last_modified.value() {
-								return Ok(cached_hash.value().clone());
-							}
-						}
+					if let Some(cached_hash) = self.cache.file_hashes.get(input)
+						&& let Some(last_modified) = self.cache.mtimes.get(input)
+						&& modified <= *last_modified.value()
+					{
+						return Ok(cached_hash.value().clone());
 					}
 
 					let mut file_hasher = Hasher::new();
@@ -582,7 +579,7 @@ impl Project {
 		Ok(())
 	}
 
-	fn create_parallel_batches<'a>(&'a self) -> Result<Vec<Vec<String>>, ForgeError> {
+	fn create_parallel_batches(&self) -> Result<Vec<Vec<String>>, ForgeError> {
 		let mut reverse_deps: HashMap<String, Vec<String>> = HashMap::new();
 		let mut in_degrees: HashMap<String, usize> = self.build_graph.iter().map(|r| (r.key().to_string(), 0)).collect();
 		let mut rule_complexity: HashMap<String, f64> = HashMap::new();
@@ -706,10 +703,8 @@ impl Project {
 		for rule in available_rules {
 			let rule_complexity = complexity.get(rule).unwrap_or(&1.0);
 
-			if batch.len() < max_batch_size && total_complexity + rule_complexity <= target_complexity {
-				batch.push(rule.to_string());
-				total_complexity += rule_complexity;
-			} else if batch.is_empty() {
+			if (batch.len() < max_batch_size && total_complexity + rule_complexity <= target_complexity) || batch.is_empty()
+			{
 				batch.push(rule.to_string());
 				total_complexity += rule_complexity;
 			} else {
@@ -732,11 +727,11 @@ impl Project {
 		let mut suggested_rule = &cycle_nodes[0];
 
 		for rule_name in cycle_nodes {
-			if let Some(rule) = self.build_graph.get(rule_name) {
-				if rule.inputs.len() > max_deps {
-					max_deps = rule.inputs.len();
-					suggested_rule = rule_name;
-				}
+			if let Some(rule) = self.build_graph.get(rule_name)
+				&& rule.inputs.len() > max_deps
+			{
+				max_deps = rule.inputs.len();
+				suggested_rule = rule_name;
 			}
 		}
 
@@ -746,7 +741,7 @@ impl Project {
 		)
 	}
 
-	fn check_dependency_conflicts<'a>(&'a self) -> Result<(), ForgeError> {
+	fn check_dependency_conflicts(&self) -> Result<(), ForgeError> {
 		let mut output_to_rules: HashMap<String, Vec<String>> = HashMap::new();
 
 		for rule_ref in self.build_graph.iter() {
@@ -764,9 +759,8 @@ impl Project {
 			if rules.len() > 1 {
 				return Err(ForgeError::DependencyConflict {
 					conflict: format!("Multiple rules produce the same output '{}': {}", output, rules.join(", ")),
-					suggestion: format!(
-						"Ensure each output file is produced by only one rule, or rename conflicting outputs"
-					),
+					suggestion: "Ensure each output file is produced by only one rule, or rename conflicting outputs"
+						.to_string(),
 				});
 			}
 		}
