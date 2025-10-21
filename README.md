@@ -14,7 +14,8 @@ What actually works right now (surprisingly more than I expected):
 
 - 🔧 **C/C++ Support**: Can build C and C++ projects with GCC, Clang, or Zig
 - ⚡ **Zig Support**: Native Zig libraries, executables, and build.zig wrapper
-- _ **Bash/Shell Support**: Run scripts, commands, or inline shell code
+- 🔨 **Bash/Shell Support**: Run scripts, commands, or inline shell code
+- 🛠️ **Make/CMake Wrappers**: Integrate existing Make and CMake projects
 - 📦 **Content-Addressed Caching**: Files are cached by hash to avoid rebuilds
 - ⚡ **Parallel Execution**: Multiple compilation jobs run concurrently
 - 🐍 **Lua Configuration**: Build scripts are written in Lua (because JSON is boring)
@@ -51,6 +52,8 @@ Check out the examples to see what actually works (spoiler: more than you'd expe
 - `examples/zig_build_example/` - Wrapping build.zig projects
 - `examples/bash_example/` - Shell scripts and command execution
 - `examples/zig_raylib_example/` - Zig game with raylib (download, build, link!)
+- `examples/make_example/` - Wrapping Makefile-based projects
+- `examples/cmake_example/` - Wrapping CMake-based projects
 - `examples/minimal_rust_example/` - Rust placeholder (doesn't work, see above)
 - `examples/complex_rust_example/` - Another Rust example (also doesn't work, but with more files!)
 
@@ -75,7 +78,7 @@ Instead of YAML or JSON (because life's too short for that), build files are Lua
 local c = require("@prelude/c/c.lua")
 
 c.binary({
-    name = "my_app", 
+    name = "my_app",
     srcs = forge.fs.glob("src/**/*.c"),
     compiler = "gcc",
     flags = { "-O2", "-Wall" },
@@ -88,7 +91,7 @@ Plus, you get access to a bunch of built-in APIs for when your build scripts ine
 -- Get stuff from the internet
 local content = forge.http.get("https://api.github.com/repos/SimaoMoreira5228/forge")
 
--- Parse some JSON while you're at it 
+-- Parse some JSON while you're at it
 local data = forge.parse.json(content.body)
 
 -- Check if versions make sense
@@ -114,7 +117,7 @@ c.binary({
     name = "app",
     targets = {
         gcc_debug = { compiler = "gcc" },
-        clang_debug = { compiler = "clang" },  
+        clang_debug = { compiler = "clang" },
         zig_debug = { compiler = "zig" },
     },
     srcs = forge.fs.glob("src/**/*.c"),
@@ -150,7 +153,7 @@ Plus, existing build tools are either too simple (make) or too complex (Bazel). 
 
 ```
 forge-out/
-├── cas/                    # Content-addressed storage  
+├── cas/                    # Content-addressed storage
 │   └── <hash>/            # Cached build artifacts
 ├── cache.json             # Build metadata
 └── <target>/              # Target-specific outputs
@@ -171,6 +174,21 @@ forge run                                            # Build and run (if binary)
 forge run --target <target>                         # Run specific target
 forge run --component <component>                    # Run specific component
 
+# Test commands
+forge test --target <target>                        # Run tests for specific target (required)
+forge test --target <target> --component <component> # Test specific component
+
+# Project setup commands
+forge init                                          # Initialize a new forge project
+forge init --name <name>                            # Initialize with custom name
+forge init --force                                  # Force overwrite existing FORGE_ROOT
+forge migrate                                       # Migrate existing project to FORGE_ROOT format
+forge migrate --force                               # Force overwrite during migration
+
+# Development commands
+forge types                                         # Generate Lua type definitions (types.lua)
+forge types --output <path>                         # Generate types to custom path
+
 # Other commands
 forge clean                                          # Delete forge-out/
 
@@ -181,6 +199,7 @@ forge build --component math_utils                  # Build only the math_utils 
 forge build --component calc                        # Build calc binary and its dependency
 forge build --target linux_x64_debug                # Build all components for linux_x64_debug target
 forge build --component calc --target linux_x64     # Build calc component for linux_x64 target only
+forge test --target linux_x64_debug                 # Run all tests for debug target
 ```
 
 ## What I Learned
