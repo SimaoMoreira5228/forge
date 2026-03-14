@@ -161,10 +161,6 @@ function M.define_executable_rules_for_target(executable_info, target_name, targ
 end
 
 function M.define_library_rules_for_target(library_info, target_name, target_config)
-	if not build_common.should_target_be_built(target_name) then
-		return
-	end
-
 	local library_path = library_info.path or forge.project.root
 	local target = target_config.target or common.get_host_target()
 	local build_mode = target_config.mode or "Debug"

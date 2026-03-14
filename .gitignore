@@ -2,5 +2,5 @@
 **/forge-out
 .vscode/
 temp/
-ignore/
+local/
 .zed/

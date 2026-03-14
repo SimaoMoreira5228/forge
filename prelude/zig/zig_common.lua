@@ -1,9 +1,13 @@
 local compiler_common = require("@prelude/compiler_common.lua")
-local target_common = require("@prelude/target_common.lua")
 
 local M = {}
 
-M.predefined_targets = target_common.get_predefined_targets()
+local targets_list = forge.target:list()
+local predefined = {}
+for _, t in ipairs(targets_list) do
+	predefined[t.name] = t
+end
+M.predefined_targets = predefined
 
 M.build_modes = {
 	Debug = "Debug",
@@ -15,31 +19,19 @@ M.build_modes = {
 M.get_host_target = compiler_common.get_host_target
 M.get_zig_target_string = compiler_common.get_zig_target_string
 M.resolve_includes = compiler_common.resolve_includes
+M.resolve_sources = compiler_common.resolve_sources
 
 function M.get_target_directory(target_name, variant_name)
-	return target_common.get_target_directory(target_name, variant_name)
-end
-
-function M.resolve_sources(sources, base_path)
-	local resolved = {}
-	base_path = base_path or forge.project.root
-
-	for _, src in ipairs(sources) do
-		if type(src) == "string" then
-			if src:match("%*") then
-				local pattern = forge.path.join({ base_path, src })
-				local files = forge.fs.glob(pattern)
-				for _, file in ipairs(files) do
-					table.insert(resolved, file)
-				end
-			else
-				local full_path = forge.path.join({ base_path, src })
-				table.insert(resolved, full_path)
-			end
-		end
+	if variant_name then
+		return variant_name
 	end
-
-	return resolved
+	
+	local resolved = forge.target:resolve(target_name)
+	if resolved and resolved.triple then
+		return resolved.triple
+	end
+	
+	return target_name
 end
 
 function M.validate_build_mode(mode)

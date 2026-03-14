@@ -518,7 +518,18 @@ impl Project {
 			rule_ref.value().workdir
 		);
 
-		let output = cmd.output()?;
+		let output = match cmd.output() {
+			Ok(o) => o,
+			Err(e) => {
+				if e.kind() == std::io::ErrorKind::NotFound {
+					return Err(ForgeError::BuildFailed {
+						rule: rule_name.to_string(),
+						error: format!("Command not found: '{}'. Is it installed?", rule_ref.value().command),
+					});
+				}
+				return Err(e).context(format!("Failed to execute command: {}", rule_ref.value().command))?;
+			}
+		};
 
 		if !output.status.success() {
 			let stderr = String::from_utf8_lossy(&output.stderr);

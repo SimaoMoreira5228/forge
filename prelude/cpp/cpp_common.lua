@@ -1,9 +1,13 @@
 local compiler_common = require("@prelude/compiler_common.lua")
-local target_common = require("@prelude/target_common.lua")
 
 local M = {}
 
-M.predefined_targets = target_common.get_predefined_targets()
+local targets_list = forge.target:list()
+local predefined = {}
+for _, t in ipairs(targets_list) do
+	predefined[t.name] = t
+end
+M.predefined_targets = predefined
 
 M.compilers = {
 	gcc = "g++",

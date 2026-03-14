@@ -18,11 +18,13 @@ env_logger = "0.11"
 flate2 = "1.1"
 forge-macros = { path = "./forge-macros" }
 glob = "0.3"
+globset = "0.4"
 ignore = "0.4"
 log = { version = "0.4", features = ["serde"] }
 lz4 = "1.24"
 mlua = { version = "0.11", features = ["lua54", "serde", "anyhow", "userdata-wrappers", "vendored", "send"] }
 num_cpus = "1.16"
+petgraph = "0.7"
 proc-macro2 = "1.0"
 quote = "1.0"
 rayon = "1.11"

@@ -9,10 +9,6 @@ local to_absolute_path = compiler_common.to_absolute_path
 local ensure_dir = compiler_common.ensure_dir
 
 function M.define_program_rules_for_target(program_info, target_name, target_config)
-	if not build_common.should_build_component(program_info.name, target_name, program_info.dependencies) then
-		return
-	end
-
 	local program_path = program_info.path or forge.project.root
 	local target = target_config.target or common.get_host_target()
 	local compiler_name = target_config.compiler or "gcc"
@@ -177,10 +173,6 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 end
 
 function M.define_library_rules_for_target(library_info, target_name, target_config)
-	if not build_common.should_target_be_built(target_name) then
-		return
-	end
-
 	local library_path = library_info.path or forge.project.root
 	local target = target_config.target or common.get_host_target()
 	local compiler_name = target_config.compiler or "gcc"

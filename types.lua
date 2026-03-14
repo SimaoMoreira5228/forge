@@ -240,6 +240,67 @@
 
 ---@type Project
 
+---@class Graph
+---@field create fun(project_root: any): any
+--- Register a target platform for builds
+---@field target fun(tbl: any): any
+--- Define a library component
+---@field library fun(tbl: any): any
+--- Define a binary component (executable)
+---@field binary fun(tbl: any): any
+--- Define a custom component with arbitrary command
+---@field custom fun(tbl: any): any
+--- Get total component count
+---@field component_count fun(): number
+--- Get target count
+---@field target_count fun(): number
+--- Get components in topological order (dependency order)
+---@field topological_order fun(): any
+--- Get components grouped by parallel execution batches
+---@field execution_batches fun(): any
+--- Get direct dependencies of a component
+---@field dependencies_of fun(name: string, target: string): string[]
+--- Get all transitive dependencies of a component
+---@field transitive_deps fun(name: string, target: string): string[]
+--- Find dependency cycles in the graph, returns empty table if none found
+---@field find_cycles fun(): any
+
+---@type Graph
+
+---@class Target
+---@field create fun(): any
+--- List all available predefined targets
+---@field list fun(): any
+--- Resolve a target by name, returns table with target info or nil if not found
+---@field resolve fun(name: string): any
+--- Get canonical triple string for a target name
+---@field canonical_triple fun(name: string): string?
+--- Get the host target definition
+---@field host fun(): any
+--- Get output directory for a target
+---@field output_dir fun(args: any): any
+
+---@type Target
+
+---@class Source
+---@field create fun(project_root: any): any
+--- Find files matching glob pattern
+---@field glob fun(pattern: string): any
+--- Find files recursively matching pattern
+---@field glob_recursive fun(args: any): any
+--- Resolve source file patterns to absolute paths
+---@field resolve fun(args: any): any
+--- Resolve include directories
+---@field includes fun(args: any): any
+--- Convert path to absolute
+---@field absolute fun(path: string): string
+--- Get path relative to project root
+---@field relative fun(path: string): string
+--- Get project root path
+---@field root fun(): string
+
+---@type Source
+
 ---@class Forge
 ---@field config table Configuration table
 ---@field fs Fs File system operations (all paths must be absolute)
@@ -255,6 +316,9 @@
 ---@field log Log Logging operations
 ---@field table Table Table operations
 ---@field project Project Project context and utilities
+---@field graph ForgeGraph Build graph operations
+---@field target ForgeTarget Target resolution and management
+---@field source ForgeSource Source file resolution
 ---@field rule fun(rule: table): nil Add a build rule
 ---@field sleep fun(seconds: number): nil Sleep for specified seconds
 

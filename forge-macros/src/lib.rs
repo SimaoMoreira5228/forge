@@ -288,13 +288,13 @@ fn generate_create_table_function(api_name: &str, functions: &[LuaFunction], typ
 					} else if args_without_self.len() == 1 {
 						let (name, _) = &args_without_self[0];
 						let arg_ident = Ident::new(name, Span::call_site());
-						quote! { lua, #arg_ident }
+						quote! { #arg_ident, lua }
 					} else {
 						let args: Vec<_> = args_without_self
 							.iter()
 							.map(|(name, _)| Ident::new(name, Span::call_site()))
 							.collect();
-						quote! { lua, #(#args),* }
+						quote! { #(#args),*, lua }
 					}
 				} else {
 					if args_without_self.is_empty() {

@@ -25,6 +25,18 @@ pub fn setup_lua_environment(lua: &Lua, project: &Project) -> Result<(), ForgeEr
 	forge_table.set("table", lua_api::table::create_table_table(lua)?)?;
 	forge_table.set("project", lua_api::project::create_project_table(lua, project_path.clone())?)?;
 
+	let graph_api = lua_api::graph::GraphApi::new(project.path.clone());
+	let graph_table = graph_api.create_graph_table(lua)?;
+	forge_table.set("graph", graph_table)?;
+
+	let target_api = lua_api::target::TargetApi::new();
+	let target_table = target_api.create_target_table(lua)?;
+	forge_table.set("target", target_table)?;
+
+	let source_api = lua_api::source::SourceApi::new(project.path.clone());
+	let source_table = source_api.create_source_table(lua)?;
+	forge_table.set("source", source_table)?;
+
 	let prelude_path = project.path.join("prelude");
 
 	let build_graph = project.build_graph.clone();
@@ -145,6 +157,12 @@ pub fn generate_types_lua() -> String {
 	types.push('\n');
 	types.push_str(lua_api::project::ProjectApi::project_lua_type_definitions());
 	types.push('\n');
+	types.push_str(lua_api::graph::GraphApi::graph_lua_type_definitions());
+	types.push('\n');
+	types.push_str(lua_api::target::TargetApi::target_lua_type_definitions());
+	types.push('\n');
+	types.push_str(lua_api::source::SourceApi::source_lua_type_definitions());
+	types.push('\n');
 
 	types.push_str("---@class Forge\n");
 	types.push_str("---@field config table Configuration table\n");
@@ -161,6 +179,9 @@ pub fn generate_types_lua() -> String {
 	types.push_str("---@field log Log Logging operations\n");
 	types.push_str("---@field table Table Table operations\n");
 	types.push_str("---@field project Project Project context and utilities\n");
+	types.push_str("---@field graph ForgeGraph Build graph operations\n");
+	types.push_str("---@field target ForgeTarget Target resolution and management\n");
+	types.push_str("---@field source ForgeSource Source file resolution\n");
 	types.push_str("---@field rule fun(rule: table): nil Add a build rule\n");
 	types.push_str("---@field sleep fun(seconds: number): nil Sleep for specified seconds\n");
 	types.push('\n');

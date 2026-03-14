@@ -6,8 +6,11 @@ mod cache;
 mod config;
 mod error;
 mod forge_root_config;
+mod graph;
 mod lua_api;
 mod project;
+mod source;
+mod target;
 
 use std::process::Command;
 
@@ -117,9 +120,10 @@ fn main() -> Result<()> {
 			println!("\nBuild completed successfully!");
 		}
 		Some(Commands::Run { target, component }) => {
+			let target_filters = target.iter().cloned().collect();
 			let config = config::Config {
 				verbosity: config::VerbosityWrapper(cli.verbose),
-				target_filters: vec![],
+				target_filters,
 				component_filters: if let Some(ref comp) = component {
 					vec![comp.clone()]
 				} else {
@@ -127,8 +131,6 @@ fn main() -> Result<()> {
 				},
 				test_mode: false,
 			};
-
-			log::info!("Building and running project at: {}", project_path.display());
 
 			let mut project = project::Project::new(project_path.clone(), config)?;
 			project.run()?;

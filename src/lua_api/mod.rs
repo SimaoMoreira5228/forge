@@ -1,5 +1,6 @@
 mod exec;
 mod fs;
+pub mod graph;
 mod hash;
 mod http;
 pub mod init;
@@ -9,6 +10,8 @@ mod path;
 mod platform;
 mod project;
 mod semver;
+mod source;
 mod string;
 mod table;
+mod target;
 mod time;

@@ -45,8 +45,8 @@ M.optimization_levels = {
 		level = "z",
 		description = "Aggressively optimize for size",
 		rust_flags = { "-C", "opt-level=z" },
-		c_flags = { "-Oz" }, -- Clang only
-		cpp_flags = { "-Oz" }, -- Clang only
+		c_flags = { "-Oz" },
+		cpp_flags = { "-Oz" },
 		zig_mode = "ReleaseSmall",
 	},
 }
@@ -236,73 +236,6 @@ M.source_patterns = {
 
 function M.get_source_patterns(language)
 	return M.source_patterns[language] or {}
-end
-
-local requested_components_by_target = nil
-
-function M.should_target_be_built(target_name)
-	if forge.config.target_filters and forge.table.length(forge.config.target_filters) > 0 then
-		for _, filter in ipairs(forge.config.target_filters) do
-			if filter == target_name then
-				return true
-			end
-		end
-		return false
-	end
-
-	return true
-end
-
-function M.should_build_component(component_name, target_name, dependencies)
-	if forge.config.target_filters and forge.table.length(forge.config.target_filters) > 0 then
-		local should_build = false
-		for _, filter in ipairs(forge.config.target_filters) do
-			if filter == target_name then
-				should_build = true
-				break
-			end
-		end
-		if not should_build then
-			return false
-		end
-	end
-
-	if not forge.config.component_filters or forge.table.length(forge.config.component_filters) == 0 then
-		return true
-	end
-
-	if not requested_components_by_target then
-		requested_components_by_target = {}
-	end
-
-	if not requested_components_by_target[target_name] then
-		requested_components_by_target[target_name] = {}
-		for _, filter in ipairs(forge.config.component_filters) do
-			requested_components_by_target[target_name][filter] = true
-		end
-	end
-
-	local requested_for_target = requested_components_by_target[target_name]
-
-	if requested_for_target[component_name] then
-		if dependencies then
-			for dep_name, _ in pairs(dependencies) do
-				if not requested_for_target[dep_name] then
-					requested_for_target[dep_name] = true
-					forge.log.debug(
-						("Component '%s' depends on '%s' for target '%s', adding to build set"):format(
-							component_name,
-							dep_name,
-							target_name
-						)
-					)
-				end
-			end
-		end
-		return true
-	end
-
-	return false
 end
 
 return M
