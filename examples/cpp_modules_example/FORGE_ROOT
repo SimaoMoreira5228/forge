@@ -1,0 +1,10 @@
+[project]
+name = "cpp_modules_example"
+version = "0.1.0"
+
+[discovery]
+include = ["."]
+
+[toolchain.clang]
+from = "version"
+version = "19.1.7"

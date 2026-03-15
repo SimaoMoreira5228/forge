@@ -1,7 +1,7 @@
 local M = {}
 
 local function load_targets()
-	local targets_list = forge.target:list()
+	local targets_list = forge.target.list()
 	local predefined = {}
 	for _, t in ipairs(targets_list) do
 		predefined[t.name] = t
@@ -14,7 +14,7 @@ M.canonical_targets = load_targets()
 function M.get_target_directory(target_name, variant_name)
 	local target_info = M.canonical_targets[target_name]
 	if not target_info then
-		local resolved = forge.target:resolve(target_name)
+		local resolved = forge.target.resolve(target_name)
 		if not resolved then
 			error(("Unknown target: %s"):format(target_name))
 		end
@@ -46,13 +46,13 @@ function M.extract_base_target(variant_name)
 end
 
 function M.get_target_info(target_name)
-	return M.canonical_targets[target_name] or forge.target:resolve(target_name)
+	return M.canonical_targets[target_name] or forge.target.resolve(target_name)
 end
 
 function M.get_canonical_triple(target_name)
 	local target_info = M.canonical_targets[target_name]
 	if not target_info then
-		local resolved = forge.target:resolve(target_name)
+		local resolved = forge.target.resolve(target_name)
 		if not resolved then
 			error(("Unknown target: %s"):format(target_name))
 		end
@@ -64,7 +64,7 @@ end
 function M.get_structured_target(target_name)
 	local target_info = M.canonical_targets[target_name]
 	if not target_info then
-		local resolved = forge.target:resolve(target_name)
+		local resolved = forge.target.resolve(target_name)
 		if not resolved then
 			error(("Unknown target: %s"):format(target_name))
 		end
@@ -99,7 +99,7 @@ end
 
 function M.validate_target(target_name)
 	if not M.canonical_targets[target_name] then
-		local resolved = forge.target:resolve(target_name)
+		local resolved = forge.target.resolve(target_name)
 		if not resolved then
 			local available = M.get_available_targets()
 			error(("Unknown target '%s'. Available targets: %s"):format(target_name, table.concat(available, ", ")))

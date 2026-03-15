@@ -17,9 +17,12 @@ dirs = "6.0"
 env_logger = "0.11"
 flate2 = "1.1"
 forge-macros = { path = "./forge-macros" }
+futures-util = "0.3"
 glob = "0.3"
 globset = "0.4"
 ignore = "0.4"
+indicatif = "0.18"
+lazy_static = "1.4"
 log = { version = "0.4", features = ["serde"] }
 lz4 = "1.24"
 mlua = { version = "0.11", features = ["lua54", "serde", "anyhow", "userdata-wrappers", "vendored", "send"] }
@@ -28,17 +31,21 @@ petgraph = "0.8"
 proc-macro2 = "1.0"
 quote = "1.0"
 rayon = "1.11"
-rusqlite = { version = "0.38", features = ["bundled"] }
+reqwest = { version = "0.13", features = ["stream", "multipart", "blocking"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
 semver = { version = "1.0", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+sonic-rs = "0.5"
 syn = { version = "2.0", features = ["full"] }
 tar = "0.4"
+tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 toml = "0.9"
 ureq = { version = "3", features = ["json"] }
 uuid = { version = "1", features = ["v4"] }
 walkdir = "2.5"
+xz2 = "0.1"
 zip = "8"

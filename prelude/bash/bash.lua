@@ -4,6 +4,13 @@ local M = {}
 
 local to_absolute_path = compiler_common.to_absolute_path
 
+local function ensure_non_empty_inputs(inputs)
+	if #inputs > 0 then
+		return inputs
+	end
+	return { forge.path.join({ forge.project.root, "FORGE" }) }
+end
+
 function M.run_script(config)
 	if not config.name then
 		error("Script configuration must include a 'name' field")
@@ -37,6 +44,7 @@ function M.run_script(config)
 			table.insert(inputs, abs_input)
 		end
 	end
+	inputs = ensure_non_empty_inputs(inputs)
 
 	local outputs = {}
 	if config.outputs then
@@ -94,6 +102,7 @@ function M.run_command(config)
 			table.insert(inputs, abs_input)
 		end
 	end
+	inputs = ensure_non_empty_inputs(inputs)
 
 	local outputs = {}
 	if config.outputs then
@@ -146,6 +155,7 @@ function M.run_inline(config)
 			table.insert(inputs, abs_input)
 		end
 	end
+	inputs = ensure_non_empty_inputs(inputs)
 
 	local outputs = {}
 	if config.outputs then

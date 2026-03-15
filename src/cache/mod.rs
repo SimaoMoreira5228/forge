@@ -2,9 +2,8 @@ mod db;
 mod gc;
 mod hasher;
 
-pub use db::{CacheDb, CacheStats};
+pub use db::CacheDb;
 pub use gc::{CacheGC, GCResult};
-pub use hasher::SmartHasher;
 
 pub type Result<T> = std::result::Result<T, Error>;
 

@@ -26,7 +26,7 @@ function M.get_target_directory(target_name, variant_name)
 		return variant_name
 	end
 	
-	local resolved = forge.target:resolve(target_name)
+	local resolved = forge.target.resolve(target_name)
 	if resolved and resolved.triple then
 		return resolved.triple
 	end

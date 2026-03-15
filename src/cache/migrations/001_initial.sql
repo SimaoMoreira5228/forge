@@ -24,6 +24,12 @@ CREATE TABLE IF NOT EXISTS files (
     FOREIGN KEY(artifact_id) REFERENCES artifacts(id)
 );
 
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    applied_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_artifacts_hash ON artifacts(hash);
 CREATE INDEX IF NOT EXISTS idx_rules_name ON rules(name);
 CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);

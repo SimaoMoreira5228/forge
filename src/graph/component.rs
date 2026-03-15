@@ -26,7 +26,7 @@ pub enum LinkType {
 	Dynamic,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ComponentType {
 	Library {
 		link_type: LinkType,
@@ -39,6 +39,33 @@ pub enum ComponentType {
 		command: String,
 		args: Vec<String>,
 	},
+	Test {
+		test_kind: TestKind,
+		executable: Option<PathBuf>,
+		command: Option<Vec<String>>,
+		args: Vec<String>,
+		data: Vec<PathBuf>,
+		env: HashMap<String, String>,
+		timeout_secs: u64,
+		size: TestSize,
+		tags: Vec<String>,
+	},
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum TestKind {
+	#[default]
+	Unit,
+	Integration,
+	E2E,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum TestSize {
+	#[default]
+	Small,
+	Medium,
+	Large,
 }
 
 impl ComponentType {
@@ -52,6 +79,14 @@ impl ComponentType {
 
 	pub fn is_module(&self) -> bool {
 		matches!(self, ComponentType::Module { .. })
+	}
+
+	pub fn is_test(&self) -> bool {
+		matches!(self, ComponentType::Test { .. })
+	}
+
+	pub fn is_custom(&self) -> bool {
+		matches!(self, ComponentType::Custom { .. })
 	}
 }
 
@@ -161,6 +196,27 @@ impl Component {
 	pub fn custom(name: impl Into<String>, target_name: impl Into<String>, command: String, args: Vec<String>) -> Self {
 		let mut component = Self::new(name, target_name);
 		component.component_type = ComponentType::Custom { command, args };
+		component
+	}
+
+	pub fn test(
+		name: impl Into<String>,
+		target_name: impl Into<String>,
+		executable: Option<PathBuf>,
+		command: Option<Vec<String>>,
+	) -> Self {
+		let mut component = Self::new(name, target_name);
+		component.component_type = ComponentType::Test {
+			test_kind: TestKind::Unit,
+			executable,
+			command,
+			args: Vec::new(),
+			data: Vec::new(),
+			env: HashMap::new(),
+			timeout_secs: 300,
+			size: TestSize::Small,
+			tags: Vec::new(),
+		};
 		component
 	}
 

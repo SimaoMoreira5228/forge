@@ -1,6 +1,6 @@
 mod manager;
 
-pub use manager::{Dependency, Package, PackageManager, PackageSource};
+pub use manager::{Dependency, Package, PackageManager};
 
 pub type Result<T> = std::result::Result<T, Error>;
 

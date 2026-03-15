@@ -238,4 +238,37 @@ function M.get_source_patterns(language)
 	return M.source_patterns[language] or {}
 end
 
+local function has_value(list, value)
+	if not list then
+		return false
+	end
+	for _, item in ipairs(list) do
+		if item == value then
+			return true
+		end
+	end
+	return false
+end
+
+function M.should_build_target(target_name)
+	local filters = forge.config and forge.config.target_filters or nil
+	if not filters or #filters == 0 then
+		return true
+	end
+	return has_value(filters, target_name)
+end
+
+function M.should_build_component(component_name, target_name, _dependencies)
+	local component_filters = forge.config and forge.config.component_filters or nil
+	if component_filters and #component_filters > 0 and not has_value(component_filters, component_name) then
+		return false
+	end
+
+	if target_name then
+		return M.should_build_target(target_name)
+	end
+
+	return true
+end
+
 return M

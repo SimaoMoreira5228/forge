@@ -1,4 +1,5 @@
 local build_common = require("@prelude/build_common.lua")
+local compiler_common = require("@prelude/compiler_common.lua")
 
 local M = {}
 
@@ -45,7 +46,9 @@ function M.build_for_target(tbl, target_name, target_config)
 		project_root = forge.path.join({ forge.project.root, project_root })
 	end
 
-	local make_command = tbl.make_command or "make"
+	local make_command = tbl.make_command
+		or compiler_common.get_configured_tool_binary("make", "make", target_config.target)
+		or "make"
 	local makefile = tbl.makefile or "Makefile"
 	local makefile_path = to_absolute_path(makefile, project_root)
 
@@ -137,7 +140,7 @@ function M.clean(tbl)
 		project_root = forge.path.join({ forge.project.root, project_root })
 	end
 
-	local make_command = tbl.make_command or "make"
+	local make_command = tbl.make_command or compiler_common.get_configured_tool_binary("make", "make") or "make"
 	local makefile = tbl.makefile or "Makefile"
 	local makefile_path = to_absolute_path(makefile, project_root)
 

@@ -1,6 +1,6 @@
 use crate::graph::{BuildGraph, Component, ComponentRef, DependencyEdge, Target};
 use forge_macros::lua_api;
-use mlua::{AnyUserData, Lua, Result, Table, UserData, UserDataMethods, Value};
+use mlua::{Lua, Result, Table, UserData, UserDataMethods, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -308,7 +308,7 @@ fn infer_triple_from_name(name: &str) -> String {
 	}
 }
 
-pub fn create_graph_table(lua: &Lua, project_root: PathBuf) -> Result<AnyUserData> {
+pub fn create_graph_table(lua: &Lua, project_root: PathBuf) -> Result<Table> {
 	let api = GraphApi::new(project_root);
-	lua.create_userdata(api)
+	api.create_graph_table(lua)
 }

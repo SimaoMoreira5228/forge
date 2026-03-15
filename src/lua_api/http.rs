@@ -2,6 +2,7 @@ use crate::error::ForgeError;
 use crate::lua_api::fs::extract_archive;
 use blake3::Hasher as Blake3Hasher;
 use forge_macros::lua_api;
+use indicatif::{ProgressBar, ProgressStyle};
 use mlua::{FromLua, Lua, LuaSerdeExt, Result, Table, UserData, UserDataMethods, Value};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -141,6 +142,7 @@ impl HttpApi {
 		let cache_dir = get_cache_dir()?;
 		let filename = request
 			.cache_key
+			.clone()
 			.unwrap_or_else(|| request.url.split('/').next_back().unwrap_or("download").to_string());
 		let cache_path = cache_dir.join(&filename);
 
@@ -178,11 +180,14 @@ impl HttpApi {
 			)));
 		}
 
-		let mut data = Vec::new();
-		response
-			.body_mut()
-			.as_reader()
-			.read_to_end(&mut data)
+		let display_name = filename.clone();
+		let total_size = response
+			.headers()
+			.get("content-length")
+			.and_then(|v| v.to_str().ok())
+			.and_then(|s| s.parse::<u64>().ok());
+
+		let data = download_with_progress(response.body_mut().as_reader(), total_size, &display_name)
 			.map_err(|e| mlua::Error::RuntimeError(format!("Failed to read response: {}", e)))?;
 
 		verify_hash(&data, request.blake3, request.sha256, &request.url)?;
@@ -208,6 +213,44 @@ fn get_cache_dir() -> Result<PathBuf> {
 	let cache_dir = home.join(".forge").join("downloads");
 	fs::create_dir_all(&cache_dir).map_err(mlua::Error::external)?;
 	Ok(cache_dir)
+}
+
+fn download_with_progress(mut reader: impl Read, total_size: Option<u64>, name: &str) -> std::io::Result<Vec<u8>> {
+	let progress = match total_size {
+		Some(size) if size > 0 => {
+			let pb = ProgressBar::new(size);
+			if let Ok(style) = ProgressStyle::with_template(
+				"{msg:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({percent}%) {eta}",
+			) {
+				pb.set_style(style.progress_chars("=> "));
+			}
+			pb
+		}
+		_ => {
+			let pb = ProgressBar::new_spinner();
+			pb.enable_steady_tick(std::time::Duration::from_millis(80));
+			if let Ok(style) = ProgressStyle::with_template("{msg:.green} {spinner} {bytes}") {
+				pb.set_style(style.tick_chars("|/-\\"));
+			}
+			pb
+		}
+	};
+
+	progress.set_message(format!("Downloading {}", name));
+
+	let mut out = Vec::new();
+	let mut buffer = [0u8; 64 * 1024];
+	loop {
+		let read = reader.read(&mut buffer)?;
+		if read == 0 {
+			break;
+		}
+		out.extend_from_slice(&buffer[..read]);
+		progress.inc(read as u64);
+	}
+
+	progress.finish_with_message(format!("Downloaded {}", name));
+	Ok(out)
 }
 
 fn verify_hash(data: &[u8], blake3: Option<String>, sha256: Option<String>, url: &str) -> Result<()> {

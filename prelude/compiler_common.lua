@@ -1,16 +1,80 @@
 local M = {}
+local toolchain_core = require("@prelude/toolchains/init.lua")
+
+local function target_to_key(target)
+	local target_info = target
+	if type(target_info) == "string" then
+		target_info = forge.target.resolve(target_info)
+	end
+
+	if type(target_info) ~= "table" then
+		return nil
+	end
+
+	local os_name = target_info.os
+	if os_name == "macos" then
+		os_name = "darwin"
+	end
+
+	if not os_name or not target_info.arch then
+		return nil
+	end
+
+	return os_name .. "-" .. target_info.arch
+end
+
+local function resolve_configured_compiler(toolchain_name, is_cpp, target)
+	local target_key = target_to_key(target)
+	local ok, resolved = pcall(toolchain_core.resolve_compiler, toolchain_name, { target_key = target_key })
+	if not ok or not resolved then
+		return nil
+	end
+
+	local candidate = is_cpp and resolved.cpp or resolved.c
+	if candidate and forge.fs.exists(candidate) then
+		return candidate
+	end
+
+	return nil
+end
+
+function M.get_configured_compiler(toolchain_name, is_cpp, target)
+	return resolve_configured_compiler(toolchain_name, is_cpp, target)
+end
+
+function M.get_configured_tool_binary(toolchain_name, executable, target)
+	local target_key = target_to_key(target)
+	local ok, info = pcall(toolchain_core.sync, toolchain_name, { target_key = target_key })
+	if not ok or not info then
+		return nil
+	end
+
+	local direct = info[executable]
+	if direct and forge.fs.exists(direct) then
+		return direct
+	end
+
+	if info.bin_dir then
+		local candidate = forge.path.join({ info.bin_dir, executable })
+		if forge.fs.exists(candidate) then
+			return candidate
+		end
+	end
+
+	return nil
+end
 
 function M.get_host_target()
 	return forge.target:host()
 end
 
 function M.resolve_sources(sources, base_path)
-	local resolved = forge.source:resolve({ patterns = sources })
+	local resolved = forge.source.resolve({ patterns = sources })
 	return resolved
 end
 
 function M.resolve_includes(includes, base_path)
-	local resolved = forge.source:includes({ dirs = includes or {} })
+	local resolved = forge.source.includes({ dirs = includes or {} })
 	return resolved
 end
 
@@ -19,7 +83,7 @@ function M.get_target_triple_string(target)
 		return target.triple
 	end
 	if type(target) == "string" then
-		local resolved = forge.target:resolve(target)
+		local resolved = forge.target.resolve(target)
 		if resolved and resolved.triple then
 			return resolved.triple
 		end
@@ -41,6 +105,11 @@ function M.ensure_dir(path)
 end
 
 function M.get_gcc_cross_compiler(target, is_cpp)
+	local configured = resolve_configured_compiler("gcc", is_cpp, target)
+	if configured then
+		return configured
+	end
+
 	local host_target = forge.target:host()
 	local gcc_cmd = is_cpp and "g++" or "gcc"
 
@@ -63,7 +132,7 @@ function M.get_gcc_cross_compiler(target, is_cpp)
 end
 
 function M.get_zig_target_string(target)
-	local target_info = type(target) == "table" and target or (forge.target:resolve(target) or {})
+	local target_info = type(target) == "table" and target or (forge.target.resolve(target) or {})
 	local arch = target_info.arch or "x86_64"
 	local os = target_info.os or "linux"
 	local abi = target_info.abi or "gnu"
@@ -102,8 +171,8 @@ end
 
 function M.is_native_target(target)
 	local host_target = forge.target:host()
-	local target_info = type(target) == "table" and target or (forge.target:resolve(target) or {})
-	
+	local target_info = type(target) == "table" and target or (forge.target.resolve(target) or {})
+
 	return target_info.arch == host_target.arch
 		and target_info.os == host_target.os
 		and (target_info.abi == host_target.abi or not target_info.abi)

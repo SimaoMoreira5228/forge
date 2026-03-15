@@ -1,6 +1,6 @@
 use crate::target::{TargetDefinition, TargetResolver};
 use forge_macros::lua_api;
-use mlua::{AnyUserData, Lua, Result, Table, UserData, UserDataMethods};
+use mlua::{Lua, Result, Table, UserData, UserDataMethods};
 
 #[derive(Clone)]
 pub struct TargetApi {
@@ -95,7 +95,7 @@ impl TargetApi {
 	}
 }
 
-pub fn create_target_table(lua: &Lua) -> Result<AnyUserData> {
+pub fn create_target_table(lua: &Lua) -> Result<Table> {
 	let api = TargetApi::new();
-	lua.create_userdata(api)
+	api.create_target_table(lua)
 }

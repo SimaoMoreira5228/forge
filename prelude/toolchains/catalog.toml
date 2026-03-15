@@ -1,0 +1,112 @@
+[toolchains.clang]
+aliases = ["llvm"]
+default_version = "19.1.7"
+
+[toolchains.clang.targets.linux-x86_64]
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-Linux-X64.tar.xz"
+
+[toolchains.clang.targets.linux-aarch64]
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-Linux-ARM64.tar.xz"
+
+[toolchains.clang.targets.darwin-x86_64]
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-macOS.tar.xz"
+
+[toolchains.clang.targets.darwin-aarch64]
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-macOS-ARM64.tar.xz"
+
+[toolchains.clang.targets.windows-x86_64]
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-win64.exe.tar.xz"
+
+[toolchains.gcc]
+default_version = "14"
+[toolchains.gcc.version_aliases]
+"10" = "2021.11"
+"11" = "2022.08"
+"12" = "2024.02"
+"13" = "2024.05"
+"14" = "2025.08"
+
+[toolchains.gcc.targets.linux-x86_64]
+url = "https://toolchains.bootlin.com/downloads/releases/toolchains/x86-64/tarballs/x86-64--glibc--stable-{version}-1.tar.xz"
+
+[toolchains.gcc.targets.linux-aarch64]
+url = "https://toolchains.bootlin.com/downloads/releases/toolchains/aarch64/tarballs/aarch64--glibc--stable-{version}-1.tar.xz"
+
+[toolchains.gcc.targets.linux-armv7]
+url = "https://toolchains.bootlin.com/downloads/releases/toolchains/armv7-eabihf/tarballs/armv7-eabihf--glibc--stable-{version}-1.tar.xz"
+
+[toolchains.gcc.targets.linux-x86_64_v3]
+url = "https://toolchains.bootlin.com/downloads/releases/toolchains/x86-64-v3/tarballs/x86-64-v3--glibc--stable-{version}-1.tar.xz"
+
+[toolchains.gcc.targets.linux-x86_64_v4]
+url = "https://toolchains.bootlin.com/downloads/releases/toolchains/x86-64-v4/tarballs/x86-64-v4--glibc--stable-{version}-1.tar.xz"
+
+[toolchains.rust]
+default_version = "1.93.1"
+
+[toolchains.rust.targets.linux-x86_64]
+url = "https://static.rust-lang.org/dist/rust-{version}-x86_64-unknown-linux-gnu.tar.gz"
+
+[toolchains.rust.targets.darwin-x86_64]
+url = "https://static.rust-lang.org/dist/rust-{version}-x86_64-apple-darwin.tar.gz"
+
+[toolchains.rust.targets.darwin-aarch64]
+url = "https://static.rust-lang.org/dist/rust-{version}-aarch64-apple-darwin.tar.gz"
+
+[toolchains.rust.targets.windows-x86_64]
+url = "https://static.rust-lang.org/dist/rust-{version}-x86_64-pc-windows-msvc.tar.gz"
+
+[toolchains.zig]
+default_version = "0.13.0"
+
+[toolchains.zig.targets.linux-x86_64]
+url = "https://ziglang.org/download/{version}/zig-linux-x86_64-{version}.tar.xz"
+
+[toolchains.zig.targets.linux-aarch64]
+url = "https://ziglang.org/download/{version}/zig-linux-aarch64-{version}.tar.xz"
+
+[toolchains.zig.targets.darwin-x86_64]
+url = "https://ziglang.org/download/{version}/zig-macos-x86_64-{version}.tar.xz"
+
+[toolchains.zig.targets.darwin-aarch64]
+url = "https://ziglang.org/download/{version}/zig-macos-aarch64-{version}.tar.xz"
+
+[toolchains.zig.targets.windows-x86_64]
+url = "https://ziglang.org/download/{version}/zig-windows-x86_64-{version}.zip"
+
+[toolchains.cmake]
+default_version = "3.31.6"
+
+[toolchains.cmake.targets.linux-x86_64]
+url = "https://github.com/Kitware/CMake/releases/download/v{version}/cmake-{version}-linux-x86_64.tar.gz"
+
+[toolchains.cmake.targets.linux-aarch64]
+url = "https://github.com/Kitware/CMake/releases/download/v{version}/cmake-{version}-linux-aarch64.tar.gz"
+
+[toolchains.cmake.targets.darwin-x86_64]
+url = "https://github.com/Kitware/CMake/releases/download/v{version}/cmake-{version}-macos-universal.tar.gz"
+
+[toolchains.cmake.targets.darwin-aarch64]
+url = "https://github.com/Kitware/CMake/releases/download/v{version}/cmake-{version}-macos-universal.tar.gz"
+
+[toolchains.cmake.targets.windows-x86_64]
+url = "https://github.com/Kitware/CMake/releases/download/v{version}/cmake-{version}-windows-x86_64.zip"
+
+[toolchains.make]
+aliases = ["gmake", "gnu-make"]
+default_version = "4.4.1"
+
+[toolchains.make.targets.linux-x86_64]
+url = "https://ftp.gnu.org/gnu/make/make-{version}.tar.gz"
+
+[toolchains.make.targets.linux-aarch64]
+url = "https://ftp.gnu.org/gnu/make/make-{version}.tar.gz"
+
+[toolchains.make.targets.darwin-x86_64]
+url = "https://ftp.gnu.org/gnu/make/make-{version}.tar.gz"
+
+[toolchains.make.targets.darwin-aarch64]
+url = "https://ftp.gnu.org/gnu/make/make-{version}.tar.gz"
+
+[toolchains.make.targets.windows-x86_64]
+url = "https://ftp.gnu.org/gnu/make/make-{version}.tar.gz"

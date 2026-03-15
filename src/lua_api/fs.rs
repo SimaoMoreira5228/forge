@@ -229,6 +229,61 @@ impl FsApi {
 		Ok(())
 	}
 
+	/// Create symbolic link from source to destination (both paths must be absolute)
+	fn symlink(src: String, dest: String) -> mlua::Result<()> {
+		let src_path = validate_path(&src).map_err(mlua::Error::external)?;
+		let dest_path = validate_path(&dest).map_err(mlua::Error::external)?;
+
+		if !src_path.exists() {
+			return Err(mlua::Error::external(FsError::PathNotFound {
+				path: src_path.to_string_lossy().to_string(),
+			}));
+		}
+
+		if let Some(parent) = dest_path.parent() {
+			fs::create_dir_all(parent).map_err(|_| {
+				mlua::Error::external(FsError::PermissionDenied {
+					path: parent.to_string_lossy().to_string(),
+				})
+			})?;
+		}
+
+		if dest_path.exists() {
+			return Err(mlua::Error::external(FsError::InvalidPath {
+				path: dest_path.to_string_lossy().to_string(),
+				reason: "Destination already exists".to_string(),
+			}));
+		}
+
+		#[cfg(unix)]
+		{
+			std::os::unix::fs::symlink(&src_path, &dest_path).map_err(|_| {
+				mlua::Error::external(FsError::PermissionDenied {
+					path: dest_path.to_string_lossy().to_string(),
+				})
+			})?;
+		}
+
+		#[cfg(windows)]
+		{
+			if src_path.is_dir() {
+				std::os::windows::fs::symlink_dir(&src_path, &dest_path).map_err(|_| {
+					mlua::Error::external(FsError::PermissionDenied {
+						path: dest_path.to_string_lossy().to_string(),
+					})
+				})?;
+			} else {
+				std::os::windows::fs::symlink_file(&src_path, &dest_path).map_err(|_| {
+					mlua::Error::external(FsError::PermissionDenied {
+						path: dest_path.to_string_lossy().to_string(),
+					})
+				})?;
+			}
+		}
+
+		Ok(())
+	}
+
 	/// Remove file or empty directory (path must be absolute)
 	fn remove(path: String) -> mlua::Result<()> {
 		let path = validate_path(&path).map_err(mlua::Error::external)?;
@@ -370,6 +425,7 @@ pub fn extract_archive(archive_path: &Path, dest_path: &Path) -> Result<(), FsEr
 	use flate2::read::GzDecoder;
 	use std::fs::File;
 	use tar::Archive;
+	use xz2::read::XzDecoder;
 	use zip::ZipArchive;
 
 	std::fs::create_dir_all(dest_path).map_err(|_| FsError::PermissionDenied {
@@ -408,6 +464,19 @@ pub fn extract_archive(archive_path: &Path, dest_path: &Path) -> Result<(), FsEr
 		}
 		Some("tar") => {
 			let mut archive = Archive::new(file);
+			archive.unpack(dest_path).map_err(|e| FsError::ExtractionFailed {
+				archive: archive_path.to_string_lossy().to_string(),
+				reason: format!("Extraction error: {}", e),
+			})?;
+		}
+		Some("xz")
+			if archive_path
+				.file_name()
+				.and_then(|s| s.to_str())
+				.is_some_and(|s| s.contains(".tar.") || s.ends_with(".txz")) =>
+		{
+			let tar = XzDecoder::new(file);
+			let mut archive = Archive::new(tar);
 			archive.unpack(dest_path).map_err(|e| FsError::ExtractionFailed {
 				archive: archive_path.to_string_lossy().to_string(),
 				reason: format!("Extraction error: {}", e),

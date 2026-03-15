@@ -286,9 +286,18 @@ function M.define_library_rules_for_target(library_info, target_name, target_con
 		table.insert(ar_args, obj)
 	end
 
+	local ar_command = "ar"
+	if forge.path.is_absolute(compiler_info.command) then
+		local compiler_bin_dir = forge.path.dirname(compiler_info.command)
+		local candidate_ar = forge.path.join({ compiler_bin_dir, "ar" })
+		if forge.fs.exists(candidate_ar) then
+			ar_command = candidate_ar
+		end
+	end
+
 	forge.rule({
 		name = ("%s-lib-%s"):format(library_info.name, target_name),
-		command = "ar",
+		command = ar_command,
 		args = ar_args,
 		inputs = object_files,
 		outputs = { output_path },

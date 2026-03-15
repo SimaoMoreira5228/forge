@@ -19,6 +19,8 @@
 ---@field copy fun(src: string, dest: string): any
 --- Move/rename file from source to destination (both paths must be absolute)
 ---@field move_file fun(src: string, dest: string): any
+--- Create symbolic link from source to destination (both paths must be absolute)
+---@field symlink fun(src: string, dest: string): any
 --- Remove file or empty directory (path must be absolute)
 ---@field remove fun(path: string): any
 --- Remove directory and all its contents (path must be absolute)
@@ -49,14 +51,19 @@
 
 ---@type Http
 
----@class Parse
+---@class Json
 ---@field new fun(): any
---- Parse JSON string
----@field json fun(json_str: string): any
---- Parse TOML string
----@field toml fun(toml_str: string): any
+---@field encode fun(value: any): any
+---@field decode fun(json_str: string): any
 
----@type Parse
+---@type Json
+
+---@class Toml
+---@field new fun(): any
+---@field encode fun(value: any): any
+---@field decode fun(toml_str: string): any
+
+---@type Toml
 
 ---@class Exec
 ---@field new fun(): any
@@ -305,7 +312,8 @@
 ---@field config table Configuration table
 ---@field fs Fs File system operations (all paths must be absolute)
 ---@field http Http HTTP operations
----@field parse Parse Parsing operations
+---@field json Json JSON encoding and decoding operations
+---@field toml Toml TOML encoding and decoding operations
 ---@field exec Exec Command execution operations
 ---@field semver Semver Semantic versioning operations
 ---@field platform Platform Platform detection operations
@@ -316,9 +324,9 @@
 ---@field log Log Logging operations
 ---@field table Table Table operations
 ---@field project Project Project context and utilities
----@field graph ForgeGraph Build graph operations
----@field target ForgeTarget Target resolution and management
----@field source ForgeSource Source file resolution
+---@field graph Graph Build graph operations
+---@field target Target Target resolution and management
+---@field source Source Source file resolution
 ---@field rule fun(rule: table): nil Add a build rule
 ---@field sleep fun(seconds: number): nil Sleep for specified seconds
 

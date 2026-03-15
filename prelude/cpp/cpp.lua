@@ -1,4 +1,5 @@
 local common = require("@prelude/cpp/cpp_common.lua")
+local compiler = require("@prelude/cpp/cpp_compiler.lua")
 
 local M = {}
 
@@ -102,7 +103,7 @@ local function register_target(target_name, target_info)
 		triple = target_info.target
 	end
 
-	forge.graph:target {
+	forge.graph.target {
 		name = target_name,
 		triple = triple,
 	}
@@ -119,7 +120,7 @@ local function define_library_for_target(library_info, target_name, target_confi
 	local include_dirs = normalize_includes(library_info.includes, library_info.path)
 	local deps = normalize_deps(library_info.dependencies)
 
-	forge.graph:library {
+	forge.graph.library {
 		name = library_info.name,
 		target = target_name,
 		sources = sources,
@@ -128,6 +129,8 @@ local function define_library_for_target(library_info, target_name, target_confi
 		cflags = library_info.cxxflags,
 		deps = deps,
 	}
+
+	compiler.define_library_rules_for_target(library_info, target_name, target_config)
 end
 
 local function define_binary_for_target(binary_info, target_name, target_config)
@@ -141,7 +144,7 @@ local function define_binary_for_target(binary_info, target_name, target_config)
 	local include_dirs = normalize_includes(binary_info.includes, binary_info.path)
 	local deps = normalize_deps(binary_info.dependencies)
 
-	forge.graph:binary {
+	forge.graph.binary {
 		name = binary_info.name,
 		target = target_name,
 		sources = sources,
@@ -152,6 +155,8 @@ local function define_binary_for_target(binary_info, target_name, target_config)
 		system_libs = target_config.system_libs or binary_info.system_libs,
 		deps = deps,
 	}
+
+	compiler.define_program_rules_for_target(binary_info, target_name, target_config)
 end
 
 function M.library(tbl)
@@ -182,6 +187,8 @@ M.utils = {
 	get_host_target = common.get_host_target,
 	get_compiler_for_target = common.get_compiler_for_target,
 	validate_standard = common.validate_standard,
+	scan_modules = common.scan_modules,
+	has_modules = common.has_modules,
 }
 
 return M

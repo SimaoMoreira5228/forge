@@ -8,8 +8,103 @@ local M = {}
 local to_absolute_path = compiler_common.to_absolute_path
 local ensure_dir = compiler_common.ensure_dir
 
+function M.define_module_bmi_rules(sources, program_info, target_name, target_config, out_dir, compiler_info)
+	local program_path = program_info.path or forge.project.root
+	local include_dirs = program_info.includes or {}
+
+	local resolved_sources = sources
+
+	if not common.has_modules(resolved_sources) then
+		return {}
+	end
+
+	local module_info = common.scan_modules(resolved_sources, include_dirs)
+	local modules = module_info.modules
+
+	local bmi_rules = {}
+
+	for module_name, module_data in pairs(modules) do
+		local source_file = module_data.source_file
+		local bmi_name = module_name .. ".pcm"
+		local bmi_path = out_dir .. "/" .. bmi_name
+		local obj_name = module_name .. ".o"
+		local obj_path = out_dir .. "/" .. obj_name
+
+		local bmi_args = {}
+		for _, arg in ipairs(compiler_info.args) do
+			table.insert(bmi_args, arg)
+		end
+
+		table.insert(bmi_args, "-std=c++20")
+		table.insert(bmi_args, "-fmodules")
+		table.insert(bmi_args, "-c")
+		table.insert(bmi_args, "-Xclang")
+		table.insert(bmi_args, "-emit-module-interface")
+		table.insert(bmi_args, "-fmodule-name=" .. module_name)
+		table.insert(bmi_args, "-o")
+		table.insert(bmi_args, bmi_path)
+		table.insert(bmi_args, to_absolute_path(source_file, program_path))
+
+		for _, inc in ipairs(include_dirs) do
+			local resolved_inc = to_absolute_path(inc, program_path)
+			table.insert(bmi_args, "-I" .. resolved_inc)
+		end
+
+		local bmi_rule_name = ("%s-bmi-%s"):format(module_name, target_name)
+
+		forge.rule({
+			name = bmi_rule_name,
+			command = compiler_info.command,
+			args = bmi_args,
+			inputs = { source_file },
+			outputs = { bmi_path },
+		})
+
+		local obj_args = {}
+		for _, arg in ipairs(compiler_info.args) do
+			table.insert(obj_args, arg)
+		end
+
+		table.insert(obj_args, "-std=c++20")
+		table.insert(obj_args, "-fmodules")
+		table.insert(obj_args, "-c")
+		table.insert(obj_args, "-fmodule-name=" .. module_name)
+		table.insert(obj_args, "-o")
+		table.insert(obj_args, obj_path)
+		table.insert(obj_args, to_absolute_path(source_file, program_path))
+
+		for _, inc in ipairs(include_dirs) do
+			local resolved_inc = to_absolute_path(inc, program_path)
+			table.insert(obj_args, "-I" .. resolved_inc)
+		end
+
+		local obj_rule_name = ("%s-obj-%s"):format(module_name, target_name)
+
+		forge.rule({
+			name = obj_rule_name,
+			command = compiler_info.command,
+			args = obj_args,
+			inputs = { source_file },
+			outputs = { obj_path },
+			dependencies = { bmi_rule_name },
+		})
+
+		table.insert(bmi_rules, {
+			rule_name = bmi_rule_name,
+			obj_rule_name = obj_rule_name,
+			module_name = module_name,
+			bmi_path = bmi_path,
+			obj_path = obj_path,
+		})
+
+		forge.log.info(("Generated BMI rule for module '%s'"):format(module_name))
+	end
+
+	return bmi_rules
+end
+
 function M.define_program_rules_for_target(program_info, target_name, target_config)
-	if not build_common.should_build_component(program_info.name, target_name, program_info.dependencies) then
+	if not program_info.srcs then
 		return
 	end
 
@@ -39,11 +134,19 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 	end
 	local output_path = forge.path.join({ out_dir, output_name })
 
-	local sources
+	local sources = {}
 	if program_info.srcs then
-		sources = common.resolve_sources(program_info.srcs, program_path)
+		local resolved = common.resolve_sources(program_info.srcs, program_path)
+		sources = resolved or {}
+		if #sources == 0 and program_info.srcs[1] then
+			for _, src in ipairs(program_info.srcs) do
+				local abs_src = program_path .. "/" .. src
+				if forge.fs.exists(abs_src) then
+					table.insert(sources, abs_src)
+				end
+			end
+		end
 	else
-		sources = {}
 		local patterns = { "**/*.cpp", "**/*.cxx", "**/*.cc", "**/*.C" }
 		for _, pattern in ipairs(patterns) do
 			local pattern_path = forge.path.join({ program_path, pattern })
@@ -55,8 +158,16 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 	end
 
 	if #sources == 0 then
-		forge.log.warn(("No C++ source files found for program '%s'"):format(program_info.name))
 		return
+	end
+
+	local bmi_rules = {}
+	if program_info.enable_modules ~= false then
+		local has_mods = common.has_modules(sources)
+		forge.log.info(("Has modules: %s"):format(tostring(has_mods)))
+		if has_mods then
+			bmi_rules = M.define_module_bmi_rules(sources, program_info, target_name, target_config, out_dir, compiler_info)
+		end
 	end
 
 	local dep_inputs = {}
@@ -89,8 +200,28 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 		table.insert(args, arg)
 	end
 
-	for _, src in ipairs(sources) do
+	local non_module_sources = sources
+	if #bmi_rules > 0 then
+		non_module_sources = common.filter_out_module_sources(sources)
+		forge.log.info(("Filtered module sources, compiling %d files"):format(#non_module_sources))
+	end
+
+	if #bmi_rules > 0 then
+		table.insert(args, "-std=c++20")
+		table.insert(args, "-fmodules")
+
+		for _, bmi in ipairs(bmi_rules) do
+			table.insert(args, "-fmodule-file=" .. bmi.module_name .. "=" .. bmi.bmi_path)
+		end
+		table.insert(args, "-I" .. out_dir)
+	end
+
+	for _, src in ipairs(non_module_sources) do
 		table.insert(args, to_absolute_path(src, program_path))
+	end
+
+	for _, bmi in ipairs(bmi_rules) do
+		table.insert(args, bmi.obj_path)
 	end
 
 	table.insert(args, "-o")
@@ -165,11 +296,20 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 	end
 
 	local inputs = {}
-	for _, src in ipairs(sources) do
+	for _, src in ipairs(non_module_sources) do
 		table.insert(inputs, to_absolute_path(src, program_path))
 	end
 	for _, dep_input in ipairs(dep_inputs) do
 		table.insert(inputs, dep_input)
+	end
+	for _, bmi in ipairs(bmi_rules) do
+		table.insert(inputs, bmi.obj_path)
+	end
+
+	local dependencies = dep_rules
+	for _, bmi in ipairs(bmi_rules) do
+		table.insert(dependencies, bmi.rule_name)
+		table.insert(dependencies, bmi.obj_rule_name)
 	end
 
 	forge.rule({
@@ -178,7 +318,7 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 		args = args,
 		inputs = inputs,
 		outputs = { output_path },
-		dependencies = dep_rules,
+		dependencies = dependencies,
 	})
 end
 
@@ -225,6 +365,11 @@ function M.define_library_rules_for_target(library_info, target_name, target_con
 	if #sources == 0 then
 		forge.log.warn(("No C++ source files found for library '%s'"):format(library_info.name))
 		return
+	end
+
+	local bmi_rules = {}
+	if library_info.enable_modules ~= false then
+		bmi_rules = M.define_module_bmi_rules(sources, library_info, target_name, target_config, out_dir, compiler_info)
 	end
 
 	local object_files = {}
@@ -304,9 +449,18 @@ function M.define_library_rules_for_target(library_info, target_name, target_con
 		table.insert(ar_args, obj)
 	end
 
+	local ar_command = "ar"
+	if forge.path.is_absolute(compiler_info.command) then
+		local compiler_bin_dir = forge.path.dirname(compiler_info.command)
+		local candidate_ar = forge.path.join({ compiler_bin_dir, "ar" })
+		if forge.fs.exists(candidate_ar) then
+			ar_command = candidate_ar
+		end
+	end
+
 	forge.rule({
 		name = ("%s-lib-%s"):format(library_info.name, target_name),
-		command = "ar",
+		command = ar_command,
 		args = ar_args,
 		inputs = object_files,
 		outputs = { output_path },

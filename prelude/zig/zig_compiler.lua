@@ -16,7 +16,10 @@ function M.define_executable_rules_for_target(executable_info, target_name, targ
 	local executable_path = executable_info.path or forge.project.root
 	local target = target_config.target or common.get_host_target()
 	local build_mode = target_config.mode or "Debug"
-	local zig_command = target_config.compiler_path or executable_info.compiler_path or "zig"
+	local zig_command = target_config.compiler_path
+		or executable_info.compiler_path
+		or compiler_common.get_configured_tool_binary("zig", "zig", target)
+		or "zig"
 
 	if not common.validate_build_mode(build_mode) then
 		forge.log.warn(("Invalid build mode '%s' for executable '%s', using Debug"):format(build_mode, executable_info.name))
@@ -164,7 +167,10 @@ function M.define_library_rules_for_target(library_info, target_name, target_con
 	local library_path = library_info.path or forge.project.root
 	local target = target_config.target or common.get_host_target()
 	local build_mode = target_config.mode or "Debug"
-	local zig_command = target_config.compiler_path or library_info.compiler_path or "zig"
+	local zig_command = target_config.compiler_path
+		or library_info.compiler_path
+		or compiler_common.get_configured_tool_binary("zig", "zig", target)
+		or "zig"
 
 	if not common.validate_build_mode(build_mode) then
 		forge.log.warn(("Invalid build mode '%s' for library '%s', using Debug"):format(build_mode, library_info.name))
@@ -265,7 +271,10 @@ function M.define_build_zig_rules_for_target(build_info, target_name, target_con
 
 	local target = target_config.target or common.get_host_target()
 	local build_mode = target_config.mode or "Debug"
-	local zig_command = target_config.compiler_path or build_info.compiler_path or "zig"
+	local zig_command = target_config.compiler_path
+		or build_info.compiler_path
+		or compiler_common.get_configured_tool_binary("zig", "zig", target)
+		or "zig"
 
 	if not common.validate_build_mode(build_mode) then
 		forge.log.warn(("Invalid build mode '%s' for build.zig '%s', using Debug"):format(build_mode, build_info.name))

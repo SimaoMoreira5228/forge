@@ -1,6 +1,6 @@
 use crate::source::SourceResolver;
 use forge_macros::lua_api;
-use mlua::{AnyUserData, Lua, Result, Table, UserData, UserDataMethods};
+use mlua::{Lua, Result, Table, UserData, UserDataMethods};
 use std::path::PathBuf;
 
 #[derive(Clone)]
@@ -97,7 +97,7 @@ impl SourceApi {
 	}
 }
 
-pub fn create_source_table(lua: &Lua, project_root: PathBuf) -> Result<AnyUserData> {
+pub fn create_source_table(lua: &Lua, project_root: PathBuf) -> Result<Table> {
 	let api = SourceApi::new(project_root);
-	lua.create_userdata(api)
+	api.create_source_table(lua)
 }

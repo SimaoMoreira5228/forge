@@ -4,6 +4,7 @@ use std::path::Path;
 use crate::cache::Result;
 
 const INIT_SCHEMA: &str = include_str!("migrations/001_initial.sql");
+const TEST_RESULTS_SCHEMA: &str = include_str!("migrations/002_test_results.sql");
 
 pub struct CacheDb {
 	conn: Connection,
@@ -23,6 +24,7 @@ impl CacheDb {
 
 	fn init_tables(&self) -> Result<()> {
 		self.conn.execute_batch(INIT_SCHEMA)?;
+		self.conn.execute_batch(TEST_RESULTS_SCHEMA)?;
 		Ok(())
 	}
 
@@ -158,6 +160,36 @@ impl CacheDb {
 			return Ok(0);
 		}
 
+		// Check if migration was already applied (handle case where table doesn't exist yet)
+		let already_migrated = self
+			.conn
+			.query_row(
+				"SELECT COUNT(*) FROM schema_migrations WHERE name = ?1",
+				params!["json_cache_migration"],
+				|row| row.get::<_, i32>(0),
+			)
+			.unwrap_or(0);
+
+		if already_migrated > 0 {
+			log::debug!("JSON cache already migrated, skipping.");
+			return Ok(0);
+		}
+
+		// Check if migration was already applied
+		let already_migrated: Option<i32> = self
+			.conn
+			.query_row(
+				"SELECT COUNT(*) FROM schema_migrations WHERE name = ?1",
+				params!["json_cache_migration"],
+				|row| row.get(0),
+			)
+			.ok();
+
+		if already_migrated.map_or(false, |c| c > 0) {
+			log::debug!("JSON cache already migrated, skipping.");
+			return Ok(0);
+		}
+
 		let file = std::fs::File::open(old_cache_path)?;
 		let reader = std::io::BufReader::new(file);
 
@@ -214,6 +246,14 @@ impl CacheDb {
 			imported += 1;
 		}
 
+		// Record that migration was completed
+		if imported > 0 {
+			self.conn.execute(
+				"INSERT INTO schema_migrations (name, applied_at) VALUES (?1, ?2)",
+				params!["json_cache_migration", now],
+			)?;
+		}
+
 		Ok(imported)
 	}
 
@@ -241,4 +281,66 @@ pub struct CacheStats {
 	pub total_size: u64,
 	pub oldest_timestamp: Option<i64>,
 	pub newest_timestamp: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TestResultRecord {
+	pub id: i64,
+	pub test_name: String,
+	pub target: String,
+	pub cache_key: String,
+	pub verdict: String,
+	pub duration_ms: i64,
+	pub stdout: Option<String>,
+	pub stderr: Option<String>,
+	pub created_at: i64,
+}
+
+impl CacheDb {
+	pub fn record_test_result(
+		&self,
+		test_name: &str,
+		target: &str,
+		cache_key: &str,
+		verdict: &str,
+		duration_ms: i64,
+		stdout: Option<&str>,
+		stderr: Option<&str>,
+	) -> Result<i64> {
+		let now = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.unwrap()
+			.as_secs() as i64;
+
+		self.conn.execute(
+			"INSERT INTO test_results (test_name, target, cache_key, verdict, duration_ms, stdout, stderr, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+			params![test_name, target, cache_key, verdict, duration_ms, stdout, stderr, now],
+		)?;
+
+		Ok(self.conn.last_insert_rowid())
+	}
+
+	pub fn get_test_result(&self, cache_key: &str) -> Result<Option<TestResultRecord>> {
+		let mut stmt = self.conn.prepare(
+			"SELECT id, test_name, target, cache_key, verdict, duration_ms, stdout, stderr, created_at FROM test_results WHERE cache_key = ?1"
+		)?;
+
+		let mut rows = stmt.query(params![cache_key])?;
+
+		if let Some(row) = rows.next()? {
+			Ok(Some(TestResultRecord {
+				id: row.get(0)?,
+				test_name: row.get(1)?,
+				target: row.get(2)?,
+				cache_key: row.get(3)?,
+				verdict: row.get(4)?,
+				duration_ms: row.get(5)?,
+				stdout: row.get(6)?,
+				stderr: row.get(7)?,
+				created_at: row.get(8)?,
+			}))
+		} else {
+			Ok(None)
+		}
+	}
 }

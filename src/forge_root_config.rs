@@ -21,6 +21,30 @@ pub struct ForgeRootConfig {
 	pub discovery: DiscoveryConfig,
 	#[serde(default)]
 	pub build: BuildConfig,
+	#[serde(default)]
+	pub toolchain: std::collections::HashMap<String, ToolchainConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ToolchainConfig {
+	#[serde(default = "default_from")]
+	pub from: String,
+	pub version: Option<String>,
+	pub url: Option<String>,
+	pub sha256: Option<String>,
+	pub path: Option<String>,
+	pub git: Option<GitSource>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct GitSource {
+	pub repo: String,
+	pub rev: String,
+	pub subdir: Option<String>,
+}
+
+fn default_from() -> String {
+	"version".to_string()
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -129,6 +153,7 @@ impl ForgeRootConfig {
 			},
 			discovery: DiscoveryConfig::default(),
 			build: BuildConfig::default(),
+			toolchain: std::collections::HashMap::new(),
 		}
 	}
 

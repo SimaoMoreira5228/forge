@@ -1,4 +1,5 @@
 local M = {}
+local compiler_common = require("@prelude/compiler_common.lua")
 
 local targets_list = forge.target:list()
 local predefined = {}
@@ -22,7 +23,7 @@ function M.get_target_triple_string(target)
 		return target.triple
 	end
 	if type(target) == "string" then
-		local resolved = forge.target:resolve(target)
+		local resolved = forge.target.resolve(target)
 		if resolved and resolved.triple then
 			return resolved.triple
 		end
@@ -44,12 +45,12 @@ function M.get_target_directory(target_name, variant_name)
 	if variant_name then
 		return variant_name
 	end
-	
-	local resolved = forge.target:resolve(target_name)
+
+	local resolved = forge.target.resolve(target_name)
 	if resolved and resolved.triple then
 		return resolved.triple
 	end
-	
+
 	return target_name
 end
 
@@ -61,14 +62,19 @@ function M.get_compiler_for_target(compiler, target, compiler_path)
 	end
 
 	if compiler == "zig" then
-		local target_info = type(target) == "table" and target or forge.target:resolve(target)
+		local target_info = type(target) == "table" and target or forge.target.resolve(target)
 		local zig_target = target_info and target_info.triple or "x86_64-linux-gnu"
 		return { command = "zig", args = { "cc", "-target", zig_target } }
 	elseif compiler == "clang" then
+		local configured_clang = compiler_common.get_configured_compiler("clang", false, target)
+		if configured_clang then
+			return { command = configured_clang, args = {} }
+		end
+
 		local clang_target = M.get_target_triple_string(target)
 		return { command = "clang", args = { "--target=" .. clang_target } }
 	else
-		local gcc_cmd = "gcc"
+		local gcc_cmd = compiler_common.get_gcc_cross_compiler(target, false)
 		return { command = gcc_cmd, args = {} }
 	end
 end

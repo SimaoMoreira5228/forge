@@ -1,10 +1,20 @@
-use crate::{cache::{BuildCache, CacheDb}, config::Config, error::ForgeError, forge_root_config::ForgeRootConfig, lua_api};
+use crate::{
+	cache::{BuildCache, CacheDb},
+	config::Config,
+	error::ForgeError,
+	forge_root_config::ForgeRootConfig,
+	hermetic::{ActionSpec, HermeticPolicy, SandboxRunner},
+	lua_api,
+};
 use anyhow::Context;
 use blake3::Hasher;
 use dashmap::DashMap;
 use ignore::WalkBuilder;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use mlua::{Lua, UserData};
 use rayon::prelude::*;
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
 use std::{
 	borrow::Cow,
 	collections::HashMap,
@@ -38,6 +48,7 @@ pub struct Project {
 	pub cache: BuildCache,
 	cas_path: PathBuf,
 	lua: Lua,
+	hermetic_policy: HermeticPolicy,
 }
 
 impl Project {
@@ -53,7 +64,7 @@ impl Project {
 		Ok(processed_inputs)
 	}
 
-	pub fn new(path: PathBuf, config: Config) -> Result<Self, ForgeError> {
+	pub fn new(path: PathBuf, config: Config, hermetic_policy: HermeticPolicy) -> Result<Self, ForgeError> {
 		let forge_root_path = path.join("FORGE_ROOT");
 		let forge_root_config = ForgeRootConfig::load(&forge_root_path).map_err(|_| ForgeError::ForgeRootNotFound {
 			path: forge_root_path.display().to_string(),
@@ -77,17 +88,17 @@ impl Project {
 		let db_path = cas_path.join("cache.db");
 		if cache_path.exists() {
 			match CacheDb::new(&db_path) {
-				Ok(db) => {
-					match db.migrate_from_json(&cache_path) {
-						Ok(count) => {
+				Ok(db) => match db.migrate_from_json(&cache_path) {
+					Ok(count) => {
+						if count > 0 {
 							log::info!("Migrated {} cache entries to SQLite.", count);
 							let _ = db.delete_old_cache(&cache_path);
 						}
-						Err(e) => {
-							log::warn!("Cache migration failed: {}", e);
-						}
 					}
-				}
+					Err(e) => {
+						log::warn!("Cache migration failed: {}", e);
+					}
+				},
 				Err(e) => {
 					log::warn!("Failed to open SQLite cache: {}", e);
 				}
@@ -106,12 +117,106 @@ impl Project {
 			cache,
 			cas_path,
 			lua: Lua::new(),
+			hermetic_policy,
 		})
 	}
 
 	fn setup_lua_environment(&self) -> Result<(), ForgeError> {
 		lua_api::init::setup_lua_environment(&self.lua, self)?;
 		Ok(())
+	}
+
+	fn get_toolchain_paths(&self) -> Vec<PathBuf> {
+		let mut paths = Vec::new();
+		let toolchain_cache = self.path.join(".forge").join("toolchains");
+
+		log::debug!("Looking for toolchains in: {}", toolchain_cache.display());
+
+		for (_name, config) in &self.forge_root_config.toolchain {
+			if config.from == "path" {
+				if let Some(ref path_str) = config.path {
+					let candidate = PathBuf::from(path_str).join("bin");
+					if candidate.exists() {
+						paths.push(candidate);
+					}
+				}
+			}
+		}
+
+		if toolchain_cache.exists() {
+			for entry in WalkDir::new(&toolchain_cache).into_iter().flatten() {
+				let p = entry.path();
+				if p.is_dir() && p.file_name().map(|n| n == "bin").unwrap_or(false) {
+					paths.push(p.to_path_buf());
+				}
+			}
+		}
+
+		paths.sort();
+		paths.dedup();
+
+		log::debug!("Found toolchain paths: {:?}", paths);
+		paths
+	}
+
+	fn calculate_toolchain_fingerprint(&self) -> Result<String, ForgeError> {
+		let mut hasher = Hasher::new();
+		let toolchain_cache = self.path.join(".forge").join("toolchains");
+
+		for (name, config) in &self.forge_root_config.toolchain {
+			hasher.update(name.as_bytes());
+			hasher.update(config.from.as_bytes());
+			if let Some(ref version) = config.version {
+				hasher.update(version.as_bytes());
+			}
+			if let Some(ref url) = config.url {
+				hasher.update(url.as_bytes());
+			}
+			if let Some(ref path_str) = config.path {
+				hasher.update(path_str.as_bytes());
+			}
+
+			let source = match config.from.as_str() {
+				"path" => "path",
+				"url" => "url",
+				"auto" => "auto",
+				_ => "version",
+			};
+
+			if source == "path" {
+				if let Some(ref path_str) = config.path {
+					let bin_dir = PathBuf::from(path_str).join("bin");
+					if bin_dir.exists() {
+						if let Ok(entries) = std::fs::read_dir(&bin_dir) {
+							for entry in entries.flatten() {
+								if let Ok(meta) = entry.metadata() {
+									if meta.is_file() {
+										hasher.update(entry.file_name().to_string_lossy().as_bytes());
+									}
+								}
+							}
+						}
+					}
+				}
+			} else if source == "version" || source == "url" {
+				let version = config.version.as_deref().unwrap_or("latest");
+				let toolchain_dir = toolchain_cache.join(name).join(version);
+				let bin_dir = toolchain_dir.join("bin");
+				if bin_dir.exists() {
+					if let Ok(entries) = std::fs::read_dir(&bin_dir) {
+						for entry in entries.flatten() {
+							if let Ok(meta) = entry.metadata() {
+								if meta.is_file() {
+									hasher.update(entry.file_name().to_string_lossy().as_bytes());
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		Ok(hasher.finalize().to_hex().to_string())
 	}
 
 	pub fn run(&mut self) -> Result<(), ForgeError> {
@@ -331,6 +436,20 @@ impl Project {
 
 	fn calculate_rule_hash<'a>(&'a self, rule: &'a Rule) -> Result<String, ForgeError> {
 		let mut hasher = Hasher::new();
+
+		// Include hermetic policy fingerprint in cache key
+		hasher.update(format!("{:?}", self.hermetic_policy.mode).as_bytes());
+		if self.hermetic_policy.trace_access {
+			hasher.update(b"trace_access");
+		}
+		if self.hermetic_policy.why_non_hermetic {
+			hasher.update(b"why_non_hermetic");
+		}
+
+		// Include toolchain fingerprints in cache key
+		let toolchain_fingerprint = self.calculate_toolchain_fingerprint()?;
+		hasher.update(toolchain_fingerprint.as_bytes());
+
 		hasher.update(rule.command.as_bytes());
 		for arg in &rule.args {
 			hasher.update(arg.as_bytes());
@@ -419,16 +538,44 @@ impl Project {
 		let mut completed_rules = 0;
 		let start_time = Instant::now();
 
+		let multi = MultiProgress::new();
+		let style = ProgressStyle::default_bar()
+			.template("{msg:.green} [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {eta}")
+			.unwrap()
+			.progress_chars("=> ");
+
+		let global_pb = multi.add(ProgressBar::new(total_rules as u64));
+		global_pb.set_style(style.clone());
+		global_pb.set_message("Building...");
+
+		let total_batches = batches.len();
 		for (i, batch) in batches.iter().enumerate() {
 			let batch_start = Instant::now();
-			log::info!("\nExecuting batch {}/{}: {:?}", i + 1, batches.len(), batch);
 
-			let results: Vec<Result<(), ForgeError>> =
-				batch.par_iter().map(|rule_name| self.execute_rule(rule_name)).collect();
+			let batch_pb = multi.add(ProgressBar::new(batch.len() as u64));
+			batch_pb.set_style(style.clone());
+			batch_pb.set_message(format!("Batch {}/{}: ", i + 1, total_batches));
+
+			log::info!("\nExecuting batch {}/{}: {:?}", i + 1, total_batches, batch);
+
+			let batch_rules: Vec<String> = batch.iter().cloned().collect();
+			let results: Vec<Result<(), ForgeError>> = batch_rules
+				.par_iter()
+				.enumerate()
+				.map(|(idx, rule_name)| {
+					let result = self.execute_rule(rule_name);
+					batch_pb.inc(1);
+					global_pb.inc(1);
+					result
+				})
+				.collect();
 
 			for result in results {
 				result?;
 			}
+
+			batch_pb.finish_with_message(format!("Batch {}/{} complete", i + 1, total_batches));
+			multi.remove(&batch_pb);
 
 			completed_rules += batch.len();
 			let elapsed = start_time.elapsed();
@@ -441,6 +588,14 @@ impl Project {
 			};
 			let remaining = estimated_total - elapsed.as_secs_f64();
 
+			global_pb.set_message(format!(
+				"Building... {}/{} rules ({:.1}%) ETA: {:.1}s",
+				completed_rules,
+				total_rules,
+				progress,
+				remaining.max(0.0)
+			));
+
 			log::info!(
 				"Batch completed in {:.2}s. Progress: {}/{} rules ({:.1}%). ETA: {:.1}s",
 				batch_elapsed.as_secs_f64(),
@@ -450,6 +605,9 @@ impl Project {
 				remaining.max(0.0)
 			);
 		}
+
+		global_pb.finish_with_message(format!("Build complete! {} rules", total_rules));
+		multi.remove(&global_pb);
 
 		let total_elapsed = start_time.elapsed();
 		log::info!(
@@ -527,31 +685,78 @@ impl Project {
 			}
 		}
 
+		// Create ActionSpec for hermetic execution
 		let final_args = self.expand_args(&rule_ref.value().args)?;
-		let mut cmd = std::process::Command::new(&rule_ref.value().command);
+		let args_strings: Vec<String> = final_args.iter().map(|cow| cow.to_string()).collect();
 
-		let args_refs: Vec<&str> = final_args.iter().map(|cow| cow.as_ref()).collect();
-		cmd.args(&args_refs)
-			.envs(&rule_ref.value().env)
-			.current_dir(&rule_ref.value().workdir);
+		let action_spec = ActionSpec::new(rule_name)
+			.with_command(&rule_ref.value().command)
+			.with_args(args_strings)
+			.with_inputs(rule_ref.value().inputs.iter().map(|p| self.path.join(p)).collect())
+			.with_outputs(rule_ref.value().outputs.iter().map(|p| self.path.join(p)).collect())
+			.with_env(rule_ref.value().env.clone())
+			.with_workdir(rule_ref.value().workdir.clone());
 
-		log::debug!(
-			"Executing command: {:?} {:?} (workdir: {:?})",
-			cmd.get_program(),
-			cmd.get_args().collect::<Vec<_>>(),
-			rule_ref.value().workdir
-		);
+		// Execute using SandboxRunner if not in off mode
+		let output = if self.hermetic_policy.mode == crate::hermetic::PolicyMode::Off {
+			// Direct execution for off mode
+			let mut cmd = std::process::Command::new(&rule_ref.value().command);
+			let args_refs: Vec<&str> = final_args.iter().map(|cow| cow.as_ref()).collect();
+			cmd.args(&args_refs)
+				.envs(&rule_ref.value().env)
+				.current_dir(&rule_ref.value().workdir);
 
-		let output = match cmd.output() {
-			Ok(o) => o,
-			Err(e) => {
-				if e.kind() == std::io::ErrorKind::NotFound {
+			log::debug!(
+				"Executing command (non-hermetic): {:?} {:?} (workdir: {:?})",
+				cmd.get_program(),
+				cmd.get_args().collect::<Vec<_>>(),
+				rule_ref.value().workdir
+			);
+
+			match cmd.output() {
+				Ok(o) => o,
+				Err(e) => {
+					if e.kind() == std::io::ErrorKind::NotFound {
+						return Err(ForgeError::BuildFailed {
+							rule: rule_name.to_string(),
+							error: format!("Command not found: '{}'. Is it installed?", rule_ref.value().command),
+						});
+					}
+					return Err(e).context(format!("Failed to execute command: {}", rule_ref.value().command))?;
+				}
+			}
+		} else {
+			// Use SandboxRunner with toolchain paths
+			let toolchain_paths = self.get_toolchain_paths();
+			let sandbox_dir = self.cas_path.join("sandbox").join(rule_name);
+			let runner = SandboxRunner::new(self.hermetic_policy.clone(), sandbox_dir).with_toolchain_paths(toolchain_paths);
+
+			log::debug!(
+				"Executing command (hermetic): {:?} {:?} (workdir: {:?})",
+				rule_ref.value().command,
+				final_args.iter().map(|c| c.as_ref()).collect::<Vec<_>>(),
+				rule_ref.value().workdir
+			);
+
+			match runner.execute(&action_spec) {
+				Ok(result) => {
+					let output = std::process::Output {
+						status: if result.success {
+							std::process::ExitStatus::default()
+						} else {
+							std::process::ExitStatus::from_raw(1)
+						},
+						stdout: result.stdout.as_bytes().to_vec(),
+						stderr: result.stderr.as_bytes().to_vec(),
+					};
+					output
+				}
+				Err(e) => {
 					return Err(ForgeError::BuildFailed {
 						rule: rule_name.to_string(),
-						error: format!("Command not found: '{}'. Is it installed?", rule_ref.value().command),
+						error: format!("Hermetic execution failed: {}", e),
 					});
 				}
-				return Err(e).context(format!("Failed to execute command: {}", rule_ref.value().command))?;
 			}
 		};
 

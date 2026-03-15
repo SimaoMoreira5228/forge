@@ -41,11 +41,8 @@ impl SourceResolver {
 			.filter_map(|e| e.ok())
 		{
 			let path = entry.path();
-			if path.is_file() {
-				let path_str = path.to_string_lossy();
-				if matcher.is_match(path) {
-					results.push(path.to_path_buf());
-				}
+			if path.is_file() && matcher.is_match(path) {
+				results.push(path.to_path_buf());
 			}
 		}
 

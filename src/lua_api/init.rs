@@ -13,7 +13,6 @@ pub fn setup_lua_environment(lua: &Lua, project: &Project) -> Result<(), ForgeEr
 
 	forge_table.set("fs", lua_api::fs::create_fs_table(lua)?)?;
 	forge_table.set("http", lua_api::http::create_http_table(lua)?)?;
-	forge_table.set("parse", lua_api::parse::create_parse_table(lua)?)?;
 	forge_table.set("exec", lua_api::exec::create_exec_table(lua)?)?;
 	forge_table.set("semver", lua_api::semver::create_semver_table(lua)?)?;
 	forge_table.set("platform", lua_api::platform::create_platform_table(lua)?)?;
@@ -23,19 +22,12 @@ pub fn setup_lua_environment(lua: &Lua, project: &Project) -> Result<(), ForgeEr
 	forge_table.set("time", lua_api::time::create_time_table(lua)?)?;
 	forge_table.set("log", lua_api::log::create_log_table(lua)?)?;
 	forge_table.set("table", lua_api::table::create_table_table(lua)?)?;
+	forge_table.set("json", lua_api::json::create_json_table(lua)?)?;
+	forge_table.set("toml", lua_api::toml::create_toml_table(lua)?)?;
 	forge_table.set("project", lua_api::project::create_project_table(lua, project_path.clone())?)?;
-
-	let graph_api = lua_api::graph::GraphApi::new(project.path.clone());
-	let graph_table = graph_api.create_graph_table(lua)?;
-	forge_table.set("graph", graph_table)?;
-
-	let target_api = lua_api::target::TargetApi::new();
-	let target_table = target_api.create_target_table(lua)?;
-	forge_table.set("target", target_table)?;
-
-	let source_api = lua_api::source::SourceApi::new(project.path.clone());
-	let source_table = source_api.create_source_table(lua)?;
-	forge_table.set("source", source_table)?;
+	forge_table.set("graph", lua_api::graph::create_graph_table(lua, project.path.clone())?)?;
+	forge_table.set("target", lua_api::target::create_target_table(lua)?)?;
+	forge_table.set("source", lua_api::source::create_source_table(lua, project.path.clone())?)?;
 
 	let prelude_path = project.path.join("prelude");
 
@@ -135,7 +127,9 @@ pub fn generate_types_lua() -> String {
 	types.push('\n');
 	types.push_str(lua_api::http::HttpApi::http_lua_type_definitions());
 	types.push('\n');
-	types.push_str(lua_api::parse::ParseApi::parse_lua_type_definitions());
+	types.push_str(lua_api::json::JsonApi::json_lua_type_definitions());
+	types.push('\n');
+	types.push_str(lua_api::toml::TomlApi::toml_lua_type_definitions());
 	types.push('\n');
 	types.push_str(lua_api::exec::ExecApi::exec_lua_type_definitions());
 	types.push('\n');
@@ -168,7 +162,8 @@ pub fn generate_types_lua() -> String {
 	types.push_str("---@field config table Configuration table\n");
 	types.push_str("---@field fs Fs File system operations (all paths must be absolute)\n");
 	types.push_str("---@field http Http HTTP operations\n");
-	types.push_str("---@field parse Parse Parsing operations\n");
+	types.push_str("---@field json Json JSON encoding and decoding operations\n");
+	types.push_str("---@field toml Toml TOML encoding and decoding operations\n");
 	types.push_str("---@field exec Exec Command execution operations\n");
 	types.push_str("---@field semver Semver Semantic versioning operations\n");
 	types.push_str("---@field platform Platform Platform detection operations\n");
@@ -179,9 +174,9 @@ pub fn generate_types_lua() -> String {
 	types.push_str("---@field log Log Logging operations\n");
 	types.push_str("---@field table Table Table operations\n");
 	types.push_str("---@field project Project Project context and utilities\n");
-	types.push_str("---@field graph ForgeGraph Build graph operations\n");
-	types.push_str("---@field target ForgeTarget Target resolution and management\n");
-	types.push_str("---@field source ForgeSource Source file resolution\n");
+	types.push_str("---@field graph Graph Build graph operations\n");
+	types.push_str("---@field target Target Target resolution and management\n");
+	types.push_str("---@field source Source Source file resolution\n");
 	types.push_str("---@field rule fun(rule: table): nil Add a build rule\n");
 	types.push_str("---@field sleep fun(seconds: number): nil Sleep for specified seconds\n");
 	types.push('\n');

@@ -14,3 +14,11 @@ max_depth = 10
 cache_dir = "forge-out"
 
 [build.global_env]
+
+[toolchain.gcc]
+from = "version"
+version = "14.2.0"
+
+[toolchain.clang]
+from = "version"
+version = "19.1.7"

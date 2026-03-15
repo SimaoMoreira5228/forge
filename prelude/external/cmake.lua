@@ -1,4 +1,5 @@
 local build_common = require("@prelude/build_common.lua")
+local compiler_common = require("@prelude/compiler_common.lua")
 
 local M = {}
 
@@ -52,7 +53,9 @@ function M.build_for_target(tbl, target_name, target_config)
 
 	local target_build_dir = forge.path.join({ build_dir, target_name })
 
-	local cmake_command = tbl.cmake_command or "cmake"
+	local cmake_command = tbl.cmake_command
+		or compiler_common.get_configured_tool_binary("cmake", "cmake", target_config.target)
+		or "cmake"
 	local cmake_lists = forge.path.join({ project_root, "CMakeLists.txt" })
 
 	local configure_args = { "-S", project_root, "-B", target_build_dir }

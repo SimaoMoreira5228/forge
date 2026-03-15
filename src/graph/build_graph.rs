@@ -1,4 +1,5 @@
-use crate::graph::{Component, ComponentId, ComponentRef, DependencyEdge, Target};
+use crate::graph::component::ComponentId;
+use crate::graph::{Component, ComponentRef, DependencyEdge, Target};
 use petgraph::Direction;
 use petgraph::algo::{Cycle, toposort};
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -83,8 +84,7 @@ impl BuildGraph {
 		}
 
 		for output in &component.outputs {
-			if let Some(existing) = self.output_map.get(output) {
-				let existing_comp = self.components.get(existing).unwrap();
+			if let Some(_existing) = self.output_map.get(output) {
 				return Err(GraphError::OutputConflict {
 					output: output.display().to_string(),
 				});
@@ -92,7 +92,7 @@ impl BuildGraph {
 		}
 
 		let id = component.id;
-		let node_idx = self.graph.add_node(id);
+		let _node_idx = self.graph.add_node(id);
 
 		self.components.insert(id, component.clone());
 		self.component_index.insert(key, id);
@@ -230,7 +230,7 @@ impl BuildGraph {
 		if let Some(component) = self.components.get(&self.graph[node_id]) {
 			let mut path = vec![component.name.clone()];
 
-			let mut current = node_id;
+			let current = node_id;
 			let mut visited = std::collections::HashSet::new();
 			visited.insert(current);
 
@@ -242,7 +242,7 @@ impl BuildGraph {
 					break;
 				}
 				visited.insert(neighbor);
-				current = neighbor;
+				let _current = neighbor;
 			}
 
 			path.join(" -> ")

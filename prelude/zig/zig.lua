@@ -125,7 +125,7 @@ local function register_target(target_name, target_info)
 		triple = target_info.target
 	end
 
-	forge.graph:target {
+	forge.graph.target {
 		name = target_name,
 		triple = triple,
 	}
@@ -142,7 +142,7 @@ local function define_library_for_target(library_info, target_name, target_confi
 	local include_dirs = normalize_includes(library_info.includes, library_info.path)
 	local deps = normalize_deps(library_info.dependencies)
 
-	forge.graph:library {
+	forge.graph.library {
 		name = library_info.name,
 		target = target_name,
 		sources = sources,
@@ -164,7 +164,7 @@ local function define_executable_for_target(executable_info, target_name, target
 	local include_dirs = normalize_includes(executable_info.includes, executable_info.path)
 	local deps = normalize_deps(executable_info.dependencies)
 
-	forge.graph:binary {
+	forge.graph.binary {
 		name = executable_info.name,
 		target = target_name,
 		sources = sources,
@@ -178,6 +178,10 @@ local function define_executable_for_target(executable_info, target_name, target
 end
 
 local function define_build_zig_for_target(build_info, target_name, target_config)
+	if not should_build_target(target_name) then
+		return
+	end
+
 	register_target(target_name, target_config)
 
 	local build_path = build_info.path or forge.project.root
@@ -192,7 +196,10 @@ local function define_build_zig_for_target(build_info, target_name, target_confi
 
 	local target = target_config.target or common.get_host_target()
 	local build_mode = target_config.mode or "Debug"
-	local zig_command = build_info.compiler_path or "zig"
+	local zig_command = target_config.compiler_path
+		or build_info.compiler_path
+		or compiler_common.get_configured_tool_binary("zig", "zig", target)
+		or "zig"
 
 	if not common.validate_build_mode(build_mode) then
 		forge.log.warn(("Invalid build mode '%s' for build.zig '%s', using Debug"):format(build_mode, build_info.name))

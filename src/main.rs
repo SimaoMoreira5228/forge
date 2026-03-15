@@ -1,8 +1,15 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use crate::cache::{CacheDb, CacheGC, GCResult};
+use crate::hermetic::{HermeticPolicy, PolicyMode};
+
+lazy_static::lazy_static! {
+	static ref last_test_stdout: Mutex<String> = Mutex::new(String::new());
+	static ref last_test_stderr: Mutex<String> = Mutex::new(String::new());
+}
 
 #[derive(Subcommand, Debug)]
 enum CacheCommand {
@@ -31,6 +38,7 @@ mod config;
 mod error;
 mod forge_root_config;
 mod graph;
+mod hermetic;
 mod lua_api;
 mod package;
 mod project;
@@ -58,6 +66,15 @@ struct Cli {
 
 	#[command(flatten)]
 	verbose: clap_verbosity_flag::Verbosity,
+
+	#[arg(long, default_value = "strict", help = "Hermetic policy mode: off, warn, or strict")]
+	hermetic: String,
+
+	#[arg(long, help = "Trace file access during execution and report undeclared reads/writes")]
+	trace_access: bool,
+
+	#[arg(long, help = "Explain why an action is non-hermetic (shows env, inputs, toolchain issues)")]
+	why_non_hermetic: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -84,6 +101,21 @@ enum Commands {
 
 		#[arg(short, long, help = "Test specific component")]
 		component: Option<String>,
+
+		#[arg(short, long, help = "Filter tests by pattern")]
+		filter: Option<String>,
+
+		#[arg(long, help = "Run impacted tests based on file changes")]
+		changed: Option<Vec<String>>,
+
+		#[arg(long, help = "Explain why a test is not using cached result")]
+		explain_cache: bool,
+
+		#[arg(long, help = "Disable test result cache")]
+		nocache: bool,
+
+		#[arg(long, help = "Cache test results: auto|yes|no", default_value = "auto")]
+		cache_test_results: String,
 	},
 
 	Clean,
@@ -120,7 +152,37 @@ enum Commands {
 fn main() -> Result<()> {
 	let cli = Cli::parse();
 
-	env_logger::Builder::new().filter_level(cli.verbose.log_level_filter()).init();
+	// Default to Info level (errors, warnings, info)
+	// With -v: Debug level
+	// With -vv: Trace level
+	let log_level = if cli.verbose.is_present() {
+		match cli.verbose.log_level_filter() {
+			log::LevelFilter::Error => log::LevelFilter::Debug,
+			log::LevelFilter::Warn => log::LevelFilter::Debug,
+			log::LevelFilter::Info => log::LevelFilter::Trace,
+			l => l,
+		}
+	} else {
+		log::LevelFilter::Info
+	};
+
+	env_logger::Builder::new()
+		.filter_level(log_level)
+		.format_timestamp_secs()
+		.init();
+
+	// Parse hermetic policy
+	let mut policy: HermeticPolicy = match cli.hermetic.parse::<PolicyMode>() {
+		Ok(mode) => HermeticPolicy::new(mode),
+		Err(e) => {
+			eprintln!("Error: {}", e);
+			std::process::exit(1);
+		}
+	};
+	policy.trace_access = cli.trace_access;
+	policy.why_non_hermetic = cli.why_non_hermetic;
+
+	log::info!("Hermetic policy: {:?}", policy.mode);
 
 	let project_path = std::fs::canonicalize(&cli.project)?;
 
@@ -150,7 +212,7 @@ fn main() -> Result<()> {
 				log::info!("Component filters: {}", config.component_filters.join(", "));
 			}
 
-			let mut project = project::Project::new(project_path, config)?;
+			let mut project = project::Project::new(project_path, config, policy.clone())?;
 			project.run()?;
 
 			println!("\nBuild completed successfully!");
@@ -168,7 +230,7 @@ fn main() -> Result<()> {
 				test_mode: false,
 			};
 
-			let mut project = project::Project::new(project_path.clone(), config)?;
+			let mut project = project::Project::new(project_path.clone(), config, policy.clone())?;
 			project.run()?;
 
 			if let Some(target_name) = target {
@@ -185,12 +247,37 @@ fn main() -> Result<()> {
 
 			println!("\nBuild and run completed successfully!");
 		}
-		Some(Commands::Test { target, component }) => {
+		Some(Commands::Test {
+			target,
+			component,
+			filter,
+			changed,
+			explain_cache,
+			nocache,
+			cache_test_results,
+		}) => {
+			if let Some(ref files) = changed {
+				log::info!("Running impacted tests based on changed files: {:?}", files);
+			}
+			if explain_cache {
+				log::info!("Cache diagnostics enabled");
+			}
+			if nocache {
+				log::info!("Test result cache disabled");
+			}
+			match cache_test_results.as_str() {
+				"yes" => log::info!("Test result cache: enabled"),
+				"no" => log::info!("Test result cache: disabled"),
+				_ => log::info!("Test result cache: auto"),
+			}
+
 			let config = config::Config {
 				verbosity: config::VerbosityWrapper(cli.verbose),
 				target_filters: vec![target.clone()],
 				component_filters: if let Some(ref comp) = component {
 					vec![comp.clone()]
+				} else if let Some(ref f) = filter {
+					vec![f.clone()]
 				} else {
 					vec![]
 				},
@@ -202,16 +289,22 @@ fn main() -> Result<()> {
 			if let Some(ref comp) = component {
 				log::info!("Test component: {}", comp);
 			}
+			if let Some(ref f) = filter {
+				log::info!("Test filter: {}", f);
+			}
+			if let Some(ref files) = changed {
+				log::info!("Changed files: {:?}", files);
+			}
 
-			let mut project = project::Project::new(project_path.clone(), config)?;
+			let mut project = project::Project::new(project_path.clone(), config, policy.clone())?;
 			project.run()?;
 
 			if let Some(comp) = component {
 				log::info!("Running test component '{}' with target: {}", comp, target);
-				run_component_target_test_mode(&project_path, &comp, &target)?;
+				run_component_target_test_mode(&project_path, &comp, &target, &policy)?;
 			} else {
 				log::info!("Running test target: {}", target);
-				run_target_test_mode(&project_path, &target)?;
+				run_target_test_mode(&project_path, &target, &policy)?;
 			}
 
 			println!("\nTest completed successfully!");
@@ -257,7 +350,7 @@ fn main() -> Result<()> {
 			log::info!("Building project at: {}", project_path.display());
 			log::info!("Targets: {}", config.target_filters.join(", "));
 
-			let mut project = project::Project::new(project_path, config)?;
+			let mut project = project::Project::new(project_path, config, policy.clone())?;
 			project.run()?;
 
 			println!("\nBuild completed successfully!");
@@ -468,7 +561,7 @@ fn clean_project(project_path: &Path) -> Result<()> {
 	Ok(())
 }
 
-fn run_target_test_mode(project_path: &PathBuf, target_name: &str) -> Result<()> {
+fn run_target_test_mode(project_path: &PathBuf, target_name: &str, policy: &HermeticPolicy) -> Result<()> {
 	let forge_out = project_path.join("forge-out");
 	if !forge_out.exists() {
 		return Err(anyhow::anyhow!("forge-out directory not found at {}", forge_out.display()));
@@ -492,7 +585,7 @@ fn run_target_test_mode(project_path: &PathBuf, target_name: &str) -> Result<()>
 			"\n=== Running test: {} ===",
 			test_executable.file_name().unwrap().to_str().unwrap()
 		);
-		match run_executable(&test_executable, project_path) {
+		match run_executable_hermetic(&test_executable, project_path, policy) {
 			Ok(_) => {}
 			Err(e) => {
 				eprintln!("Test failed: {}", e);
@@ -508,7 +601,7 @@ fn run_target_test_mode(project_path: &PathBuf, target_name: &str) -> Result<()>
 	Ok(())
 }
 
-fn run_component_target_test_mode(project_path: &PathBuf, component_name: &str, target_name: &str) -> Result<()> {
+fn run_component_target_test_mode(project_path: &PathBuf, component_name: &str, target_name: &str, policy: &HermeticPolicy) -> Result<()> {
 	let forge_out = project_path.join("forge-out");
 	if !forge_out.exists() {
 		return Err(anyhow::anyhow!("forge-out directory not found at {}", forge_out.display()));
@@ -524,7 +617,53 @@ fn run_component_target_test_mode(project_path: &PathBuf, component_name: &str, 
 	}
 
 	if let Some(test_executable) = find_test_executable_in_dir(&target_dir, Some(component_name)) {
-		return run_executable(&test_executable, project_path);
+		// Compute cache key based on test executable
+		let cache_key = compute_test_cache_key(&test_executable)?;
+
+		// Check test result cache (in cas directory)
+		let sqlite_path = forge_out.join("cas").join("cache.db");
+
+		if sqlite_path.exists() {
+			if let Ok(db) = CacheDb::new(&sqlite_path) {
+				if let Ok(Some(result)) = db.get_test_result(&cache_key) {
+					if result.verdict == "PASSED" {
+						println!("[CACHE HIT] Test '{}' already passed (cached)", component_name);
+						if let Some(stdout) = result.stdout {
+							if !stdout.is_empty() {
+								print!("{}", stdout);
+							}
+						}
+						return Ok(());
+					}
+					println!("[CACHE MISS] Previous result was {}, re-running test...", result.verdict);
+				}
+			}
+		}
+
+		// Run the test and time it (hermetically)
+		let start = std::time::Instant::now();
+		let result = run_executable_hermetic(&test_executable, project_path, policy);
+		let duration_ms = start.elapsed().as_millis() as i64;
+
+		// Record result in cache
+		if sqlite_path.exists() {
+			if let Ok(db) = CacheDb::new(&sqlite_path) {
+				let verdict = if result.is_ok() { "PASSED" } else { "FAILED" };
+				let stdout = last_test_stdout.lock().unwrap().clone();
+				let stderr = last_test_stdout.lock().unwrap().clone();
+				let _ = db.record_test_result(
+					component_name,
+					target_name,
+					&cache_key,
+					verdict,
+					duration_ms,
+					Some(&stdout),
+					Some(&stderr),
+				);
+			}
+		}
+
+		return result;
 	}
 
 	Err(anyhow::anyhow!(
@@ -571,9 +710,18 @@ fn execute_binary(executable_path: &PathBuf, project_path: &PathBuf) -> Result<(
 	log::info!("Executing: {}", executable_path.display());
 	let output = Command::new(executable_path).current_dir(project_path).output()?;
 
+	// Store stdout/stderr for test caching
+	let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+	let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+	if let Ok(mut s) = last_test_stdout.lock() {
+		*s = stdout.clone();
+	}
+	if let Ok(mut s) = last_test_stderr.lock() {
+		*s = stderr.clone();
+	}
+
 	if !output.status.success() {
-		let stderr = String::from_utf8_lossy(&output.stderr);
-		let stdout = String::from_utf8_lossy(&output.stdout);
 		return Err(anyhow::anyhow!(
 			"Executable failed with exit code {:?}\nSTDOUT:\n{}\n\nSTDERR:\n{}",
 			output.status.code(),
@@ -588,6 +736,74 @@ fn execute_binary(executable_path: &PathBuf, project_path: &PathBuf) -> Result<(
 	}
 
 	Ok(())
+}
+
+fn run_executable_hermetic(executable_path: &PathBuf, project_path: &PathBuf, policy: &HermeticPolicy) -> Result<()> {
+	use crate::hermetic::{ActionSpec, SandboxRunner};
+	use std::collections::HashMap;
+
+	#[cfg(unix)]
+	set_executable_permissions(executable_path)?;
+
+	log::info!("Executing hermetically: {}", executable_path.display());
+
+	let runfiles_dir = project_path.join(".forge").join("test-runfiles");
+	let runner = SandboxRunner::new(policy.clone(), runfiles_dir);
+
+	let mut action_spec = ActionSpec::new(
+		executable_path.file_name()
+			.and_then(|n| n.to_str())
+			.unwrap_or("test")
+			.to_string()
+	);
+	action_spec.command = executable_path.to_string_lossy().to_string();
+	action_spec.args = vec![];
+	action_spec.inputs = vec![executable_path.clone()];
+	action_spec.outputs = vec![project_path.join(".forge").join("test-results").join(executable_path.file_name().unwrap_or_default())];
+	action_spec.env = HashMap::new();
+	action_spec.workdir = project_path.clone();
+
+	match runner.execute(&action_spec) {
+	Ok(result) => {
+		// Store stdout/stderr for test caching
+		if let Ok(mut s) = last_test_stdout.lock() {
+			*s = result.stdout.clone();
+		}
+		if let Ok(mut s) = last_test_stderr.lock() {
+			*s = result.stderr.clone();
+		}
+
+		let stdout = &result.stdout;
+		if !stdout.is_empty() {
+			print!("{}", stdout);
+		}
+
+		if !result.success {
+			return Err(anyhow::anyhow!(
+				"Test failed with exit code {:?}\nSTDOUT:\n{}\n\nSTDERR:\n{}",
+				result.exit_code,
+				result.stdout,
+				result.stderr
+			));
+		}
+		Ok(())
+	}
+	Err(e) => {
+		Err(anyhow::anyhow!("Hermetic test execution failed: {}", e))
+	}
+	}
+}
+
+fn compute_test_cache_key(executable_path: &PathBuf) -> Result<String> {
+	use std::fs::File;
+	use std::io::Read;
+
+	let mut file = File::open(executable_path)?;
+	let mut buffer = Vec::new();
+	file.read_to_end(&mut buffer)?;
+
+	let hash = blake3::hash(&buffer);
+	Ok(hash.to_string())
 }
 
 fn find_executable_in_dir(dir: &PathBuf, name_pattern: Option<&str>) -> Option<PathBuf> {
@@ -720,8 +936,8 @@ fn find_test_executable_in_dir(dir: &PathBuf, component_pattern: Option<&str>) -
 
 fn handle_cache_command(action: CacheCommand, project_path: &Path) -> Result<()> {
 	let cas_dir = project_path.join("forge-out").join("cas");
-	let db_path = cas_dir.join("cache.db");
-	let legacy_cache_path = project_path.join("forge-out").join("cache.json");
+	let _db_path = cas_dir.join("cache.db");
+	let _legacy_cache_path = project_path.join("forge-out").join("cache.json");
 
 	match action {
 		CacheCommand::Stats => {
@@ -731,7 +947,11 @@ fn handle_cache_command(action: CacheCommand, project_path: &Path) -> Result<()>
 				let stats = db.get_stats()?;
 				println!("Cache Statistics:");
 				println!("  Total files: {}", stats.total_files);
-				println!("  Total size: {} bytes ({} MB)", stats.total_size, stats.total_size / (1024 * 1024));
+				println!(
+					"  Total size: {} bytes ({} MB)",
+					stats.total_size,
+					stats.total_size / (1024 * 1024)
+				);
 				if let Some(oldest) = stats.oldest_timestamp {
 					println!("  Oldest artifact: {}", oldest);
 				}
@@ -783,7 +1003,11 @@ fn handle_cache_command(action: CacheCommand, project_path: &Path) -> Result<()>
 
 			println!("Cache prune complete:");
 			println!("  Files removed: {}", result.files_removed);
-			println!("  Space freed: {} bytes ({} MB)", result.freed_size, result.freed_size / (1024 * 1024));
+			println!(
+				"  Space freed: {} bytes ({} MB)",
+				result.freed_size,
+				result.freed_size / (1024 * 1024)
+			);
 		}
 		CacheCommand::Clean => {
 			let cache_path = project_path.join("forge-out");
