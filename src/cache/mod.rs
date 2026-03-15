@@ -1,4 +1,27 @@
-use dashmap::DashMap;
+mod db;
+mod gc;
+mod hasher;
+
+pub use db::{CacheDb, CacheStats};
+pub use gc::{CacheGC, GCResult};
+pub use hasher::SmartHasher;
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+	#[error("Database error: {0}")]
+	Database(#[from] rusqlite::Error),
+
+	#[error("IO error: {0}")]
+	Io(#[from] std::io::Error),
+
+	#[error("Hash error: {0}")]
+	Hash(String),
+}
+
+// Re-export for backward compatibility
+pub use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::{fs::File, io::BufReader, path::Path, time::SystemTime};
 

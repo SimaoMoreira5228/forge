@@ -1,4 +1,4 @@
-use crate::{cache::BuildCache, config::Config, error::ForgeError, forge_root_config::ForgeRootConfig, lua_api};
+use crate::{cache::{BuildCache, CacheDb}, config::Config, error::ForgeError, forge_root_config::ForgeRootConfig, lua_api};
 use anyhow::Context;
 use blake3::Hasher;
 use dashmap::DashMap;
@@ -72,6 +72,30 @@ impl Project {
 		let cache = BuildCache::load(&cache_path);
 
 		cache.validate_and_clean(&path);
+
+		// Auto-migrate old JSON cache to SQLite if present
+		let db_path = cas_path.join("cache.db");
+		if cache_path.exists() {
+			match CacheDb::new(&db_path) {
+				Ok(db) => {
+					match db.migrate_from_json(&cache_path) {
+						Ok(count) => {
+							log::info!("Migrated {} cache entries to SQLite.", count);
+							let _ = db.delete_old_cache(&cache_path);
+						}
+						Err(e) => {
+							log::warn!("Cache migration failed: {}", e);
+						}
+					}
+				}
+				Err(e) => {
+					log::warn!("Failed to open SQLite cache: {}", e);
+				}
+			}
+		} else {
+			// Initialize empty SQLite cache for new builds
+			let _ = CacheDb::new(&db_path);
+		}
 
 		Ok(Self {
 			path,

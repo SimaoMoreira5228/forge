@@ -2,15 +2,41 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 
+use crate::cache::{CacheDb, CacheGC, GCResult};
+
+#[derive(Subcommand, Debug)]
+enum CacheCommand {
+	Stats,
+	List {
+		#[arg(short, long, default_value = "20")]
+		limit: usize,
+	},
+	Prune {
+		#[arg(long, help = "Maximum cache size (e.g., 10GB)")]
+		max_size: Option<String>,
+		#[arg(long, help = "Remove artifacts older than N days")]
+		older_than: Option<u64>,
+	},
+	Clean,
+}
+
+#[derive(Subcommand, Debug)]
+enum DepsCommand {
+	List,
+	Sync,
+}
+
 mod cache;
 mod config;
 mod error;
 mod forge_root_config;
 mod graph;
 mod lua_api;
+mod package;
 mod project;
 mod source;
 mod target;
+mod workspace;
 
 use std::process::Command;
 
@@ -78,6 +104,16 @@ enum Commands {
 	Types {
 		#[arg(short, long, help = "Output path for types.lua file", default_value = "types.lua")]
 		output: PathBuf,
+	},
+
+	Cache {
+		#[command(subcommand)]
+		action: CacheCommand,
+	},
+
+	Deps {
+		#[command(subcommand)]
+		action: DepsCommand,
 	},
 }
 
@@ -196,6 +232,12 @@ fn main() -> Result<()> {
 			let types_content = lua_api::init::generate_types_lua();
 			std::fs::write(&output, types_content)?;
 			println!("Generated types.lua at: {}", output.display());
+		}
+		Some(Commands::Cache { action }) => {
+			handle_cache_command(action, &project_path)?;
+		}
+		Some(Commands::Deps { action }) => {
+			handle_deps_command(action)?;
 		}
 		None => {
 			if cli.target.is_empty() {
@@ -674,4 +716,123 @@ fn find_test_executable_in_dir(dir: &PathBuf, component_pattern: Option<&str>) -
 	}
 
 	None
+}
+
+fn handle_cache_command(action: CacheCommand, project_path: &Path) -> Result<()> {
+	let cas_dir = project_path.join("forge-out").join("cas");
+	let db_path = cas_dir.join("cache.db");
+	let legacy_cache_path = project_path.join("forge-out").join("cache.json");
+
+	match action {
+		CacheCommand::Stats => {
+			let sqlite_path = cas_dir.join("cache.db");
+			if sqlite_path.exists() {
+				let db = CacheDb::new(&sqlite_path)?;
+				let stats = db.get_stats()?;
+				println!("Cache Statistics:");
+				println!("  Total files: {}", stats.total_files);
+				println!("  Total size: {} bytes ({} MB)", stats.total_size, stats.total_size / (1024 * 1024));
+				if let Some(oldest) = stats.oldest_timestamp {
+					println!("  Oldest artifact: {}", oldest);
+				}
+				if let Some(newest) = stats.newest_timestamp {
+					println!("  Newest access: {}", newest);
+				}
+			} else {
+				// Fall back to scanning CAS directory
+				let mut total_size = 0u64;
+				let mut total_files = 0u64;
+				if let Ok(entries) = std::fs::read_dir(&cas_dir) {
+					for entry in entries.flatten() {
+						if entry.path().is_file() {
+							if let Ok(meta) = std::fs::metadata(entry.path()) {
+								total_size += meta.len();
+								total_files += 1;
+							}
+						}
+					}
+				}
+				println!("Cache Statistics (scanning CAS):");
+				println!("  Total files: {}", total_files);
+				println!("  Total size: {} bytes ({} MB)", total_size, total_size / (1024 * 1024));
+			}
+		}
+		CacheCommand::List { limit } => {
+			let sqlite_path = cas_dir.join("cache.db");
+			if sqlite_path.exists() {
+				let db = CacheDb::new(&sqlite_path)?;
+				let artifacts = db.list_artifacts(limit)?;
+				println!("Recent artifacts in cache:");
+				for artifact in artifacts {
+					println!("  {} ({} bytes)", artifact.hash[..16].to_string(), artifact.size);
+				}
+			} else {
+				println!("No SQLite cache found. Use 'forge build' to create one.");
+			}
+		}
+		CacheCommand::Prune { max_size, older_than } => {
+			let max_size_bytes = max_size
+				.as_ref()
+				.and_then(|s| parse_size(s))
+				.unwrap_or(10 * 1024 * 1024 * 1024);
+			let max_age_days = older_than.unwrap_or(30);
+			let max_age = std::time::Duration::from_secs(max_age_days * 24 * 60 * 60);
+
+			let gc = CacheGC::new(max_size_bytes, max_age, 100);
+			let result: GCResult = gc.run(&cas_dir);
+
+			println!("Cache prune complete:");
+			println!("  Files removed: {}", result.files_removed);
+			println!("  Space freed: {} bytes ({} MB)", result.freed_size, result.freed_size / (1024 * 1024));
+		}
+		CacheCommand::Clean => {
+			let cache_path = project_path.join("forge-out");
+			println!("Cleaning cache at: {}", cache_path.display());
+			if cache_path.exists() {
+				std::fs::remove_dir_all(&cache_path)?;
+			}
+			println!("Cache cleaned successfully!");
+		}
+	}
+
+	Ok(())
+}
+
+fn handle_deps_command(action: DepsCommand) -> Result<()> {
+	let package_manager = crate::package::PackageManager::new();
+
+	match action {
+		DepsCommand::List => {
+			let packages = package_manager.list_local();
+			if packages.is_empty() {
+				println!("No local packages installed.");
+			} else {
+				println!("Local packages:");
+				for pkg in packages {
+					println!("  {}@{}", pkg.name, pkg.version);
+				}
+			}
+		}
+		DepsCommand::Sync => {
+			println!("Syncing dependencies...");
+			println!("Note: Dependency sync not yet fully implemented.");
+			println!("Package directory: {}", package_manager.packages_dir().display());
+		}
+	}
+
+	Ok(())
+}
+
+fn parse_size(s: &str) -> Option<u64> {
+	let s = s.to_uppercase();
+	let (num_str, unit) = s.split_at(s.len().saturating_sub(1));
+	let num: u64 = num_str.parse().ok()?;
+	let multiplier: u64 = match unit {
+		"B" => 1,
+		"K" => 1024,
+		"M" => 1024 * 1024,
+		"G" => 1024 * 1024 * 1024,
+		_ => return None,
+	};
+	Some(num * multiplier)
 }
