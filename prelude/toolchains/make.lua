@@ -142,7 +142,7 @@ function M.resolve_compiler(name, options)
 	local make_bin = first_existing(
 		collect_paths(
 			info.make,
-		info.bin_dir and common.path_join({ info.bin_dir, "make" }) or nil,
+			info.bin_dir and common.path_join({ info.bin_dir, "make" }) or nil,
 			info.bin_dir and common.path_join({ info.bin_dir, "gmake" }) or nil
 		)
 	)

@@ -219,9 +219,9 @@ fn download_with_progress(mut reader: impl Read, total_size: Option<u64>, name: 
 	let progress = match total_size {
 		Some(size) if size > 0 => {
 			let pb = ProgressBar::new(size);
-			if let Ok(style) = ProgressStyle::with_template(
-				"{msg:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({percent}%) {eta}",
-			) {
+			if let Ok(style) =
+				ProgressStyle::with_template("{msg:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({percent}%) {eta}")
+			{
 				pb.set_style(style.progress_chars("=> "));
 			}
 			pb

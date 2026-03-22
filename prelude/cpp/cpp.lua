@@ -103,10 +103,10 @@ local function register_target(target_name, target_info)
 		triple = target_info.target
 	end
 
-	forge.graph.target {
+	forge.graph.target({
 		name = target_name,
 		triple = triple,
-	}
+	})
 end
 
 local function define_library_for_target(library_info, target_name, target_config)
@@ -120,7 +120,7 @@ local function define_library_for_target(library_info, target_name, target_confi
 	local include_dirs = normalize_includes(library_info.includes, library_info.path)
 	local deps = normalize_deps(library_info.dependencies)
 
-	forge.graph.library {
+	forge.graph.library({
 		name = library_info.name,
 		target = target_name,
 		sources = sources,
@@ -128,7 +128,7 @@ local function define_library_for_target(library_info, target_name, target_confi
 		defines = library_info.defines,
 		cflags = library_info.cxxflags,
 		deps = deps,
-	}
+	})
 
 	compiler.define_library_rules_for_target(library_info, target_name, target_config)
 end
@@ -144,7 +144,7 @@ local function define_binary_for_target(binary_info, target_name, target_config)
 	local include_dirs = normalize_includes(binary_info.includes, binary_info.path)
 	local deps = normalize_deps(binary_info.dependencies)
 
-	forge.graph.binary {
+	forge.graph.binary({
 		name = binary_info.name,
 		target = target_name,
 		sources = sources,
@@ -154,7 +154,7 @@ local function define_binary_for_target(binary_info, target_name, target_config)
 		ldflags = binary_info.ldflags,
 		system_libs = target_config.system_libs or binary_info.system_libs,
 		deps = deps,
-	}
+	})
 
 	compiler.define_program_rules_for_target(binary_info, target_name, target_config)
 end

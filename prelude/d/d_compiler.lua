@@ -29,7 +29,8 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 	end
 	local output_path = forge.path.join({ out_dir, output_name })
 
-	local sources = program_info.srcs and common.resolve_sources(program_info.srcs, program_path) or forge.fs.glob(forge.path.join({ program_path, "**/*.d" }))
+	local sources = program_info.srcs and common.resolve_sources(program_info.srcs, program_path)
+		or forge.fs.glob(forge.path.join({ program_path, "**/*.d" }))
 
 	local args = {}
 	for _, arg in ipairs(compiler_info.args) do
@@ -65,7 +66,7 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 
 			table.insert(dep_rules, ("%s-lib-%s"):format(name, target_name))
 			table.insert(inputs, dep_output_path)
-			
+
 			if compiler_name == "ldc" or compiler_name == "dmd" then
 				table.insert(args, "-L-L" .. dep_out_dir)
 				table.insert(args, "-L-l" .. name)
@@ -101,7 +102,7 @@ function M.define_library_rules_for_target(library_info, target_name, target_con
 	local library_path = library_info.path or forge.project.root
 	local target = target_config.target or common.get_host_target()
 	local compiler_name = target_config.compiler or "gdc"
-	
+
 	local out_dir = forge.path.join({
 		forge.project.root,
 		"forge-out",
@@ -112,7 +113,8 @@ function M.define_library_rules_for_target(library_info, target_name, target_con
 	local output_name = "lib" .. library_info.name .. ".a"
 	local output_path = forge.path.join({ out_dir, output_name })
 
-	local sources = library_info.srcs and common.resolve_sources(library_info.srcs, library_path) or forge.fs.glob(forge.path.join({ library_path, "**/*.d" }))
+	local sources = library_info.srcs and common.resolve_sources(library_info.srcs, library_path)
+		or forge.fs.glob(forge.path.join({ library_path, "**/*.d" }))
 
 	local compiler_info = common.get_compiler_for_target(compiler_name, target)
 

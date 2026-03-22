@@ -601,7 +601,12 @@ fn run_target_test_mode(project_path: &PathBuf, target_name: &str, policy: &Herm
 	Ok(())
 }
 
-fn run_component_target_test_mode(project_path: &PathBuf, component_name: &str, target_name: &str, policy: &HermeticPolicy) -> Result<()> {
+fn run_component_target_test_mode(
+	project_path: &PathBuf,
+	component_name: &str,
+	target_name: &str,
+	policy: &HermeticPolicy,
+) -> Result<()> {
 	let forge_out = project_path.join("forge-out");
 	if !forge_out.exists() {
 		return Err(anyhow::anyhow!("forge-out directory not found at {}", forge_out.display()));
@@ -751,46 +756,50 @@ fn run_executable_hermetic(executable_path: &PathBuf, project_path: &PathBuf, po
 	let runner = SandboxRunner::new(policy.clone(), runfiles_dir);
 
 	let mut action_spec = ActionSpec::new(
-		executable_path.file_name()
+		executable_path
+			.file_name()
 			.and_then(|n| n.to_str())
 			.unwrap_or("test")
-			.to_string()
+			.to_string(),
 	);
 	action_spec.command = executable_path.to_string_lossy().to_string();
 	action_spec.args = vec![];
 	action_spec.inputs = vec![executable_path.clone()];
-	action_spec.outputs = vec![project_path.join(".forge").join("test-results").join(executable_path.file_name().unwrap_or_default())];
+	action_spec.outputs = vec![
+		project_path
+			.join(".forge")
+			.join("test-results")
+			.join(executable_path.file_name().unwrap_or_default()),
+	];
 	action_spec.env = HashMap::new();
 	action_spec.workdir = project_path.clone();
 
 	match runner.execute(&action_spec) {
-	Ok(result) => {
-		// Store stdout/stderr for test caching
-		if let Ok(mut s) = last_test_stdout.lock() {
-			*s = result.stdout.clone();
-		}
-		if let Ok(mut s) = last_test_stderr.lock() {
-			*s = result.stderr.clone();
-		}
+		Ok(result) => {
+			// Store stdout/stderr for test caching
+			if let Ok(mut s) = last_test_stdout.lock() {
+				*s = result.stdout.clone();
+			}
+			if let Ok(mut s) = last_test_stderr.lock() {
+				*s = result.stderr.clone();
+			}
 
-		let stdout = &result.stdout;
-		if !stdout.is_empty() {
-			print!("{}", stdout);
-		}
+			let stdout = &result.stdout;
+			if !stdout.is_empty() {
+				print!("{}", stdout);
+			}
 
-		if !result.success {
-			return Err(anyhow::anyhow!(
-				"Test failed with exit code {:?}\nSTDOUT:\n{}\n\nSTDERR:\n{}",
-				result.exit_code,
-				result.stdout,
-				result.stderr
-			));
+			if !result.success {
+				return Err(anyhow::anyhow!(
+					"Test failed with exit code {:?}\nSTDOUT:\n{}\n\nSTDERR:\n{}",
+					result.exit_code,
+					result.stdout,
+					result.stderr
+				));
+			}
+			Ok(())
 		}
-		Ok(())
-	}
-	Err(e) => {
-		Err(anyhow::anyhow!("Hermetic test execution failed: {}", e))
-	}
+		Err(e) => Err(anyhow::anyhow!("Hermetic test execution failed: {}", e)),
 	}
 }
 

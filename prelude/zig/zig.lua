@@ -1,6 +1,6 @@
 local common = require("@prelude/zig/zig_common.lua")
-local target_common = require("@prelude/target_common.lua")
 local compiler_common = require("@prelude/compiler_common.lua")
+local target_common = require("@prelude/target_common.lua")
 
 local M = {}
 
@@ -125,10 +125,10 @@ local function register_target(target_name, target_info)
 		triple = target_info.target
 	end
 
-	forge.graph.target {
+	forge.graph.target({
 		name = target_name,
 		triple = triple,
-	}
+	})
 end
 
 local function define_library_for_target(library_info, target_name, target_config)
@@ -142,7 +142,7 @@ local function define_library_for_target(library_info, target_name, target_confi
 	local include_dirs = normalize_includes(library_info.includes, library_info.path)
 	local deps = normalize_deps(library_info.dependencies)
 
-	forge.graph.library {
+	forge.graph.library({
 		name = library_info.name,
 		target = target_name,
 		sources = sources,
@@ -150,7 +150,7 @@ local function define_library_for_target(library_info, target_name, target_confi
 		defines = library_info.defines,
 		cflags = library_info.zig_flags,
 		deps = deps,
-	}
+	})
 end
 
 local function define_executable_for_target(executable_info, target_name, target_config)
@@ -164,7 +164,7 @@ local function define_executable_for_target(executable_info, target_name, target
 	local include_dirs = normalize_includes(executable_info.includes, executable_info.path)
 	local deps = normalize_deps(executable_info.dependencies)
 
-	forge.graph.binary {
+	forge.graph.binary({
 		name = executable_info.name,
 		target = target_name,
 		sources = sources,
@@ -174,7 +174,7 @@ local function define_executable_for_target(executable_info, target_name, target
 		ldflags = executable_info.ldflags,
 		system_libs = target_config.system_libs or executable_info.system_libs,
 		deps = deps,
-	}
+	})
 end
 
 local function define_build_zig_for_target(build_info, target_name, target_config)
