@@ -1,0 +1,39 @@
+local c = require("@prelude/c/c.lua")
+local cpp = require("@prelude/cpp/cpp.lua")
+local d = require("@prelude/d/d.lua")
+
+local host_target = forge.target:host()
+
+c.library {
+    name = "hello_c",
+    srcs = { "src/c/hello_c.c" },
+    includes = { "src/c" },
+    targets = {
+        host = { target = host_target }
+    }
+}
+
+cpp.library {
+    name = "hello_cpp",
+    srcs = { "src/cpp/hello_cpp.cpp" },
+    includes = { "src/cpp" },
+    targets = {
+        host = { target = host_target }
+    }
+}
+
+d.binary {
+    name = "d_interop",
+    srcs = { "src/d/hello_interop.d" },
+    dependencies = {
+        hello_c = { path = "." },
+        hello_cpp = { path = "." }
+    },
+    targets = {
+        host = { 
+            target = host_target, 
+            compiler = "ldc",
+            system_libs = { "stdc++" }
+        }
+    }
+}

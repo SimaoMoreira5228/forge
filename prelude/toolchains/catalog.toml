@@ -110,3 +110,57 @@ url = "https://ftp.gnu.org/gnu/make/make-{version}.tar.gz"
 
 [toolchains.make.targets.windows-x86_64]
 url = "https://ftp.gnu.org/gnu/make/make-{version}.tar.gz"
+
+[toolchains.gdc]
+default_version = "6.3.0"
+
+[toolchains.gdc.targets.linux-x86_64]
+url = "https://gdcproject.org/archive/binaries/6.3.0/x86_64-linux-gnu/gdc-6.3.0+2.068.2.tar.xz"
+
+[toolchains.gdc.targets.linux-i686]
+url = "https://gdcproject.org/archive/binaries/6.3.0/i686-linux-gnu/gdc-6.3.0+2.068.2.tar.xz"
+
+[toolchains.gdc.targets.linux-arm]
+url = "https://gdcproject.org/archive/binaries/6.3.0/arm-linux-gnueabi/gdc-6.3.0+2.068.2.tar.xz"
+
+[toolchains.gdc.targets.linux-armv7]
+url = "https://gdcproject.org/archive/binaries/6.3.0/arm-linux-gnueabihf/gdc-6.3.0+2.068.2.tar.xz"
+
+[toolchains.gdc.targets.windows-x86_64]
+url = "https://gdcproject.org/archive/binaries/6.3.0/x86_64-w64-mingw32/gdc-6.3.0+2.068.2-x86_64-linux-gnu.7z"
+
+[toolchains.gdc.targets.windows-i686]
+url = "https://gdcproject.org/archive/binaries/6.3.0/i686-w64-mingw32/gdc-6.3.0+2.068.2-x86_64-linux-gnu.7z"
+
+[toolchains.dmd]
+default_version = "2.112.0"
+
+[toolchains.dmd.targets.linux-x86_64]
+url = "https://downloads.dlang.org/releases/2026/dmd.{version}.linux.tar.xz"
+
+[toolchains.dmd.targets.windows-x86_64]
+url = "https://downloads.dlang.org/releases/2026/dmd.{version}.windows.zip"
+
+[toolchains.dmd.targets.darwin-x86_64]
+url = "https://downloads.dlang.org/releases/2026/dmd.{version}.osx.tar.xz"
+
+[toolchains.dmd.targets.darwin-aarch64]
+url = "https://downloads.dlang.org/releases/2026/dmd.{version}.osx.tar.xz"
+
+[toolchains.ldc]
+default_version = "1.42.0"
+
+[toolchains.ldc.targets.linux-x86_64]
+url = "https://github.com/ldc-developers/ldc/releases/download/v{version}/ldc2-{version}-linux-x86_64.tar.xz"
+
+[toolchains.ldc.targets.linux-aarch64]
+url = "https://github.com/ldc-developers/ldc/releases/download/v{version}/ldc2-{version}-linux-aarch64.tar.xz"
+
+[toolchains.ldc.targets.darwin-x86_64]
+url = "https://github.com/ldc-developers/ldc/releases/download/v{version}/ldc2-{version}-osx-x86_64.tar.xz"
+
+[toolchains.ldc.targets.darwin-aarch64]
+url = "https://github.com/ldc-developers/ldc/releases/download/v{version}/ldc2-{version}-osx-arm64.tar.xz"
+
+[toolchains.ldc.targets.windows-x86_64]
+url = "https://github.com/ldc-developers/ldc/releases/download/v{version}/ldc2-{version}-windows-x64.7z"

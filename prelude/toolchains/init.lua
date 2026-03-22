@@ -7,6 +7,9 @@ local registry = {
 	zig = require("@prelude/toolchains/zig.lua"),
 	cmake = require("@prelude/toolchains/cmake.lua"),
 	make = require("@prelude/toolchains/make.lua"),
+	gdc = require("@prelude/toolchains/gdc.lua"),
+	dmd = require("@prelude/toolchains/dmd.lua"),
+	ldc = require("@prelude/toolchains/ldc.lua"),
 }
 
 local M = {}

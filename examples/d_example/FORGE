@@ -1,0 +1,9 @@
+local d = require("@prelude/d/d.lua")
+
+d.binary {
+    name = "hello_d",
+    srcs = { "src/hello.d" },
+    targets = {
+        host = { target = forge.target:host(), compiler = "ldc" }
+    }
+}

@@ -1,0 +1,7 @@
+[project]
+name = "d_interop"
+version = "0.1.0"
+
+[discovery]
+include = ["."]
+exclude = ["forge-out"]
