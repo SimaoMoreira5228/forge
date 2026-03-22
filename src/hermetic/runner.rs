@@ -179,7 +179,8 @@ impl SandboxRunner {
 		let path = env.get("PATH").cloned().unwrap_or_default();
 		log::debug!("Running command: {} with PATH: {}", spec.command, path);
 
-		let mut cmd = Command::new(&spec.command);
+		let provider = crate::hermetic::sandbox::get_sandbox(&self.policy);
+		let mut cmd = provider.create_command(spec, &self.runfiles_dir)?;
 
 		if spec.workdir.exists() {
 			cmd.current_dir(&spec.workdir);

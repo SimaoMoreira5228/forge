@@ -1,4 +1,5 @@
 local common = require("@prelude/zig/zig_common.lua")
+local compiler = require("@prelude/zig/zig_compiler.lua")
 local compiler_common = require("@prelude/compiler_common.lua")
 local target_common = require("@prelude/target_common.lua")
 
@@ -151,6 +152,8 @@ local function define_library_for_target(library_info, target_name, target_confi
 		cflags = library_info.zig_flags,
 		deps = deps,
 	})
+
+	compiler.define_library_rules_for_target(library_info, target_name, target_config)
 end
 
 local function define_executable_for_target(executable_info, target_name, target_config)
@@ -175,6 +178,8 @@ local function define_executable_for_target(executable_info, target_name, target
 		system_libs = target_config.system_libs or executable_info.system_libs,
 		deps = deps,
 	})
+
+	compiler.define_executable_rules_for_target(executable_info, target_name, target_config)
 end
 
 local function define_build_zig_for_target(build_info, target_name, target_config)

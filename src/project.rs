@@ -5,13 +5,14 @@ use crate::{
 	forge_root_config::ForgeRootConfig,
 	hermetic::{ActionSpec, HermeticPolicy, SandboxRunner},
 	lua_api,
+	graph::BuildGraph,
 };
 use anyhow::Context;
 use blake3::Hasher;
 use dashmap::DashMap;
 use ignore::WalkBuilder;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use mlua::{Lua, UserData};
+use mlua::{Lua, UserData, ObjectLike, LuaSerdeExt};
 use rayon::prelude::*;
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
@@ -19,7 +20,7 @@ use std::{
 	borrow::Cow,
 	collections::HashMap,
 	path::{Path, PathBuf},
-	sync::Arc,
+	sync::{Arc, Mutex},
 	time::Instant,
 };
 use walkdir::WalkDir;
@@ -44,11 +45,13 @@ pub struct Project {
 	pub config: Config,
 	pub forge_root_config: ForgeRootConfig,
 	pub build_graph: Arc<DashMap<String, Rule>>,
+	pub dependency_graph: Arc<Mutex<BuildGraph>>,
 	pub output_map: Arc<DashMap<String, String>>,
 	pub cache: BuildCache,
 	cas_path: PathBuf,
-	lua: Lua,
+	pub lua: Lua,
 	hermetic_policy: HermeticPolicy,
+	pub explain_trace: Arc<DashMap<String, Vec<String>>>,
 }
 
 impl Project {
@@ -113,11 +116,13 @@ impl Project {
 			config,
 			forge_root_config,
 			build_graph: Arc::new(DashMap::new()),
+			dependency_graph: Arc::new(Mutex::new(BuildGraph::new())),
 			output_map: Arc::new(DashMap::new()),
 			cache,
 			cas_path,
 			lua: Lua::new(),
 			hermetic_policy,
+			explain_trace: Arc::new(DashMap::new()),
 		})
 	}
 
@@ -219,13 +224,31 @@ impl Project {
 		Ok(hasher.finalize().to_hex().to_string())
 	}
 
-	pub fn run(&mut self) -> Result<(), ForgeError> {
+	pub fn load_graph(&self) -> Result<(), ForgeError> {
 		self.setup_lua_environment()?;
 
 		let forge_files = self.find_forge_files(&self.path)?;
 
+		log::debug!("Found {} FORGE files to load: {:?}", forge_files.len(), forge_files);
 		for forge_file in &forge_files {
 			log::debug!("Loading FORGE file: {}", forge_file.display());
+			
+			// Determine package name based on directory relative to project root
+			let rel_dir = forge_file.parent()
+				.and_then(|p| p.strip_prefix(&self.path).ok())
+				.map(|p| p.to_string_lossy().to_string())
+				.unwrap_or_else(|| String::from("."));
+			
+			// Set current package in graph API
+			// We can use the forge table already in globals
+			let globals = self.lua.globals();
+			if let Ok(forge) = globals.get::<mlua::Table>("forge") {
+				if let Ok(graph) = forge.get::<mlua::Table>("graph") {
+					let set_package: mlua::Function = graph.get("set_package")?;
+					set_package.call::<()>(rel_dir)?;
+				}
+			}
+
 			let content = std::fs::read_to_string(forge_file)?;
 
 			if content.trim().is_empty() {
@@ -236,7 +259,7 @@ impl Project {
 				});
 			}
 
-			if !content.contains("rule") && !content.contains("require") {
+			if !content.contains("rule") && !content.contains("require") && !content.contains("forge.graph") && !content.contains("graph") {
 				return Err(ForgeError::InvalidForgeFile {
 					file: forge_file.display().to_string(),
 					error: "No build rules found".to_string(),
@@ -252,6 +275,11 @@ impl Project {
 			}
 		}
 
+		Ok(())
+	}
+
+	pub fn run(&mut self) -> Result<(), ForgeError> {
+		self.load_graph()?;
 		self.execute_build_graph()?;
 
 		let cache_path = self.path.join("forge-out").join("cache.json");
@@ -389,15 +417,20 @@ impl Project {
 				if let Some(last_modified) = self.cache.mtimes.get(input) {
 					if modified > *last_modified.value() {
 						log::debug!("Rebuilding '{}': input '{}' was modified.", rule.name, input);
+						self.explain_trace.entry(rule.name.clone()).or_default().push(format!("Input file modified: {}", input));
 						self.cache.file_hashes.remove(input);
 						let new_hash = self.calculate_rule_hash(rule)?;
 						return Ok((true, Some(new_hash)));
 					}
 				} else {
 					log::debug!("Rebuilding '{}': input '{}' not found in mtime cache.", rule.name, input);
+					self.explain_trace.entry(rule.name.clone()).or_default().push(format!("Input file missing in cache: {}", input));
 					let new_hash = self.calculate_rule_hash(rule)?;
 					return Ok((true, Some(new_hash)));
 				}
+			} else {
+				// Dependency rule changed or missing file
+				self.explain_trace.entry(rule.name.clone()).or_default().push(format!("Input dependency changed or file missing: {}", input));
 			}
 		}
 
@@ -405,6 +438,7 @@ impl Project {
 			let output_path = self.path.join(output);
 			if !output_path.exists() {
 				log::debug!("Rebuilding '{}': output '{}' is missing.", rule.name, output);
+				self.explain_trace.entry(rule.name.clone()).or_default().push(format!("Output file missing: {}", output));
 				let new_hash = self.calculate_rule_hash(rule)?;
 				return Ok((true, Some(new_hash)));
 			}
@@ -418,6 +452,7 @@ impl Project {
 			return Ok((false, None));
 		}
 
+		self.explain_trace.entry(rule.name.clone()).or_default().push("Command, environment, or toolchain hash changed".to_string());
 		Ok((true, Some(new_hash)))
 	}
 

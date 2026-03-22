@@ -9,7 +9,11 @@ pub fn setup_lua_environment(lua: &Lua, project: &Project) -> Result<(), ForgeEr
 	let forge_table = lua.create_table()?;
 
 	let project_path = project.path.to_string_lossy().to_string();
-	forge_table.set("config", lua.to_value(&project.config)?)?;
+	let config_tbl = lua.to_value(&project.config)?;
+	if let mlua::Value::Table(ref tbl) = config_tbl {
+		tbl.set("toolchain", lua.to_value(&project.forge_root_config.toolchain)?)?;
+	}
+	forge_table.set("config", config_tbl)?;
 
 	forge_table.set("fs", lua_api::fs::create_fs_table(lua)?)?;
 	forge_table.set("http", lua_api::http::create_http_table(lua)?)?;
@@ -24,12 +28,27 @@ pub fn setup_lua_environment(lua: &Lua, project: &Project) -> Result<(), ForgeEr
 	forge_table.set("table", lua_api::table::create_table_table(lua)?)?;
 	forge_table.set("json", lua_api::json::create_json_table(lua)?)?;
 	forge_table.set("toml", lua_api::toml::create_toml_table(lua)?)?;
+	forge_table.set("profile", lua_api::profile::create_profile_table(lua, project.config.profile.clone(), project.forge_root_config.clone())?)?;
+	forge_table.set("constraint", lua_api::constraint::create_constraint_table(lua)?)?;
 	forge_table.set("project", lua_api::project::create_project_table(lua, project_path.clone())?)?;
-	forge_table.set("graph", lua_api::graph::create_graph_table(lua, project.path.clone())?)?;
+	forge_table.set("graph", lua_api::graph::create_graph_table(lua, project.path.clone(), project.dependency_graph.clone())?)?;
 	forge_table.set("target", lua_api::target::create_target_table(lua)?)?;
 	forge_table.set("source", lua_api::source::create_source_table(lua, project.path.clone())?)?;
+	forge_table.set("toolchain", lua_api::toolchain::create_toolchain_table(lua, project.path.clone())?)?;
 
-	let prelude_path = project.path.join("prelude");
+	let mut prelude_path = project.path.join("prelude");
+	if !prelude_path.exists() {
+		// Try to find it in parent directories (case of examples in the repo)
+		let mut current = project.path.as_path();
+		while let Some(parent) = current.parent() {
+			let candidate = parent.join("prelude");
+			if candidate.exists() {
+				prelude_path = candidate;
+				break;
+			}
+			current = parent;
+		}
+	}
 
 	let build_graph = project.build_graph.clone();
 	let output_map = project.output_map.clone();
@@ -157,6 +176,12 @@ pub fn generate_types_lua() -> String {
 	types.push('\n');
 	types.push_str(lua_api::source::SourceApi::source_lua_type_definitions());
 	types.push('\n');
+	types.push_str(lua_api::profile::ProfileApi::profile_lua_type_definitions());
+	types.push('\n');
+	types.push_str(lua_api::constraint::ConstraintApi::constraint_lua_type_definitions());
+	types.push('\n');
+	types.push_str(lua_api::toolchain::ToolchainApi::toolchain_lua_type_definitions());
+	types.push('\n');
 
 	types.push_str("---@class Forge\n");
 	types.push_str("---@field config table Configuration table\n");
@@ -167,6 +192,8 @@ pub fn generate_types_lua() -> String {
 	types.push_str("---@field exec Exec Command execution operations\n");
 	types.push_str("---@field semver Semver Semantic versioning operations\n");
 	types.push_str("---@field platform Platform Platform detection operations\n");
+	types.push_str("---@field profile Profile Build profile operations\n");
+	types.push_str("---@field constraint Constraint Platform constraint operations\n");
 	types.push_str("---@field path Path Path manipulation operations\n");
 	types.push_str("---@field string String String manipulation operations\n");
 	types.push_str("---@field hash Hash Hashing operations\n");
@@ -177,6 +204,7 @@ pub fn generate_types_lua() -> String {
 	types.push_str("---@field graph Graph Build graph operations\n");
 	types.push_str("---@field target Target Target resolution and management\n");
 	types.push_str("---@field source Source Source file resolution\n");
+	types.push_str("---@field toolchain Toolchain Toolchain management operations\n");
 	types.push_str("---@field rule fun(rule: table): nil Add a build rule\n");
 	types.push_str("---@field sleep fun(seconds: number): nil Sleep for specified seconds\n");
 	types.push('\n');

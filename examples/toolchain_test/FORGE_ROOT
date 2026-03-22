@@ -1,0 +1,11 @@
+[project]
+name = "toolchain_test"
+version = "0.1.0"
+
+[discovery]
+include = ["."]
+exclude = ["forge-out"]
+
+[toolchain.zig]
+from = "version"
+version = "0.13.0"

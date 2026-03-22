@@ -1,11 +1,13 @@
 mod action;
 mod policy;
 mod runner;
+mod sandbox;
 mod toolchain;
 
 pub use action::ActionSpec;
 pub use policy::{HermeticPolicy, PolicyMode};
 pub use runner::SandboxRunner;
+pub use sandbox::{SandboxProvider, get_sandbox};
 pub use toolchain::ToolchainFingerprint;
 
 pub type Result<T> = std::result::Result<T, Error>;

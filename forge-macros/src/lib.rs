@@ -60,6 +60,7 @@ struct LuaFunction {
 	fn_ident: Ident,
 	has_self: bool,
 	has_lua_context: bool,
+	is_result: bool,
 }
 
 fn extract_lua_functions(input: &ItemImpl) -> Vec<LuaFunction> {
@@ -89,6 +90,20 @@ fn extract_lua_functions(input: &ItemImpl) -> Vec<LuaFunction> {
 
 			let args = extract_function_args(&method.sig.inputs, has_self, has_lua_context);
 
+			let is_result = if let ReturnType::Type(_, ty) = &method.sig.output {
+				if let Type::Path(type_path) = &**ty {
+					if let Some(segment) = type_path.path.segments.last() {
+						segment.ident == "Result"
+					} else {
+						false
+					}
+				} else {
+					false
+				}
+			} else {
+				false
+			};
+
 			let return_type = extract_return_type(&method.sig.output);
 
 			functions.push(LuaFunction {
@@ -99,6 +114,7 @@ fn extract_lua_functions(input: &ItemImpl) -> Vec<LuaFunction> {
 				fn_ident,
 				has_self,
 				has_lua_context,
+				is_result,
 			});
 		}
 	}
@@ -224,10 +240,15 @@ fn generate_create_table_function(api_name: &str, functions: &[LuaFunction], typ
 				let param_pattern = generate_param_pattern(&func.args);
 				let call_args = generate_call_args(&func.args);
 
+				let call = if func.is_result {
+					quote! { #type_name::#func_ident(lua, #call_args) }
+				} else {
+					quote! { Ok(#type_name::#func_ident(lua, #call_args)) }
+				};
+
 				quote! {
 					let #func_ident = lua.create_function(|lua, #param_pattern| {
-						let result = #type_name::#func_ident(lua, #call_args);
-						Ok(result)
+						#call
 					})?;
 					tbl.set(#func_name, #func_ident)?;
 				}
@@ -235,10 +256,15 @@ fn generate_create_table_function(api_name: &str, functions: &[LuaFunction], typ
 				let param_pattern = generate_param_pattern(&func.args);
 				let call_args = generate_call_args(&func.args);
 
+				let call = if func.is_result {
+					quote! { #type_name::#func_ident(#call_args) }
+				} else {
+					quote! { Ok(#type_name::#func_ident(#call_args)) }
+				};
+
 				quote! {
 					let #func_ident = lua.create_function(|_, #param_pattern| {
-						let result = #type_name::#func_ident(#call_args);
-						Ok(result)
+						#call
 					})?;
 					tbl.set(#func_name, #func_ident)?;
 				}
@@ -313,27 +339,37 @@ fn generate_create_table_function(api_name: &str, functions: &[LuaFunction], typ
 				};
 
 				if func.has_lua_context {
-					quote! {
-						let #func_ident = {
-							let instance = self.clone();
-							lua.create_function(move |lua, #param_pattern| {
-								let result = instance.#func_ident(#method_args);
-								Ok(result)
-							})?
+						let call = if func.is_result {
+							quote! { instance.#func_ident(#method_args) }
+						} else {
+							quote! { Ok(instance.#func_ident(#method_args)) }
 						};
-						tbl.set(#func_name, #func_ident)?;
-					}
+
+						quote! {
+							let #func_ident = {
+								let instance = self.clone();
+								lua.create_function(move |lua, #param_pattern| {
+									#call
+								})?
+							};
+							tbl.set(#func_name, #func_ident)?;
+						}
 				} else {
-					quote! {
-						let #func_ident = {
-							let instance = self.clone();
-							lua.create_function(move |_, #param_pattern| {
-								let result = instance.#func_ident(#method_args);
-								Ok(result)
-							})?
+						let call = if func.is_result {
+							quote! { instance.#func_ident(#method_args) }
+						} else {
+							quote! { Ok(instance.#func_ident(#method_args)) }
 						};
-						tbl.set(#func_name, #func_ident)?;
-					}
+
+						quote! {
+							let #func_ident = {
+								let instance = self.clone();
+								lua.create_function(move |_, #param_pattern| {
+									#call
+								})?
+							};
+							tbl.set(#func_name, #func_ident)?;
+						}
 				}
 			})
 			.collect::<Vec<_>>();
@@ -347,10 +383,15 @@ fn generate_create_table_function(api_name: &str, functions: &[LuaFunction], typ
 					let param_pattern = generate_param_pattern(&func.args);
 					let call_args = generate_call_args(&func.args);
 
+					let call = if func.is_result {
+						quote! { #type_name::#func_ident(lua, #call_args) }
+					} else {
+						quote! { Ok(#type_name::#func_ident(lua, #call_args)) }
+					};
+
 					quote! {
 						let #func_ident = lua.create_function(|lua, #param_pattern| {
-							let result = #type_name::#func_ident(lua, #call_args);
-							Ok(result)
+							#call
 						})?;
 						tbl.set(#func_name, #func_ident)?;
 					}
@@ -358,10 +399,15 @@ fn generate_create_table_function(api_name: &str, functions: &[LuaFunction], typ
 					let param_pattern = generate_param_pattern(&func.args);
 					let call_args = generate_call_args(&func.args);
 
+					let call = if func.is_result {
+						quote! { #type_name::#func_ident(#call_args) }
+					} else {
+						quote! { Ok(#type_name::#func_ident(#call_args)) }
+					};
+
 					quote! {
 						let #func_ident = lua.create_function(|_, #param_pattern| {
-							let result = #type_name::#func_ident(#call_args);
-							Ok(result)
+							#call
 						})?;
 						tbl.set(#func_name, #func_ident)?;
 					}

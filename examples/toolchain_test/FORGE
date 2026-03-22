@@ -1,0 +1,8 @@
+-- FORGE file with correct rule call
+forge.rule {
+    name = "dummy",
+    command = "echo hello",
+    outputs = {"dummy.txt"}
+}
+
+print("Loading toolchain test FORGE file")

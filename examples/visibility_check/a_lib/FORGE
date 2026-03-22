@@ -1,0 +1,13 @@
+forge.graph.target { name = "host" }
+
+forge.graph.library({
+    name = "private_lib",
+    visibility = "private",
+    srcs = { "lib.c" },
+})
+
+forge.graph.library({
+    name = "restricted_lib",
+    srcs = { "lib.c" },
+    compatible_with = { "linux" },
+})

@@ -7,6 +7,7 @@ pub struct Config {
 	pub target_filters: Vec<String>,
 	pub component_filters: Vec<String>,
 	pub test_mode: bool,
+	pub profile: Option<String>,
 }
 
 #[derive(Debug, Clone)]

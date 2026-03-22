@@ -26,6 +26,7 @@ lazy_static = "1.4"
 log = { version = "0.4", features = ["serde"] }
 lz4 = "1.24"
 mlua = { version = "0.11", features = ["lua54", "serde", "anyhow", "userdata-wrappers", "vendored", "send"] }
+notify = "6.1.1"
 num_cpus = "1.16"
 petgraph = "0.8"
 proc-macro2 = "1.0"

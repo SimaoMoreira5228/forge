@@ -215,6 +215,14 @@ function M.resolve_build_config(target_config, language)
 	build_config.opt_flags = M.get_optimization_flags(language, build_config.optimization)
 	build_config.debug_flags = M.get_debug_flags(language, build_config.debug_info)
 
+	if forge and forge.profile and type(forge.profile.compiler_flags) == "function" then
+		build_config.profile_compiler_flags = forge.profile:compiler_flags()
+		build_config.profile_linker_flags = forge.profile:linker_flags()
+	else
+		build_config.profile_compiler_flags = {}
+		build_config.profile_linker_flags = {}
+	end
+
 	return build_config
 end
 

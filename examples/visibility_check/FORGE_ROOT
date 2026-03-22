@@ -1,0 +1,6 @@
+[project]
+name = "visibility_check"
+
+[discovery]
+include = ["a_lib", "app"]
+use_gitignore = false

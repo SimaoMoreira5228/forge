@@ -271,6 +271,14 @@
 ---@field transitive_deps fun(name: string, target: string): string[]
 --- Find dependency cycles in the graph, returns empty table if none found
 ---@field find_cycles fun(): any
+--- Get components that directly depend on the given component (reverse deps)
+---@field reverse_dependencies fun(name: string, target: string): string[]
+--- Find components matching a glob pattern on their name
+---@field components_matching fun(pattern: string): string[]
+--- Render the build graph as a Graphviz DOT string
+---@field output_dot fun(edge_labels: boolean?): string
+--- Check whether one component is allowed to depend on another. Throws a Lua error on violation.
+---@field check_visibility fun(from_name: string, from_target: string, to_name: string, to_target: string): any
 
 ---@type Graph
 
@@ -308,6 +316,23 @@
 
 ---@type Source
 
+---@class Profile
+--- Get compiler flags for the active profile
+---@field compiler_flags fun(): any
+--- Get linker flags for the active profile
+---@field linker_flags fun(): any
+
+---@type Profile
+
+---@class Constraint
+---@field new fun(): any
+--- Create or reference a constraint by name
+---@field get fun(name: string): any
+--- Add a new constraint type if not exists
+---@field add fun(name: string): any
+
+---@type Constraint
+
 ---@class Forge
 ---@field config table Configuration table
 ---@field fs Fs File system operations (all paths must be absolute)
@@ -317,6 +342,8 @@
 ---@field exec Exec Command execution operations
 ---@field semver Semver Semantic versioning operations
 ---@field platform Platform Platform detection operations
+---@field profile Profile Build profile operations
+---@field constraint Constraint Platform constraint operations
 ---@field path Path Path manipulation operations
 ---@field string String String manipulation operations
 ---@field hash Hash Hashing operations

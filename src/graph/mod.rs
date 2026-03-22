@@ -1,9 +1,12 @@
 mod build_graph;
 mod component;
 mod dependency;
-mod target;
+pub mod target;
 
-pub use build_graph::BuildGraph;
-pub use component::Component;
-pub use dependency::{ComponentRef, DependencyEdge};
-pub use target::Target;
+pub use build_graph::{BuildGraph, DotOptions, GraphError};
+pub use component::{
+	Component, ComponentId, ComponentType, ConstraintRef, LinkType, PackageId, TestKind, TestSize,
+	Visibility,
+};
+pub use dependency::{ComponentRef, ConfigTransition, DependencyEdge};
+pub use target::{Target, predefined_targets};

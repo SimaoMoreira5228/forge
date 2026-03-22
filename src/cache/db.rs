@@ -291,6 +291,8 @@ pub struct TestResultRecord {
 	pub cache_key: String,
 	pub verdict: String,
 	pub duration_ms: i64,
+	pub flake_count: i64,
+	pub run_count: i64,
 	pub stdout: Option<String>,
 	pub stderr: Option<String>,
 	pub created_at: i64,
@@ -304,6 +306,8 @@ impl CacheDb {
 		cache_key: &str,
 		verdict: &str,
 		duration_ms: i64,
+		flake_count: i64,
+		run_count: i64,
 		stdout: Option<&str>,
 		stderr: Option<&str>,
 	) -> Result<i64> {
@@ -313,8 +317,8 @@ impl CacheDb {
 			.as_secs() as i64;
 
 		self.conn.execute(
-			"INSERT INTO test_results (test_name, target, cache_key, verdict, duration_ms, stdout, stderr, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-			params![test_name, target, cache_key, verdict, duration_ms, stdout, stderr, now],
+			"INSERT INTO test_results (test_name, target, cache_key, verdict, duration_ms, flake_count, run_count, stdout, stderr, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+			params![test_name, target, cache_key, verdict, duration_ms, flake_count, run_count, stdout, stderr, now],
 		)?;
 
 		Ok(self.conn.last_insert_rowid())
@@ -322,7 +326,7 @@ impl CacheDb {
 
 	pub fn get_test_result(&self, cache_key: &str) -> Result<Option<TestResultRecord>> {
 		let mut stmt = self.conn.prepare(
-			"SELECT id, test_name, target, cache_key, verdict, duration_ms, stdout, stderr, created_at FROM test_results WHERE cache_key = ?1"
+			"SELECT id, test_name, target, cache_key, verdict, duration_ms, flake_count, run_count, stdout, stderr, created_at FROM test_results WHERE cache_key = ?1"
 		)?;
 
 		let mut rows = stmt.query(params![cache_key])?;
@@ -335,12 +339,62 @@ impl CacheDb {
 				cache_key: row.get(3)?,
 				verdict: row.get(4)?,
 				duration_ms: row.get(5)?,
-				stdout: row.get(6)?,
-				stderr: row.get(7)?,
-				created_at: row.get(8)?,
+				flake_count: row.get(6)?,
+				run_count: row.get(7)?,
+				stdout: row.get(8)?,
+				stderr: row.get(9)?,
+				created_at: row.get(10)?,
 			}))
 		} else {
 			Ok(None)
 		}
+	}
+
+	pub fn get_failed_tests(&self) -> Result<Vec<TestResultRecord>> {
+		let mut stmt = self.conn.prepare(
+			"SELECT id, test_name, target, cache_key, verdict, duration_ms, flake_count, run_count, stdout, stderr, created_at FROM test_results WHERE verdict = 'FAILED' ORDER BY created_at DESC"
+		)?;
+		let mut rows = stmt.query([])?;
+		let mut results = Vec::new();
+		while let Some(row) = rows.next()? {
+			results.push(TestResultRecord {
+				id: row.get(0)?,
+				test_name: row.get(1)?,
+				target: row.get(2)?,
+				cache_key: row.get(3)?,
+				verdict: row.get(4)?,
+				duration_ms: row.get(5)?,
+				flake_count: row.get(6)?,
+				run_count: row.get(7)?,
+				stdout: row.get(8)?,
+				stderr: row.get(9)?,
+				created_at: row.get(10)?,
+			});
+		}
+		Ok(results)
+	}
+
+	pub fn get_flake_report(&self) -> Result<Vec<TestResultRecord>> {
+		let mut stmt = self.conn.prepare(
+			"SELECT id, test_name, target, cache_key, verdict, duration_ms, flake_count, run_count, stdout, stderr, created_at FROM test_results WHERE flake_count > 0 ORDER BY flake_count DESC"
+		)?;
+		let mut rows = stmt.query([])?;
+		let mut results = Vec::new();
+		while let Some(row) = rows.next()? {
+			results.push(TestResultRecord {
+				id: row.get(0)?,
+				test_name: row.get(1)?,
+				target: row.get(2)?,
+				cache_key: row.get(3)?,
+				verdict: row.get(4)?,
+				duration_ms: row.get(5)?,
+				flake_count: row.get(6)?,
+				run_count: row.get(7)?,
+				stdout: row.get(8)?,
+				stderr: row.get(9)?,
+				created_at: row.get(10)?,
+			});
+		}
+		Ok(results)
 	}
 }

@@ -1,4 +1,4 @@
-use crate::graph::{BuildGraph, Component, ComponentRef, DependencyEdge, Target};
+use crate::graph::{BuildGraph, Component, ComponentRef, DependencyEdge, DotOptions, Target};
 use forge_macros::lua_api;
 use mlua::{Lua, Result, Table, UserData, UserDataMethods, Value};
 use std::path::PathBuf;
@@ -8,13 +8,15 @@ use std::sync::{Arc, Mutex};
 pub struct GraphApi {
 	graph: Arc<Mutex<BuildGraph>>,
 	project_root: PathBuf,
+	current_package: Arc<Mutex<String>>,
 }
 
 impl GraphApi {
-	pub fn new(project_root: PathBuf) -> Self {
+	pub fn new(project_root: PathBuf, graph: Arc<Mutex<BuildGraph>>) -> Self {
 		Self {
-			graph: Arc::new(Mutex::new(BuildGraph::new())),
+			graph,
 			project_root,
+			current_package: Arc::new(Mutex::new(String::from("."))),
 		}
 	}
 
@@ -30,7 +32,14 @@ impl UserData for GraphApi {
 #[lua_api(name = "graph")]
 impl GraphApi {
 	pub fn create(project_root: PathBuf) -> Self {
-		Self::new(project_root)
+		Self::new(project_root, Arc::new(Mutex::new(BuildGraph::new())))
+	}
+
+	/// Set the current package being evaluated (called by Project loader)
+	pub fn set_package(&self, path: String) {
+		log::debug!("Setting current package to: '{}'", path);
+		let mut pkg = self.current_package.lock().unwrap();
+		*pkg = path;
 	}
 
 	/// Register a target platform for builds
@@ -64,6 +73,20 @@ impl GraphApi {
 			.with_sources(sources.iter().map(PathBuf::from).collect())
 			.with_include_dirs(include_dirs.iter().map(PathBuf::from).collect());
 
+		// Set package ID from current context
+		{
+			let pkg = self.current_package.lock().unwrap();
+			component = component.with_package(crate::graph::PackageId::new(pkg.as_str()));
+		}
+
+		if let Ok(vis_val) = tbl.get::<Value>("visibility") {
+			component = component.with_visibility(parse_visibility(vis_val)?);
+		}
+
+		if let Ok(comp_val) = tbl.get::<Vec<String>>("compatible_with") {
+			component = component.with_compatible_with(comp_val.into_iter().map(crate::graph::ConstraintRef::new).collect());
+		}
+
 		if let Ok(defines) = tbl.get::<Vec<String>>("defines") {
 			component = component.with_defines(defines.into_iter().map(|s| (s, None)).collect());
 		}
@@ -78,7 +101,8 @@ impl GraphApi {
 
 		if let Ok(deps) = tbl.get::<Vec<String>>("deps") {
 			for dep in deps {
-				let _ = g.add_dependency(comp_id, ComponentRef::new(&dep), DependencyEdge::Hard);
+				g.add_dependency(comp_id, ComponentRef::new(&dep), DependencyEdge::Hard)
+					.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
 			}
 		}
 
@@ -103,6 +127,20 @@ impl GraphApi {
 			.with_sources(sources.iter().map(PathBuf::from).collect())
 			.with_include_dirs(include_dirs.iter().map(PathBuf::from).collect());
 
+		// Set package ID from current context
+		{
+			let pkg = self.current_package.lock().unwrap();
+			component = component.with_package(crate::graph::PackageId::new(pkg.as_str()));
+		}
+
+		if let Ok(vis_val) = tbl.get::<Value>("visibility") {
+			component = component.with_visibility(parse_visibility(vis_val)?);
+		}
+
+		if let Ok(comp_val) = tbl.get::<Vec<String>>("compatible_with") {
+			component = component.with_compatible_with(comp_val.into_iter().map(crate::graph::ConstraintRef::new).collect());
+		}
+
 		if let Ok(defines) = tbl.get::<Vec<String>>("defines") {
 			component = component.with_defines(defines.into_iter().map(|s| (s, None)).collect());
 		}
@@ -123,7 +161,8 @@ impl GraphApi {
 
 		if let Ok(deps) = tbl.get::<Vec<String>>("deps") {
 			for dep in deps {
-				let _ = g.add_dependency(comp_id, ComponentRef::new(&dep), DependencyEdge::Hard);
+				g.add_dependency(comp_id, ComponentRef::new(&dep), DependencyEdge::Hard)
+					.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
 			}
 		}
 
@@ -138,9 +177,19 @@ impl GraphApi {
 		let sources: Vec<String> = tbl.get("sources").or_else(|_| tbl.get("srcs")).unwrap_or_default();
 		let outputs: Vec<String> = tbl.get("outputs").unwrap_or_default();
 
-		let component = Component::custom(&name, "default", command, args)
+		let mut component = Component::custom(&name, "default", command, args)
 			.with_sources(sources.iter().map(PathBuf::from).collect())
 			.with_outputs(outputs.iter().map(PathBuf::from).collect());
+
+		// Set package ID from current context
+		{
+			let pkg = self.current_package.lock().unwrap();
+			component = component.with_package(crate::graph::PackageId::new(pkg.as_str()));
+		}
+
+		if let Ok(vis_val) = tbl.get::<Value>("visibility") {
+			component = component.with_visibility(parse_visibility(vis_val)?);
+		}
 
 		let mut g = self.graph.lock().unwrap();
 		g.add_component(component)
@@ -239,6 +288,59 @@ impl GraphApi {
 		}
 		Ok(Value::Table(result))
 	}
+
+	/// Get components that directly depend on the given component (reverse deps)
+	pub fn reverse_dependencies(&self, name: String, target: String) -> Vec<String> {
+		let g = self.graph.lock().unwrap();
+		if let Some(comp) = g.get_component_by_name(&name, &target) {
+			g.reverse_dependencies(comp.id)
+				.iter()
+				.filter_map(|id| g.get_component(*id).map(|c| c.name.clone()))
+				.collect()
+		} else {
+			vec![]
+		}
+	}
+
+	/// Find components matching a glob pattern on their name
+	pub fn components_matching(&self, pattern: String) -> Vec<String> {
+		let g = self.graph.lock().unwrap();
+		g.components_matching(&pattern)
+			.iter()
+			.filter_map(|id| g.get_component(*id).map(|c| c.name.clone()))
+			.collect()
+	}
+
+	/// Render the build graph as a Graphviz DOT string
+	pub fn output_dot(&self, edge_labels: Option<bool>) -> String {
+		let g = self.graph.lock().unwrap();
+		let opts = DotOptions {
+			include_edge_labels: edge_labels.unwrap_or(true),
+			color_by_type: true,
+		};
+		g.output_dot(&opts)
+	}
+
+	/// Check whether one component is allowed to depend on another.
+	/// Throws a Lua error on violation.
+	pub fn check_visibility(
+		&self,
+		from_name: String,
+		from_target: String,
+		to_name: String,
+		to_target: String,
+	) -> Result<()> {
+		let g = self.graph.lock().unwrap();
+		let from_id = g
+			.get_component_by_name(&from_name, &from_target)
+			.map(|c| c.id)
+			.ok_or_else(|| mlua::Error::RuntimeError(format!("Component '{}:{}' not found", from_name, from_target)))?;
+		let to_id = g
+			.get_component_by_name(&to_name, &to_target)
+			.map(|c| c.id)
+			.ok_or_else(|| mlua::Error::RuntimeError(format!("Component '{}:{}' not found", to_name, to_target)))?;
+		g.check_visibility(from_id, to_id).map_err(|e| mlua::Error::RuntimeError(e.to_string()))
+	}
 }
 
 fn infer_triple_from_name(name: &str) -> String {
@@ -308,7 +410,27 @@ fn infer_triple_from_name(name: &str) -> String {
 	}
 }
 
-pub fn create_graph_table(lua: &Lua, project_root: PathBuf) -> Result<Table> {
-	let api = GraphApi::new(project_root);
+fn parse_visibility(val: Value) -> Result<crate::graph::Visibility> {
+	match val {
+		Value::Nil => Ok(crate::graph::Visibility::Public),
+		Value::String(s) => {
+			let s_str = s.to_str()?;
+			match &*s_str {
+				"public" => Ok(crate::graph::Visibility::Public),
+				"package" => Ok(crate::graph::Visibility::Package),
+				"private" => Ok(crate::graph::Visibility::Private),
+				other => Err(mlua::Error::RuntimeError(format!("Invalid visibility level: {}", other))),
+			}
+		},
+		Value::Table(t) => {
+			let patterns: Vec<String> = t.sequence_values::<String>().collect::<Result<_>>()?;
+			Ok(crate::graph::Visibility::Restricted(patterns))
+		}
+		_ => Err(mlua::Error::RuntimeError("Visibility must be a string or a list of patterns".into())),
+	}
+}
+
+pub fn create_graph_table(lua: &Lua, project_root: PathBuf, graph: Arc<Mutex<BuildGraph>>) -> Result<Table> {
+	let api = GraphApi::new(project_root, graph);
 	api.create_graph_table(lua)
 }

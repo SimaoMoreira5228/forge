@@ -5,6 +5,8 @@ CREATE TABLE IF NOT EXISTS test_results (
     cache_key TEXT NOT NULL,
     verdict TEXT NOT NULL,
     duration_ms INTEGER NOT NULL,
+    flake_count INTEGER NOT NULL DEFAULT 0,
+    run_count INTEGER NOT NULL DEFAULT 1,
     stdout TEXT,
     stderr TEXT,
     created_at INTEGER NOT NULL

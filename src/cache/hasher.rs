@@ -141,6 +141,6 @@ mod tests {
 	#[test]
 	fn test_hash_string() {
 		let hash = SmartHasher::hash_string("hello world");
-		assert_eq!(hash, "0af7acd28c9d6c0c17e9f8c20a5e1c4c8d3e6b2c9e6f8c20a5e1c4c8d3e6b2");
+		assert_eq!(hash, "d74981efa70a0c880b8d8c1985d075dbcbf679b99a5f9914e5aaf96b831a9e24");
 	}
 }

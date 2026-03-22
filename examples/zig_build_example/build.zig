@@ -4,15 +4,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe_module = b.createModule(.{
+    const exe = b.addExecutable(.{
+        .name = "myapp",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
-    });
-
-    const exe = b.addExecutable(.{
-        .name = "myapp",
-        .root_module = exe_module,
     });
 
     b.installArtifact(exe);

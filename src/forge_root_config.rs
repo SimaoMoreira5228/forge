@@ -23,6 +23,40 @@ pub struct ForgeRootConfig {
 	pub build: BuildConfig,
 	#[serde(default)]
 	pub toolchain: std::collections::HashMap<String, ToolchainConfig>,
+	#[serde(default)]
+	pub platforms: std::collections::HashMap<String, PlatformConfig>,
+	#[serde(default)]
+	pub profile: std::collections::HashMap<String, ProfileConfig>,
+	#[serde(default)]
+	pub deps: std::collections::HashMap<String, DepConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct PlatformConfig {
+	#[serde(default)]
+	pub constraint_values: Vec<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ProfileConfig {
+	#[serde(default)]
+	pub inherits: Option<String>,
+	#[serde(default)]
+	pub compiler_flags: Vec<String>,
+	#[serde(default)]
+	pub linker_flags: Vec<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum DepConfig {
+	Version(String),
+	Detailed {
+		version: Option<String>,
+		git: Option<String>,
+		rev: Option<String>,
+		path: Option<String>,
+	},
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -65,6 +99,8 @@ pub struct DiscoveryConfig {
 	pub use_gitignore: bool,
 	#[serde(default = "default_max_depth")]
 	pub max_depth: Option<usize>,
+	#[serde(default = "default_prelude_paths")]
+	pub prelude_paths: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -82,6 +118,7 @@ impl Default for DiscoveryConfig {
 			exclude: Vec::new(),
 			use_gitignore: true,
 			max_depth: Some(10),
+			prelude_paths: default_prelude_paths(),
 		}
 	}
 }
@@ -113,6 +150,10 @@ fn default_cache_dir() -> String {
 
 fn default_max_depth() -> Option<usize> {
 	Some(10)
+}
+
+fn default_prelude_paths() -> Vec<String> {
+	vec![".forge/prelude".to_string()]
 }
 
 impl ForgeRootConfig {
@@ -154,6 +195,9 @@ impl ForgeRootConfig {
 			discovery: DiscoveryConfig::default(),
 			build: BuildConfig::default(),
 			toolchain: std::collections::HashMap::new(),
+			platforms: std::collections::HashMap::new(),
+			profile: std::collections::HashMap::new(),
+			deps: std::collections::HashMap::new(),
 		}
 	}
 

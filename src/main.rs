@@ -33,17 +33,31 @@ enum DepsCommand {
 	Sync,
 }
 
+#[derive(Subcommand, Debug)]
+enum ToolchainCommand {
+	Sync,
+	List,
+	Verify,
+}
+
 mod cache;
 mod config;
+mod coverage;
 mod error;
 mod forge_root_config;
 mod graph;
 mod hermetic;
 mod lua_api;
 mod package;
+mod platform;
+mod profile;
 mod project;
+mod query;
+use crate::query::QueryEngine;
 mod source;
 mod target;
+mod watch;
+mod worker;
 mod workspace;
 
 use std::process::Command;
@@ -85,6 +99,9 @@ enum Commands {
 
 		#[arg(short, long, help = "Build specific component(s) (can be used multiple times)")]
 		component: Vec<String>,
+
+		#[arg(long, help = "Build profile to use (e.g. debug, release)")]
+		profile: Option<String>,
 	},
 
 	Run {
@@ -116,9 +133,27 @@ enum Commands {
 
 		#[arg(long, help = "Cache test results: auto|yes|no", default_value = "auto")]
 		cache_test_results: String,
+
+		#[arg(long, help = "Generate a flake report across historical test runs")]
+		flake_report: bool,
+
+		#[arg(long, help = "Only re-run tests that failed previously")]
+		rerun_failed: bool,
+
+		#[arg(long, help = "Output format (e.g., junit:path/to/results.xml)")]
+		output: Option<String>,
 	},
 
-	Clean,
+	Clean {
+		#[arg(long, help = "Expunge all downloaded toolchains and entire cache")]
+		expunge: bool,
+
+		#[arg(long, help = "Clear only the build artifact cache")]
+		cache: bool,
+
+		#[arg(long, help = "Clear only test results")]
+		test: bool,
+	},
 
 	Init {
 		#[arg(long, help = "Project name (defaults to directory name)")]
@@ -147,6 +182,40 @@ enum Commands {
 		#[command(subcommand)]
 		action: DepsCommand,
 	},
+
+	Toolchain {
+		#[command(subcommand)]
+		action: ToolchainCommand,
+	},
+
+	Query {
+		#[arg(help = "The query expression to evaluate (e.g. 'deps(//lib:all)')")]
+		expression: String,
+	},
+
+	Watch {
+		#[arg(help = "The target to continuously watch and rebuild. Defaults to all default targets")]
+		target: Option<String>,
+	},
+
+	Explain {
+		#[arg(help = "The target or component to explain staleness for")]
+		target: String,
+	},
+
+	Coverage {
+		#[arg(help = "The target to collect coverage for")]
+		target: String,
+	},
+
+	Fmt {
+		#[arg(long, help = "Check formatting without modifying files")]
+		check: bool,
+	},
+
+	CompileCommands,
+
+	Graph,
 }
 
 fn main() -> Result<()> {
@@ -187,7 +256,11 @@ fn main() -> Result<()> {
 	let project_path = std::fs::canonicalize(&cli.project)?;
 
 	match cli.command {
-		Some(Commands::Build { target, component }) => {
+		Some(Commands::Build {
+			target,
+			component,
+			profile: build_profile,
+		}) => {
 			if target.is_empty() && component.is_empty() {
 				return Err(anyhow::anyhow!(
 					"No targets or components specified for build. Use --target and/or --component to specify what to build.\n\
@@ -202,6 +275,7 @@ fn main() -> Result<()> {
 				target_filters: target,
 				component_filters: component,
 				test_mode: false,
+				profile: build_profile,
 			};
 
 			log::info!("Building project at: {}", project_path.display());
@@ -228,6 +302,7 @@ fn main() -> Result<()> {
 					vec![]
 				},
 				test_mode: false,
+				profile: None,
 			};
 
 			let mut project = project::Project::new(project_path.clone(), config, policy.clone())?;
@@ -255,10 +330,61 @@ fn main() -> Result<()> {
 			explain_cache,
 			nocache,
 			cache_test_results,
+			flake_report,
+			rerun_failed,
+			output,
 		}) => {
-			if let Some(ref files) = changed {
-				log::info!("Running impacted tests based on changed files: {:?}", files);
+			let forge_out = project_path.join("forge-out");
+			let sqlite_path = forge_out.join("cas").join("cache.db");
+
+			if flake_report {
+				log::info!("Generating flake report...");
+				if sqlite_path.exists() {
+					if let Ok(db) = CacheDb::new(&sqlite_path) {
+						if let Ok(flakes) = db.get_flake_report() {
+							println!("\n=== FLAKE REPORT ===");
+							if flakes.is_empty() {
+								println!("Great job! No flaky tests detected continuously.");
+							} else {
+								for flake in flakes {
+									println!("- {} (Target: {}): {} flakes over {} runs", flake.test_name, flake.target, flake.flake_count, flake.run_count);
+								}
+							}
+						}
+					}
+				} else {
+					println!("No test history found.");
+				}
+				return Ok(());
 			}
+
+			let mut component_filters = Vec::new();
+			if rerun_failed {
+				log::info!("Fetching previously failed tests...");
+				if sqlite_path.exists() {
+					if let Ok(db) = CacheDb::new(&sqlite_path) {
+						if let Ok(failed) = db.get_failed_tests() {
+							for f in failed {
+								component_filters.push(f.test_name.clone());
+							}
+						}
+					}
+				}
+				if component_filters.is_empty() {
+					println!("No previously failed tests found in cache.");
+					return Ok(());
+				}
+			} else if let Some(ref comp) = component {
+				component_filters.push(comp.clone());
+			} else if let Some(ref f) = filter {
+				component_filters.push(f.clone());
+			}
+
+			if let Some(ref files) = changed {
+				log::info!("Simulating impacted tests based on changed files: {:?}", files);
+				// TODO: Integrate with Reverse Dependencies in BuildGraph to map files to tests.
+			}
+
 			if explain_cache {
 				log::info!("Cache diagnostics enabled");
 			}
@@ -274,14 +400,9 @@ fn main() -> Result<()> {
 			let config = config::Config {
 				verbosity: config::VerbosityWrapper(cli.verbose),
 				target_filters: vec![target.clone()],
-				component_filters: if let Some(ref comp) = component {
-					vec![comp.clone()]
-				} else if let Some(ref f) = filter {
-					vec![f.clone()]
-				} else {
-					vec![]
-				},
+				component_filters: component_filters.clone(),
 				test_mode: true,
+				profile: None,
 			};
 
 			log::info!("Building and testing project at: {}", project_path.display());
@@ -289,27 +410,52 @@ fn main() -> Result<()> {
 			if let Some(ref comp) = component {
 				log::info!("Test component: {}", comp);
 			}
-			if let Some(ref f) = filter {
-				log::info!("Test filter: {}", f);
-			}
-			if let Some(ref files) = changed {
-				log::info!("Changed files: {:?}", files);
-			}
 
 			let mut project = project::Project::new(project_path.clone(), config, policy.clone())?;
 			project.run()?;
 
-			if let Some(comp) = component {
-				log::info!("Running test component '{}' with target: {}", comp, target);
-				run_component_target_test_mode(&project_path, &comp, &target, &policy)?;
+			let mut test_errors = false;
+			if !component_filters.is_empty() {
+				for comp in &component_filters {
+					log::info!("Running test component '{}' with target: {}", comp, target);
+					if run_component_target_test_mode(&project_path, comp, &target, &policy).is_err() {
+						test_errors = true;
+					}
+				}
 			} else {
 				log::info!("Running test target: {}", target);
-				run_target_test_mode(&project_path, &target, &policy)?;
+				if run_target_test_mode(&project_path, &target, &policy).is_err() {
+					test_errors = true;
+				}
+			}
+
+			if let Some(ref out) = output {
+				if out.starts_with("junit:") {
+					let out_path = out.strip_prefix("junit:").unwrap_or(out);
+					log::info!("Writing basic JUnit test report to: {}", out_path);
+					let xml = format!(
+						"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites>\n  <testsuite name=\"forge_tests\" tests=\"1\" failures=\"{}\">\n    <testcase name=\"{}\"/>\n  </testsuite>\n</testsuites>",
+						if test_errors { 1 } else { 0 },
+						target
+					);
+					if let Some(parent) = Path::new(out_path).parent() {
+						std::fs::create_dir_all(parent).unwrap_or_default();
+					}
+					std::fs::write(out_path, xml).unwrap_or_default();
+				}
+			}
+
+			if test_errors {
+				return Err(anyhow::anyhow!("One or more tests failed"));
 			}
 
 			println!("\nTest completed successfully!");
 		}
-		Some(Commands::Clean) => {
+		Some(Commands::Clean {
+			expunge: _,
+			cache: _,
+			test: _,
+		}) => {
 			log::info!("Cleaning project at: {}", project_path.display());
 			clean_project(&project_path)?;
 			println!("\nClean completed successfully!");
@@ -332,6 +478,154 @@ fn main() -> Result<()> {
 		Some(Commands::Deps { action }) => {
 			handle_deps_command(action)?;
 		}
+		Some(Commands::Toolchain { action }) => {
+			handle_toolchain_command(action, &project_path, cli.verbose.clone())?;
+		}
+		Some(Commands::Query { expression }) => {
+			log::info!("Evaluating query: {}", expression);
+			let config = config::Config {
+				verbosity: config::VerbosityWrapper(cli.verbose),
+				target_filters: vec![],
+				component_filters: vec![],
+				test_mode: false,
+				profile: None,
+			};
+
+			let mut project = project::Project::new(project_path, config, policy.clone())?;
+			project.load_graph()?;
+
+			let graph = project.dependency_graph.lock().unwrap();
+			let engine = QueryEngine::new(&graph);
+			match engine.evaluate(&expression) {
+				Ok(ids) => {
+					let mut labels: Vec<String> = Vec::new();
+					for id in ids {
+						if let Some(comp) = graph.get_component(id) {
+							labels.push(format!("{}:{}", comp.target_name, comp.name));
+						}
+					}
+					labels.sort();
+					for label in labels {
+						println!("{}", label);
+					}
+				}
+				Err(e) => {
+					eprintln!("Error: {}", e);
+					std::process::exit(1);
+				}
+			}
+		}
+		Some(Commands::Watch { target }) => {
+			let target_str = target.unwrap_or_else(|| "all".to_string());
+			log::info!("Starting watch mode for target: {}", target_str);
+			let config = config::Config {
+				verbosity: config::VerbosityWrapper(cli.verbose),
+				target_filters: vec![target_str],
+				component_filters: vec![],
+				test_mode: false,
+				profile: None,
+			};
+
+			if let Err(e) = crate::watch::watch_project(project_path, config, policy) {
+				log::error!("Watch loop crashed: {}", e);
+				std::process::exit(1);
+			}
+		}
+		Some(Commands::Explain { target }) => {
+			log::info!("Dry-running target to generate explain traces: {}", target);
+			let config = config::Config {
+				verbosity: config::VerbosityWrapper(cli.verbose),
+				target_filters: vec![target.clone()],
+				component_filters: vec![],
+				test_mode: false,
+				profile: None,
+			};
+
+			let mut project = project::Project::new(project_path, config, policy.clone())?;
+			project.run()?;
+
+			println!("\n=== Explain traces for targets in {}: ===", target);
+			if project.explain_trace.is_empty() {
+				println!("✓ All components are fully cached and up-to-date!");
+			} else {
+				for entry in project.explain_trace.iter() {
+					println!("Component '{}':", entry.key());
+					for trace in entry.value() {
+						println!("  - [Stale] {}", trace);
+					}
+				}
+			}
+		}
+		Some(Commands::Coverage { .. }) => {
+			println!("Not yet implemented");
+		}
+		Some(Commands::Fmt { .. }) => {
+			println!("Not yet implemented");
+		}
+		Some(Commands::CompileCommands) => {
+			log::info!("Generating compile_commands.json...");
+			let config = config::Config {
+				verbosity: config::VerbosityWrapper(cli.verbose),
+				target_filters: vec![],
+				component_filters: vec![],
+				test_mode: false,
+				profile: None,
+			};
+			let project = project::Project::new(project_path.clone(), config, policy.clone())?;
+			project.load_graph()?;
+
+			let mut cmds = Vec::new();
+			for entry in project.build_graph.iter() {
+				let rule = entry.value();
+				let exec = &rule.command;
+				if exec.contains("clang") || exec.contains("gcc") || exec.contains("g++") || exec.contains("c++") || exec.contains("cc") {
+					let mut full_cmd = exec.clone();
+					for arg in &rule.args {
+						// Simple escape for json
+						let safe_arg = arg.replace("\"", "\\\"");
+						full_cmd.push_str(&format!(" {}", safe_arg));
+					}
+					let file = rule.inputs.first().cloned().unwrap_or_default();
+					let dict = format!(
+						r#"  {{ "directory": "{}", "command": "{}", "file": "{}" }}"#,
+						project_path.display(),
+						full_cmd.replace("\"", "\\\""),
+						file.replace("\"", "\\\"")
+					);
+					cmds.push(dict);
+				}
+			}
+			let json = format!("[\n{}\n]\n", cmds.join(",\n"));
+			let out_path = project_path.join("compile_commands.json");
+			std::fs::write(&out_path, json)?;
+			log::info!("Wrote compile_commands.json to {}", out_path.display());
+		}
+		Some(Commands::Graph) => {
+			log::info!("Generating Graphviz DOT graph of workspace dependencies...");
+			let config = config::Config {
+				verbosity: config::VerbosityWrapper(cli.verbose),
+				target_filters: vec![],
+				component_filters: vec![],
+				test_mode: false,
+				profile: None,
+			};
+			let project = project::Project::new(project_path, config, policy.clone())?;
+			project.load_graph()?;
+			
+			let mut dot = String::new();
+			dot.push_str("digraph BuildGraph {\n");
+			dot.push_str("  node [shape=box];\n");
+			for entry in project.build_graph.iter() {
+				let name = entry.key();
+				let rule = entry.value();
+				dot.push_str(&format!("  \"{}\" [label=\"{}\"];\n", name, name));
+				for dep in &rule.dependencies {
+					dot.push_str(&format!("  \"{}\" -> \"{}\";\n", name, dep));
+				}
+			}
+			dot.push_str("}\n");
+			println!("{}", dot);
+		}
 		None => {
 			if cli.target.is_empty() {
 				return Err(anyhow::anyhow!(
@@ -345,6 +639,7 @@ fn main() -> Result<()> {
 				target_filters: cli.target,
 				component_filters: vec![],
 				test_mode: false,
+				profile: None,
 			};
 
 			log::info!("Building project at: {}", project_path.display());
@@ -662,6 +957,8 @@ fn run_component_target_test_mode(
 					&cache_key,
 					verdict,
 					duration_ms,
+					0, // flake_count
+					1, // run_count
 					Some(&stdout),
 					Some(&stderr),
 				);
@@ -1053,6 +1350,78 @@ fn handle_deps_command(action: DepsCommand) -> Result<()> {
 		}
 	}
 
+	Ok(())
+}
+
+fn handle_toolchain_command(
+	action: ToolchainCommand,
+	project_path: &Path,
+	verbosity: clap_verbosity_flag::Verbosity,
+) -> Result<()> {
+	let config = crate::config::Config {
+		verbosity: crate::config::VerbosityWrapper(verbosity),
+		target_filters: vec![],
+		component_filters: vec![],
+		test_mode: false,
+		profile: None,
+	};
+	let policy = crate::hermetic::HermeticPolicy::new(crate::hermetic::PolicyMode::Strict);
+	let mut project = crate::project::Project::new(project_path.to_path_buf(), config, policy)?;
+
+	match action {
+		ToolchainCommand::Sync => {
+			log::info!("Syncing toolchains for project at: {}", project_path.display());
+			let script = r#"
+                local list = forge.toolchain.list()
+                if #list == 0 then
+                    print("No toolchains configured in FORGE_ROOT")
+                    return
+                end
+                for _, spec in ipairs(list) do
+                    print("Syncing toolchain: " .. spec.name .. " (version: " .. (spec.version or "default") .. ")")
+                    local ok, info = pcall(function() return forge.toolchain.sync(spec.name, spec) end)
+                    if ok and info.available then
+                        print("  ✓ Available at: " .. info.path)
+                    elseif not ok then
+                        print("  ✗ Failed to sync: " .. tostring(info))
+                    else
+                        print("  ✗ Failed to sync")
+                    end
+                end
+            "#;
+			project.load_graph()?; // Initialize Lua environment
+			project.lua.load(script).exec()?;
+			println!("\nToolchain sync completed!");
+		}
+		ToolchainCommand::List => {
+			let script = r#"
+                local list = forge.toolchain.list()
+                if #list == 0 then
+                    print("No toolchains configured in FORGE_ROOT")
+                    return
+                end
+                print(string.format("%-20s %-15s %-10s %s", "NAME", "VERSION", "FROM", "STATUS"))
+                print(string.format("%-20s %-15s %-10s %s", "----", "-------", "----", "------"))
+                for _, spec in ipairs(list) do
+                    local info = forge.toolchain.resolve(spec.name, spec)
+                    local status = forge.fs.exists(info.install_dir or "") and "Downloaded" or "Missing"
+                    if spec.from == "path" then
+                        status = "Local"
+                    end
+                    print(string.format("%-20s %-15s %-10s %s", 
+                        spec.name, 
+                        spec.version or "default", 
+                        spec.from, 
+                        status))
+                end
+            "#;
+			project.load_graph()?;
+			project.lua.load(script).exec()?;
+		}
+		ToolchainCommand::Verify => {
+			println!("Not yet implemented");
+		}
+	}
 	Ok(())
 }
 
