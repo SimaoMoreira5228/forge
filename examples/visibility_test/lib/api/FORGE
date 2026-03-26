@@ -1,0 +1,13 @@
+local c = require("@prelude/c/c.lua")
+
+c.library({
+    name = "api_lib",
+    visibility = "public",
+    targets = {
+        linux_x64 = {
+            target = "linux_x64"
+        }
+    },
+    srcs = { "api.c" },
+    dependencies = { "internal_lib" },
+})

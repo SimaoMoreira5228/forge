@@ -25,8 +25,9 @@ impl ProjectApi {
 	}
 }
 
-pub fn create_project_table(lua: &Lua, project_path: String) -> Result<Table> {
+pub fn create_project_table(lua: &Lua, project_path: String, host_platform: String) -> Result<Table> {
 	let table = ProjectApi::create_project_table(lua)?;
 	table.set("root", project_path)?;
+	table.set("host_platform", host_platform)?;
 	Ok(table)
 }

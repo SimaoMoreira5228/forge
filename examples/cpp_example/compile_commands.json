@@ -1,0 +1,59 @@
+[
+  {
+    "arguments": [
+      "clang++",
+      "--target=x86_64-unknown-linux-gnu",
+      "-std=c++20",
+      "-c",
+      "/mnt/hdd/Projects/rust/forge/examples/cpp_example/lib/string_utils.cpp",
+      "-o",
+      "/mnt/hdd/Projects/rust/forge/examples/cpp_example/forge-out/linux_x64_clang_cpp20/debug/string_utils.o",
+      "-O0",
+      "-g",
+      "-DDEBUG",
+      "-I/mnt/hdd/Projects/rust/forge/examples/cpp_example/lib"
+    ],
+    "directory": "/mnt/hdd/Projects/rust/forge/examples/cpp_example",
+    "file": "/mnt/hdd/Projects/rust/forge/examples/cpp_example/lib/string_utils.cpp"
+  },
+  {
+    "arguments": [
+      "clang++",
+      "--target=x86_64-unknown-linux-gnu",
+      "-std=c++20",
+      "/mnt/hdd/Projects/rust/forge/examples/cpp_example/src/main.cpp",
+      "-o",
+      "/mnt/hdd/Projects/rust/forge/examples/cpp_example/forge-out/linux_x64_clang_cpp20/debug/text_processor",
+      "-O0",
+      "-g",
+      "-DDEBUG",
+      "-I/mnt/hdd/Projects/rust/forge/examples/cpp_example/lib",
+      "-L/mnt/hdd/Projects/rust/forge/examples/cpp_example/forge-out/linux_x64_clang_cpp20/debug",
+      "-L/mnt/hdd/Projects/rust/forge/examples/cpp_example/forge-out/linux_x64_clang_cpp20",
+      "-lstring_utils"
+    ],
+    "directory": "/mnt/hdd/Projects/rust/forge/examples/cpp_example",
+    "file": "/mnt/hdd/Projects/rust/forge/examples/cpp_example/src/main.cpp"
+  },
+  {
+    "arguments": [
+      "clang++",
+      "--target=x86_64-unknown-linux-gnu",
+      "-std=c++20",
+      "/mnt/hdd/Projects/rust/forge/examples/cpp_example/src/main.cpp",
+      "-o",
+      "/mnt/hdd/Projects/rust/forge/examples/cpp_example/forge-out/linux_x64_clang_cpp20/debug/text_processor_test",
+      "-O0",
+      "-g",
+      "-DDEBUG",
+      "-I/mnt/hdd/Projects/rust/forge/examples/cpp_example/lib",
+      "-L/mnt/hdd/Projects/rust/forge/examples/cpp_example/forge-out/linux_x64_clang_cpp20/debug",
+      "-L/mnt/hdd/Projects/rust/forge/examples/cpp_example/forge-out/linux_x64_clang_cpp20",
+      "-L/mnt/hdd/Projects/rust/forge/examples/cpp_example/forge-out/linux_x64_clang_cpp20",
+      "-ltext_processor",
+      "-lstring_utils"
+    ],
+    "directory": "/mnt/hdd/Projects/rust/forge/examples/cpp_example",
+    "file": "/mnt/hdd/Projects/rust/forge/examples/cpp_example/src/main.cpp"
+  }
+]

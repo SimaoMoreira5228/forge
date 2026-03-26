@@ -50,12 +50,9 @@ impl TargetResolver {
     }
 
     pub fn resolve(&self, name: &str) -> Option<&TargetDefinition> {
-        if name == "host" {
-            // We don't store "host" in the predefined list usually, 
-            // but for resolution it's special.
-            // Actually, let's just find it by name.
-        }
-        self.targets.iter().find(|t| t.name == name)
+        self.targets
+            .iter()
+            .find(|t| t.name == name || t.canonical_name == name)
     }
 
     pub fn get_canonical_triple(&self, name: &str) -> Option<String> {

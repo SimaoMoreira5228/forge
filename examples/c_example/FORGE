@@ -11,14 +11,6 @@ c.library({
 			target = c.predefined_targets.windows_x64_gnu,
 			compiler = "gcc",
 		},
-		linux_x64_clang = {
-			target = c.predefined_targets.linux_x64,
-			compiler = "clang",
-		},
-		linux_x64_zig = {
-			target = c.predefined_targets.linux_x64,
-			compiler = "zig",
-		},
 	},
 	srcs = { "lib/math_utils.c" },
 	includes = { "lib" },
@@ -35,19 +27,28 @@ c.binary({
 			target = c.predefined_targets.windows_x64,
 			compiler = "gcc",
 		},
-		linux_x64_clang = {
-			target = c.predefined_targets.linux_x64,
-			compiler = "clang",
-		},
-		linux_x64_zig = {
-			target = c.predefined_targets.linux_x64,
-			compiler = "zig",
-		},
 	},
 	srcs = { "src/main.c" },
 	includes = { "lib" },
 	dependencies = {
 		math_utils = { path = "lib" },
+	},
+	system_libs = { "m" },
+})
+
+c.test({
+	name = "calc_test",
+	targets = {
+		linux_x64 = {
+			target = c.predefined_targets.linux_x64,
+			compiler = "gcc",
+		},
+	},
+	srcs = { "src/main.c" },
+	args = { "2", "3" },
+	dependencies = {
+		math_utils = { path = "lib" },
+		calc = { path = "." },
 	},
 	system_libs = { "m" },
 })

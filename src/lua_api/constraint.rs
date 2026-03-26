@@ -1,30 +1,25 @@
-use forge_macros::lua_api;
-use mlua::{Lua, Result, Table, UserData, UserDataMethods};
-
-#[derive(Clone)]
-pub struct ConstraintApi;
-
-impl UserData for ConstraintApi {
-	fn add_methods<M: UserDataMethods<Self>>(_methods: &mut M) {}
-}
-
-#[lua_api(name = "constraint")]
-impl ConstraintApi {
-	pub fn new() -> Self {
-		Self
-	}
-
-	/// Create or reference a constraint by name
-	fn get(name: String) -> Result<String> {
-		Ok(name)
-	}
-
-	/// Add a new constraint type if not exists
-	fn add(name: String) -> Result<()> {
-		Ok(())
-	}
-}
+use mlua::{Lua, Result, Table, Value};
 
 pub fn create_constraint_table(lua: &Lua) -> Result<Table> {
-	ConstraintApi::create_constraint_table(lua)
+    let table = lua.create_table()?;
+
+    // forge.constraint.check(setting, value)
+    table.set("check", lua.create_function(|_, (_setting, _value): (String, String)| {
+        // Placeholder for now, will implement actual constraint checking later
+        Ok(true)
+    })?)?;
+
+    Ok(table)
+}
+
+pub struct ConstraintApi {
+}
+
+impl ConstraintApi {
+    pub fn constraint_lua_type_definitions() -> String {
+        r#"
+---@class Constraint
+---@field check fun(setting: string, value: string): boolean Check if a constraint is satisfied
+"#.to_string()
+    }
 }

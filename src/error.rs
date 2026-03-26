@@ -18,6 +18,9 @@ pub enum ForgeError {
 	#[error("FORGE_ROOT configuration error: {0}")]
 	ForgeRootConfigError(#[from] crate::forge_root_config::ForgeRootConfigError),
 
+	#[error("Graph error: {0}")]
+	GraphError(#[from] crate::graph::GraphError),
+
 	#[error(
 		"No FORGE files found in project\n\n\
 		Searched in: {searched_paths}\n\n\

@@ -19,6 +19,7 @@ pub enum QueryExpr {
 	Rdeps(Box<QueryExpr>),
 	AllPaths(Box<QueryExpr>, Box<QueryExpr>),
 	Filter(String, Box<QueryExpr>),
+	Attr(String, String, Box<QueryExpr>),
 	Union(Box<QueryExpr>, Box<QueryExpr>),
 	Intersect(Box<QueryExpr>, Box<QueryExpr>),
 	Except(Box<QueryExpr>, Box<QueryExpr>),
@@ -183,6 +184,20 @@ impl<'a> QueryEngine<'a> {
 					)))
 				}
 			}
+			"attr" => {
+				if args.len() != 3 {
+					return Err(QueryError::Syntax("attr() takes 3 args: attr(expr, name, value)".to_string()));
+				}
+				let value_expr = args.pop().unwrap();
+				let name_expr = args.pop().unwrap();
+				let inner = args.pop().unwrap();
+
+				if let (QueryExpr::Label(attr_name), QueryExpr::Label(attr_value)) = (name_expr, value_expr) {
+					Ok(QueryExpr::Attr(attr_name, attr_value, Box::new(inner)))
+				} else {
+					Err(QueryError::Syntax("Arguments 2 and 3 of attr() must be constant labels".to_string()))
+				}
+			}
 			_ => Err(QueryError::Syntax(format!("Unknown function: {}", name))),
 		}
 	}
@@ -239,6 +254,26 @@ impl<'a> QueryEngine<'a> {
 				for id in ids {
 					if let Some(comp) = self.graph.get_component(id) {
 						if comp.component_type.kind_name() == kind_name {
+							result.insert(id);
+						}
+					}
+				}
+				Ok(result)
+			}
+			QueryExpr::Attr(name, value, inner) => {
+				let ids = self.evaluate_expr(inner)?;
+				let mut result = HashSet::new();
+				for id in ids {
+					if let Some(comp) = self.graph.get_component(id) {
+						// Check attributes. For now we only check a few fixed ones
+						// but in a real system we'd have a general metadata map.
+						let matched = match name.as_str() {
+							"profile" => comp.target_name.contains(value), // placeholder
+							"package" => comp.package.as_str() == value,
+							"visibility" => format!("{:?}", comp.visibility).to_lowercase() == value.to_lowercase(),
+							_ => false,
+						};
+						if matched {
 							result.insert(id);
 						}
 					}

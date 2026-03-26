@@ -6,7 +6,9 @@ use crate::{
 	hermetic::{ActionSpec, HermeticPolicy, SandboxRunner},
 	lua_api,
 	graph::BuildGraph,
+	profile::{BuildProfile, resolver::ProfileResolver},
 };
+use serde::{Deserialize, Serialize};
 use anyhow::Context;
 use blake3::Hasher;
 use dashmap::DashMap;
@@ -21,11 +23,11 @@ use std::{
 	collections::HashMap,
 	path::{Path, PathBuf},
 	sync::{Arc, Mutex},
-	time::Instant,
+	time::{Instant, Duration},
 };
 use walkdir::WalkDir;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Rule {
 	pub name: String,
 	pub command: String,
@@ -35,6 +37,9 @@ pub struct Rule {
 	pub outputs: Vec<String>,
 	pub dependencies: Vec<String>,
 	pub workdir: PathBuf,
+	/// If set, this rule should be built for the given configuration (host/exec/target)
+	/// rather than the default target configuration.
+	pub exec_cfg: Option<crate::graph::ConfigTransition>,
 }
 
 impl UserData for Rule {}
@@ -48,10 +53,12 @@ pub struct Project {
 	pub dependency_graph: Arc<Mutex<BuildGraph>>,
 	pub output_map: Arc<DashMap<String, String>>,
 	pub cache: BuildCache,
+	pub build_profile: BuildProfile,
 	cas_path: PathBuf,
 	pub lua: Lua,
 	hermetic_policy: HermeticPolicy,
 	pub explain_trace: Arc<DashMap<String, Vec<String>>>,
+	pub platform_registry: Arc<crate::platform::PlatformRegistry>,
 }
 
 impl Project {
@@ -67,18 +74,73 @@ impl Project {
 		Ok(processed_inputs)
 	}
 
-	pub fn new(path: PathBuf, config: Config, hermetic_policy: HermeticPolicy) -> Result<Self, ForgeError> {
+	pub fn new(
+		path: PathBuf,
+		config: Config,
+		cli_mode: Option<crate::hermetic::PolicyMode>,
+		trace_access: bool,
+		why_non_hermetic: bool,
+	) -> Result<Self, ForgeError> {
 		let forge_root_path = path.join("FORGE_ROOT");
 		let forge_root_config = ForgeRootConfig::load(&forge_root_path).map_err(|_| ForgeError::ForgeRootNotFound {
 			path: forge_root_path.display().to_string(),
 		})?;
+
+		let mut hermetic_policy = crate::hermetic::HermeticPolicy::new(cli_mode.unwrap_or(crate::hermetic::PolicyMode::Strict));
+		if cli_mode.is_none() {
+			if let Some(ref root_hermetic) = forge_root_config.project.hermetic {
+				let mode_res: Result<crate::hermetic::PolicyMode, _> = root_hermetic.parse();
+				if let Ok(mode) = mode_res {
+					hermetic_policy.mode = mode;
+				}
+			}
+		}
+		hermetic_policy.trace_access = trace_access;
+		hermetic_policy.why_non_hermetic = why_non_hermetic;
+
+		let profile_name = config.profile.as_deref().unwrap_or("debug");
+		let resolver = ProfileResolver::new(&forge_root_config.profile);
+		let build_profile = resolver.resolve(profile_name).map_err(|e| anyhow::anyhow!("Failed to resolve profile '{}': {}", profile_name, e))?;
 
 		let output_dir = path.join(&forge_root_config.build.cache_dir);
 		let cas_path = output_dir.join("cas");
 		std::fs::create_dir_all(&output_dir)?;
 		std::fs::create_dir_all(&cas_path)?;
 
-		if !path.join("prelude").exists() {
+		// Find prelude directory
+		let mut prelude_found = false;
+		
+		// 1. Check paths from FORGE_ROOT
+		for prelude_pattern in &forge_root_config.discovery.prelude_paths {
+			let cand = path.join(prelude_pattern);
+			if cand.exists() {
+				prelude_found = true;
+				break;
+			}
+		}
+
+		// 2. Check default "prelude" folder
+		if !prelude_found {
+			let cand = path.join("prelude");
+			if cand.exists() {
+				prelude_found = true;
+			}
+		}
+
+		// 3. Try parent directories (repo case)
+		if !prelude_found {
+			let mut current = path.as_path();
+			while let Some(parent) = current.parent() {
+				let candidate = parent.join("prelude");
+				if candidate.exists() {
+					prelude_found = true;
+					break;
+				}
+				current = parent;
+			}
+		}
+
+		if !prelude_found {
 			return Err(ForgeError::PreludeNotFound(path.join("prelude").display().to_string()));
 		}
 
@@ -111,6 +173,14 @@ impl Project {
 			let _ = CacheDb::new(&db_path);
 		}
 
+		let platform_registry = {
+			let mut registry = crate::platform::PlatformRegistry::new();
+			for (name, config) in &forge_root_config.platforms {
+				registry.register(name, config);
+			}
+			Arc::new(registry)
+		};
+
 		Ok(Self {
 			path,
 			config,
@@ -119,19 +189,29 @@ impl Project {
 			dependency_graph: Arc::new(Mutex::new(BuildGraph::new())),
 			output_map: Arc::new(DashMap::new()),
 			cache,
+			build_profile,
 			cas_path,
 			lua: Lua::new(),
 			hermetic_policy,
 			explain_trace: Arc::new(DashMap::new()),
+			platform_registry,
 		})
 	}
+
+	pub fn reset_graph(&self) {
+		self.build_graph.clear();
+		self.output_map.clear();
+		let mut graph = self.dependency_graph.lock().unwrap();
+		*graph = BuildGraph::new();
+	}
+
 
 	fn setup_lua_environment(&self) -> Result<(), ForgeError> {
 		lua_api::init::setup_lua_environment(&self.lua, self)?;
 		Ok(())
 	}
 
-	fn get_toolchain_paths(&self) -> Vec<PathBuf> {
+	pub fn get_toolchain_paths(&self) -> Vec<PathBuf> {
 		let mut paths = Vec::new();
 		let toolchain_cache = self.path.join(".forge").join("toolchains");
 
@@ -225,6 +305,7 @@ impl Project {
 	}
 
 	pub fn load_graph(&self) -> Result<(), ForgeError> {
+		self.reset_graph();
 		self.setup_lua_environment()?;
 
 		let forge_files = self.find_forge_files(&self.path)?;
@@ -274,6 +355,16 @@ impl Project {
 				});
 			}
 		}
+		
+		// Resolve all deferred dependencies and enforce constraints
+		{
+			let mut graph = self.dependency_graph.lock().unwrap();
+			if let Err(errors) = graph.resolve_all_dependencies(Some(&self.platform_registry)) {
+				if let Some(first) = errors.first() {
+					return Err(ForgeError::GraphError(first.clone()));
+				}
+			}
+		}
 
 		Ok(())
 	}
@@ -282,10 +373,186 @@ impl Project {
 		self.load_graph()?;
 		self.execute_build_graph()?;
 
+		if self.config.test_mode {
+			self.execute_tests()?;
+		}
+
 		let cache_path = self.path.join("forge-out").join("cache.json");
 		self.cache.save(&cache_path).context("Failed to save build cache")?;
 
 		Ok(())
+	}
+
+	pub fn run_coverage(&mut self, output_format: Option<&str>) -> Result<(), ForgeError> {
+		self.load_graph()?;
+		self.execute_build_graph()?;
+
+		if self.config.test_mode {
+			self.execute_tests()?;
+		}
+
+		crate::coverage::aggregate_coverage(self, output_format)?;
+
+		let cache_path = self.path.join("forge-out").join("cache.json");
+		self.cache.save(&cache_path).context("Failed to save build cache")?;
+
+		Ok(())
+	}
+
+	pub fn execute_tests(&self) -> Result<(), ForgeError> {
+		use crate::graph::ComponentType;
+		let dep_graph = self.dependency_graph.lock().unwrap();
+		let mut tests_found = false;
+		let mut test_errors = false;
+
+		log::info!("Starting test execution cycle...");
+
+		for id in dep_graph.component_ids() {
+			let comp = match dep_graph.get_component(id) {
+				Some(c) => c,
+				None => continue,
+			};
+
+			if let ComponentType::Test {
+				executable,
+				command,
+				args,
+				env,
+				timeout_secs,
+				tags,
+				..
+			} = &comp.component_type
+			{
+				// Filter by target
+				if !self.config.target_filters.is_empty()
+					&& !self.config.target_filters.iter().any(|f| comp.target_name == *f)
+				{
+					continue;
+				}
+
+				// Filter by component name
+				if !self.config.component_filters.is_empty()
+					&& !self.config.component_filters.iter().any(|f| comp.name.contains(f))
+				{
+					continue;
+				}
+
+				if tags.contains(&"manual".to_string()) {
+					log::info!("Skipping manual test: {}", comp.name);
+					continue;
+				}
+
+				tests_found = true;
+				println!("\n=== Running test: {} ===", comp.name);
+
+				let runner = crate::hermetic::SandboxRunner::new(
+					self.hermetic_policy.clone(),
+					self.path.join(".forge").join("runfiles").join(&comp.name),
+				);
+
+				let result = if let Some(exec_path) = executable {
+					let exec = if exec_path.is_absolute() {
+						exec_path.clone()
+					} else {
+						self.path.join(exec_path)
+					};
+
+					if exec.exists() {
+						let action_spec = crate::hermetic::ActionSpec::new(&comp.name)
+							.with_command(exec.to_string_lossy().to_string())
+							.with_args(args.clone())
+							.with_env(env.clone())
+							.with_workdir(self.path.clone())
+							.with_timeout(*timeout_secs);
+
+						runner.execute(&action_spec).map_err(|e| ForgeError::BuildFailed {
+							rule: comp.name.clone(),
+							error: format!("Sandbox error: {}", e),
+						})
+					} else {
+						Err(ForgeError::BuildFailed {
+							rule: comp.name.clone(),
+							error: format!("Test executable not found: {}", exec.display()),
+						})
+					}
+				} else if let Some(cmd_parts) = command {
+					if cmd_parts.is_empty() {
+						Err(ForgeError::BuildFailed {
+							rule: comp.name.clone(),
+							error: "Test has empty command list".to_string(),
+						})
+					} else {
+						let mut final_args = cmd_parts[1..].to_vec();
+						final_args.extend(args.clone());
+
+						let action_spec = crate::hermetic::ActionSpec::new(&comp.name)
+							.with_command(&cmd_parts[0])
+							.with_args(final_args)
+							.with_env(env.clone())
+							.with_workdir(self.path.clone())
+							.with_timeout(*timeout_secs);
+
+						runner.execute(&action_spec).map_err(|e| ForgeError::BuildFailed {
+							rule: comp.name.clone(),
+							error: format!("Sandbox error: {}", e),
+						})
+					}
+				} else {
+					Err(ForgeError::BuildFailed {
+						rule: comp.name.clone(),
+						error: "Test has no binary or command".to_string(),
+					})
+				};
+
+				// If in coverage mode, extract profiles even if test failed (often useful)
+				if self.build_profile.name == "coverage" {
+					let action_spec = crate::hermetic::ActionSpec::new(&comp.name); // Dummy spec for path resolution
+					let coverage_dir = self.path.join("forge-out").join("coverage");
+					if let Err(e) = runner.extract_coverage_data(&action_spec, &coverage_dir) {
+						log::warn!("Failed to extract coverage data for {}: {}", comp.name, e);
+					}
+				}
+
+				match &result {
+					Ok(res) => {
+						print!("{}", res.stdout);
+						eprint!("{}", res.stderr);
+
+						if res.timed_out {
+							println!("FAILED: Test '{}' timed out after {:?}", comp.name, res.duration);
+							test_errors = true;
+						} else if res.success {
+							println!("PASSED: {} (in {:?})", comp.name, res.duration);
+						} else {
+							println!("FAILED: Test '{}' failed with code {:?}", comp.name, res.exit_code);
+							test_errors = true;
+						}
+					}
+					Err(e) => {
+						println!("{}", e);
+						test_errors = true;
+					}
+				}
+
+				if let Err(ref e) = result {
+					eprintln!("FAILED: {}", e);
+					test_errors = true;
+				}
+			}
+		}
+
+		if !tests_found && (!self.config.target_filters.is_empty() || !self.config.component_filters.is_empty()) {
+			log::warn!("No tests found matching active filters.");
+		}
+
+		if test_errors {
+			Err(ForgeError::BuildFailed {
+				rule: "test_suite".to_string(),
+				error: "One or more tests failed".to_string(),
+			})
+		} else {
+			Ok(())
+		}
 	}
 
 	fn find_forge_files(&self, path: &Path) -> Result<Vec<PathBuf>, ForgeError> {
@@ -472,6 +739,9 @@ impl Project {
 	fn calculate_rule_hash<'a>(&'a self, rule: &'a Rule) -> Result<String, ForgeError> {
 		let mut hasher = Hasher::new();
 
+		// Include build profile fingerprint in cache key
+		hasher.update(self.build_profile.fingerprint().as_bytes());
+
 		// Include hermetic policy fingerprint in cache key
 		hasher.update(format!("{:?}", self.hermetic_policy.mode).as_bytes());
 		if self.hermetic_policy.trace_access {
@@ -567,7 +837,7 @@ impl Project {
 		Ok(final_args)
 	}
 
-	fn execute_build_graph(&self) -> Result<(), ForgeError> {
+	pub fn execute_build_graph(&self) -> Result<(), ForgeError> {
 		let batches = self.create_parallel_batches()?;
 		let total_rules: usize = batches.iter().map(|batch| batch.len()).sum();
 		let mut completed_rules = 0;

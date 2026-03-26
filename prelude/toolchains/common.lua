@@ -154,10 +154,18 @@ function M.find_bin_dir(root)
 		return direct
 	end
 
+	local candidates = {}
 	for _, candidate in ipairs(forge.fs.walk(root, { recursive = true })) do
 		if forge.fs.is_dir(candidate) and forge.path.basename(candidate) == "bin" then
-			return candidate
+			table.insert(candidates, candidate)
 		end
+	end
+	
+	if #candidates > 0 then
+		table.sort(candidates, function(a, b)
+			return #a < #b
+		end)
+		return candidates[1]
 	end
 
 	return nil
@@ -287,18 +295,23 @@ function M.sync(name, options, hooks)
 		end
 
 		local archive_name = M.sanitize(name) .. "-" .. M.sanitize(spec.version or "custom") .. M.url_extension(spec.url)
-		local archive_path = forge.http.download({
-			url = spec.url,
-			cache_key = archive_name,
-			sha256 = spec.sha256,
-			extract = false,
-		})
+		local marker = M.path_join({ spec.install_dir, ".forge_extracted" })
+		if not forge.fs.exists(marker) then
+			local archive_path = forge.http.download({
+				url = spec.url,
+				cache_key = archive_name,
+				sha256 = spec.sha256,
+				extract = false,
+			})
 
-		if forge.fs.exists(spec.install_dir) then
-			forge.fs.remove_dir(spec.install_dir)
+			if forge.fs.exists(spec.install_dir) then
+				-- Ignore errors on remove_dir since read-only files might prevent it
+				pcall(forge.fs.remove_dir, spec.install_dir)
+			end
+			M.ensure_dir(spec.install_dir)
+			M.extract_archive(archive_path, spec.install_dir)
+			forge.fs.write(marker, "ready")
 		end
-		M.ensure_dir(spec.install_dir)
-		M.extract_archive(archive_path, spec.install_dir)
 	end
 
 	local info = {

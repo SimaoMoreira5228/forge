@@ -17,6 +17,8 @@ pub trait SandboxProvider {
 
 /// Linux isolation using `bwrap` (Bubblewrap) to safely manipulate namespaces.
 pub struct LinuxBwrapSandbox;
+/// Linux isolation using native `unshare` command.
+pub struct LinuxUnshareSandbox;
 /// macOS isolation using `sandbox-exec` and Seatbelt compilation profiles.
 pub struct MacOsSeatbeltSandbox;
 /// Windows isolation stub pointing towards Job Objects and Restricted Tokens.
@@ -36,12 +38,11 @@ impl SandboxProvider for LinuxBwrapSandbox {
 		// Drop privileges, setup proc, mount root as read-only.
 		cmd.args([
 			"--unshare-all", 
-			"--share-net", // If we want to deny network, we omit --share-net. We'll omit network to follow absolute hermeticity.
 			"--die-with-parent"
 		]);
 		
 		// Map standard Linux paths read-only
-		for p in &["/usr", "/bin", "/lib", "/lib64", "/etc"] {
+		for p in &["/usr", "/bin", "/lib", "/lib64", "/nix", "/etc"] {
 			if Path::new(p).exists() {
 				cmd.args(["--ro-bind", p, p]);
 			}
@@ -69,15 +70,67 @@ impl SandboxProvider for LinuxBwrapSandbox {
 	}
 }
 
-impl SandboxProvider for MacOsSeatbeltSandbox {
+impl SandboxProvider for LinuxUnshareSandbox {
 	fn create_command(
 		&self,
 		spec: &ActionSpec,
 		_runfiles_dir: &Path,
 	) -> Result<Command, HermeticError> {
+		let mut cmd = Command::new("unshare");
+		
+		// Setup namespace isolation using unshare command:
+		// --map-root-user: Map current user to root in the new namespace
+		// --mount: New mount namespace
+		// --pid: New PID namespace
+		// --fork: Fork before executing to ensure PID 1 is handled
+		cmd.args([
+			"--map-root-user",
+			"--mount",
+			"--pid",
+			"--fork",
+		]);
+		
+		// Terminal arg separator
+		cmd.arg("--");
+		cmd.arg(&spec.command);
+		
+		// NOTE: unshare doesn't support bind-mounting as easily as bwrap via flags.
+		// It would require running a script that performs mounts then execs.
+		// For now, this provides basic process and mount isolation.
+		
+		Ok(cmd)
+	}
+}
+
+impl SandboxProvider for MacOsSeatbeltSandbox {
+	fn create_command(
+		&self,
+		spec: &ActionSpec,
+		runfiles_dir: &Path,
+	) -> Result<Command, HermeticError> {
 		let mut cmd = Command::new("sandbox-exec");
 		cmd.arg("-p");
-		cmd.arg("(version 1) (allow default) (deny network*)");
+		
+		let mut profile = String::from("(version 1)\n(allow default)\n(deny network*)\n");
+		
+		// Map standard system paths read-only
+		profile.push_str("(allow file-read* (subpath \"/usr\") (subpath \"/bin\") (subpath \"/lib\") (subpath \"/etc\") (subpath \"/dev\"))\n");
+		
+		// Allow reading inputs
+		for input in &spec.inputs {
+			profile.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", input.display()));
+		}
+		
+		// Allow reading/writing outputs
+		for output in &spec.outputs {
+			profile.push_str(&format!("(allow file-read* file-write* (subpath \"{}\"))\n", output.display()));
+		}
+		
+		// Allow workdir and runfiles
+		profile.push_str(&format!("(allow file-read* file-write* (subpath \"{}\"))\n", spec.workdir.display()));
+		profile.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", runfiles_dir.display()));
+
+		cmd.arg(profile);
 		cmd.arg(&spec.command);
 		Ok(cmd)
 	}
@@ -112,8 +165,14 @@ pub fn get_sandbox(policy: &HermeticPolicy) -> Box<dyn SandboxProvider> {
 	}
 
 	if cfg!(target_os = "linux") {
-		// In a production engine, this would test `which bwrap` vs falling back to `unshare`.
-		Box::new(LinuxBwrapSandbox)
+		if command_exists("bwrap") {
+			Box::new(LinuxBwrapSandbox)
+		} else if command_exists("unshare") {
+			Box::new(LinuxUnshareSandbox)
+		} else {
+			log::warn!("Neither 'bwrap' nor 'unshare' found for strict hermetic isolation. Falling back to NullSandbox.");
+			Box::new(NullSandbox)
+		}
 	} else if cfg!(target_os = "macos") {
 		Box::new(MacOsSeatbeltSandbox)
 	} else if cfg!(target_os = "windows") {
@@ -121,4 +180,12 @@ pub fn get_sandbox(policy: &HermeticPolicy) -> Box<dyn SandboxProvider> {
 	} else {
 		Box::new(NullSandbox)
 	}
+}
+
+fn command_exists(cmd: &str) -> bool {
+	Command::new("which")
+		.arg(cmd)
+		.output()
+		.map(|o| o.status.success())
+		.unwrap_or(false)
 }

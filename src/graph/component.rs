@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::graph::{ComponentRef, ConfigTransition, DependencyEdge};
+
 static NEXT_COMPONENT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -300,6 +302,11 @@ pub struct Component {
 	pub system_libs: Vec<String>,
 	pub workdir: PathBuf,
 	pub env: HashMap<String, String>,
+	/// Configuration transition for this component (e.g., host/target).
+	pub exec_cfg: Option<ConfigTransition>,
+
+	/// Unresolved dependencies to be processed after all components are loaded.
+	pub dependencies: Vec<(ComponentRef, DependencyEdge)>,
 }
 
 impl Component {
@@ -314,6 +321,7 @@ impl Component {
 			package,
 			visibility: Visibility::default(),
 			compatible_with: Vec::new(),
+			exec_cfg: None,
 			sources: Vec::new(),
 			outputs: Vec::new(),
 			include_dirs: Vec::new(),
@@ -323,7 +331,13 @@ impl Component {
 			system_libs: Vec::new(),
 			workdir,
 			env: HashMap::new(),
+			dependencies: Vec::new(),
 		}
+	}
+
+	pub fn with_dependencies(mut self, deps: Vec<(ComponentRef, DependencyEdge)>) -> Self {
+		self.dependencies = deps;
+		self
 	}
 
 	pub fn library(name: impl Into<String>, target_name: impl Into<String>) -> Self {
@@ -388,6 +402,11 @@ impl Component {
 
 	pub fn with_compatible_with(mut self, constraints: Vec<ConstraintRef>) -> Self {
 		self.compatible_with = constraints;
+		self
+	}
+
+	pub fn with_exec_cfg(mut self, exec_cfg: Option<ConfigTransition>) -> Self {
+		self.exec_cfg = exec_cfg;
 		self
 	}
 

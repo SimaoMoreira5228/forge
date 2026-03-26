@@ -81,14 +81,17 @@ struct Cli {
 	#[command(flatten)]
 	verbose: clap_verbosity_flag::Verbosity,
 
-	#[arg(long, default_value = "strict", help = "Hermetic policy mode: off, warn, or strict")]
-	hermetic: String,
+	#[arg(long, global = true, help = "Hermetic policy mode: off, warn, or strict")]
+	hermetic: Option<String>,
 
 	#[arg(long, help = "Trace file access during execution and report undeclared reads/writes")]
 	trace_access: bool,
 
 	#[arg(long, help = "Explain why an action is non-hermetic (shows env, inputs, toolchain issues)")]
 	why_non_hermetic: bool,
+
+	#[arg(long, global = true, help = "Build profile to use (e.g. debug, release, asan)")]
+	profile: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -99,9 +102,6 @@ enum Commands {
 
 		#[arg(short, long, help = "Build specific component(s) (can be used multiple times)")]
 		component: Vec<String>,
-
-		#[arg(long, help = "Build profile to use (e.g. debug, release)")]
-		profile: Option<String>,
 	},
 
 	Run {
@@ -141,6 +141,17 @@ enum Commands {
 		rerun_failed: bool,
 
 		#[arg(long, help = "Output format (e.g., junit:path/to/results.xml)")]
+		output: Option<String>,
+	},
+
+	Coverage {
+		#[arg(short, long, help = "Target to be used for coverage compilation")]
+		target: Option<String>,
+
+		#[arg(short, long, help = "Filter tests and covered components by pattern")]
+		filter: Option<String>,
+
+		#[arg(long, help = "Output format (e.g., lcov:cov.info, html:cov_dir/, json:cov.json)")]
 		output: Option<String>,
 	},
 
@@ -191,11 +202,23 @@ enum Commands {
 	Query {
 		#[arg(help = "The query expression to evaluate (e.g. 'deps(//lib:all)')")]
 		expression: String,
+
+		#[arg(short, long, help = "Output format: text|json|dot|count", default_value = "text")]
+		format: String,
+
+		#[arg(short, long, help = "Write output to a file instead of stdout")]
+		output: Option<PathBuf>,
 	},
 
 	Watch {
-		#[arg(help = "The target to continuously watch and rebuild. Defaults to all default targets")]
-		target: Option<String>,
+		#[arg(long, help = "Only watch and build specific targets (e.g., linux_x64)")]
+		target: Vec<String>,
+
+		#[arg(long, help = "Only watch and build specific components (e.g., //lib:math)")]
+		component: Vec<String>,
+
+		#[arg(long, help = "Run tests after build")]
+		test: bool,
 	},
 
 	Explain {
@@ -203,19 +226,33 @@ enum Commands {
 		target: String,
 	},
 
-	Coverage {
-		#[arg(help = "The target to collect coverage for")]
-		target: String,
-	},
 
 	Fmt {
 		#[arg(long, help = "Check formatting without modifying files")]
 		check: bool,
 	},
 
-	CompileCommands,
+	CompileCommands {
+		#[arg(short, long, help = "Only generate entries for this target (default: all)")]
+		target: Vec<String>,
 
-	Graph,
+		#[arg(short, long, help = "Output path (default: compile_commands.json in project root)")]
+		output: Option<std::path::PathBuf>,
+
+		#[arg(long, default_value = "false", help = "Merge into existing compile_commands.json instead of overwriting")]
+		merge: bool,
+	},
+
+	Graph {
+		#[arg(short, long, help = "Only show nodes related to these targets")]
+		target: Vec<String>,
+
+		#[arg(short, long, help = "Only show nodes related to these components")]
+		component: Vec<String>,
+
+		#[arg(short, long, help = "Output format: dot|json", default_value = "dot")]
+		format: String,
+	},
 }
 
 fn main() -> Result<()> {
@@ -240,18 +277,23 @@ fn main() -> Result<()> {
 		.format_timestamp_secs()
 		.init();
 
-	// Parse hermetic policy
-	let mut policy: HermeticPolicy = match cli.hermetic.parse::<PolicyMode>() {
-		Ok(mode) => HermeticPolicy::new(mode),
-		Err(e) => {
-			eprintln!("Error: {}", e);
-			std::process::exit(1);
-		}
+	// Parse hermetic policy mode override from CLI
+	let cli_mode: Option<crate::hermetic::PolicyMode> = match cli.hermetic.as_deref() {
+		Some(mode_str) => match mode_str.parse() {
+			Ok(mode) => Some(mode),
+			Err(e) => {
+				eprintln!("Error: {}", e);
+				std::process::exit(1);
+			}
+		},
+		None => None,
 	};
-	policy.trace_access = cli.trace_access;
-	policy.why_non_hermetic = cli.why_non_hermetic;
+    
+    // We'll create a dummy policy just to hold the other flags for now, 
+    // but Project::new will create the real one.
+    // Actually, let's keep the flags.
 
-	log::info!("Hermetic policy: {:?}", policy.mode);
+	log::info!("Hermetic policy override: {:?}", cli_mode);
 
 	let project_path = std::fs::canonicalize(&cli.project)?;
 
@@ -259,7 +301,6 @@ fn main() -> Result<()> {
 		Some(Commands::Build {
 			target,
 			component,
-			profile: build_profile,
 		}) => {
 			if target.is_empty() && component.is_empty() {
 				return Err(anyhow::anyhow!(
@@ -275,7 +316,7 @@ fn main() -> Result<()> {
 				target_filters: target,
 				component_filters: component,
 				test_mode: false,
-				profile: build_profile,
+				profile: cli.profile.clone(),
 			};
 
 			log::info!("Building project at: {}", project_path.display());
@@ -286,7 +327,13 @@ fn main() -> Result<()> {
 				log::info!("Component filters: {}", config.component_filters.join(", "));
 			}
 
-			let mut project = project::Project::new(project_path, config, policy.clone())?;
+			let mut project = project::Project::new(
+				project_path,
+				config,
+				cli_mode,
+				cli.trace_access,
+				cli.why_non_hermetic,
+			)?;
 			project.run()?;
 
 			println!("\nBuild completed successfully!");
@@ -302,18 +349,22 @@ fn main() -> Result<()> {
 					vec![]
 				},
 				test_mode: false,
-				profile: None,
+				profile: cli.profile.clone(),
 			};
 
-			let mut project = project::Project::new(project_path.clone(), config, policy.clone())?;
+			let mut project = project::Project::new(
+				project_path.clone(),
+				config,
+				cli_mode,
+				cli.trace_access,
+				cli.why_non_hermetic,
+			)?;
 			project.run()?;
 
 			if let Some(target_name) = target {
 				if let Some(comp) = component {
-					log::info!("Running component '{}' with target: {}", comp, target_name);
 					run_component_target(&project_path, &comp, &target_name)?;
 				} else {
-					log::info!("Running target: {}", target_name);
 					run_target(&project_path, &target_name)?;
 				}
 			} else {
@@ -402,7 +453,7 @@ fn main() -> Result<()> {
 				target_filters: vec![target.clone()],
 				component_filters: component_filters.clone(),
 				test_mode: true,
-				profile: None,
+				profile: cli.profile.clone(),
 			};
 
 			log::info!("Building and testing project at: {}", project_path.display());
@@ -411,22 +462,17 @@ fn main() -> Result<()> {
 				log::info!("Test component: {}", comp);
 			}
 
-			let mut project = project::Project::new(project_path.clone(), config, policy.clone())?;
-			project.run()?;
-
+			let mut project = project::Project::new(
+				project_path.clone(),
+				config,
+				cli_mode,
+				cli.trace_access,
+				cli.why_non_hermetic,
+			)?;
 			let mut test_errors = false;
-			if !component_filters.is_empty() {
-				for comp in &component_filters {
-					log::info!("Running test component '{}' with target: {}", comp, target);
-					if run_component_target_test_mode(&project_path, comp, &target, &policy).is_err() {
-						test_errors = true;
-					}
-				}
-			} else {
-				log::info!("Running test target: {}", target);
-				if run_target_test_mode(&project_path, &target, &policy).is_err() {
-					test_errors = true;
-				}
+			if let Err(e) = project.run() {
+				log::error!("Tests failed: {}", e);
+				test_errors = true;
 			}
 
 			if let Some(ref out) = output {
@@ -450,6 +496,41 @@ fn main() -> Result<()> {
 			}
 
 			println!("\nTest completed successfully!");
+		}
+		Some(Commands::Coverage {
+			target,
+			filter,
+			output,
+		}) => {
+			let mut component_filters = Vec::new();
+			if let Some(ref f) = filter {
+				component_filters.push(f.clone());
+			}
+
+			let config = config::Config {
+				verbosity: config::VerbosityWrapper(cli.verbose),
+				target_filters: target.into_iter().collect(),
+				component_filters,
+				test_mode: true,
+				profile: Some("coverage".to_string()),
+			};
+
+			log::info!("Building and calculating coverage at: {}", project_path.display());
+
+			let mut project = project::Project::new(
+				project_path.clone(),
+				config,
+				cli_mode,
+				cli.trace_access,
+				cli.why_non_hermetic,
+			)?;
+			
+			if let Err(e) = project.run_coverage(output.as_deref()) {
+				log::error!("Coverage failed: {}", e);
+				return Err(anyhow::anyhow!("Coverage failed"));
+			}
+
+			println!("\nCoverage completed successfully!");
 		}
 		Some(Commands::Clean {
 			expunge: _,
@@ -479,34 +560,69 @@ fn main() -> Result<()> {
 			handle_deps_command(action)?;
 		}
 		Some(Commands::Toolchain { action }) => {
-			handle_toolchain_command(action, &project_path, cli.verbose.clone())?;
+			handle_toolchain_command(
+				action,
+				&project_path,
+				cli.verbose.clone(),
+				cli_mode,
+				cli.trace_access,
+				cli.why_non_hermetic,
+			)?;
 		}
-		Some(Commands::Query { expression }) => {
+		Some(Commands::Query { expression, format, output }) => {
 			log::info!("Evaluating query: {}", expression);
 			let config = config::Config {
 				verbosity: config::VerbosityWrapper(cli.verbose),
 				target_filters: vec![],
 				component_filters: vec![],
 				test_mode: false,
-				profile: None,
+				profile: cli.profile.clone(),
 			};
 
-			let mut project = project::Project::new(project_path, config, policy.clone())?;
+			let mut project = project::Project::new(
+				project_path,
+				config,
+				cli_mode,
+				cli.trace_access,
+				cli.why_non_hermetic,
+			)?;
 			project.load_graph()?;
 
 			let graph = project.dependency_graph.lock().unwrap();
 			let engine = QueryEngine::new(&graph);
 			match engine.evaluate(&expression) {
 				Ok(ids) => {
-					let mut labels: Vec<String> = Vec::new();
-					for id in ids {
-						if let Some(comp) = graph.get_component(id) {
-							labels.push(format!("{}:{}", comp.target_name, comp.name));
+					let output_content = match format.as_str() {
+						"json" => {
+							let mut components = Vec::new();
+							for id in &ids {
+								if let Some(comp) = graph.get_component(*id) {
+									components.push(comp);
+								}
+							}
+							serde_json::to_string_pretty(&components).unwrap_or_default()
 						}
-					}
-					labels.sort();
-					for label in labels {
-						println!("{}", label);
+						"dot" => {
+							graph.output_dot_subset(&ids, &crate::graph::DotOptions::default_pretty())
+						}
+						"count" => ids.len().to_string(),
+						_ => {
+							let mut labels: Vec<String> = Vec::new();
+							for id in ids {
+								if let Some(comp) = graph.get_component(id) {
+									labels.push(format!("{}:{}", comp.target_name, comp.name));
+								}
+							}
+							labels.sort();
+							labels.join("\n")
+						}
+					};
+
+					if let Some(out_path) = output {
+						std::fs::write(&out_path, output_content)?;
+						println!("Query results written to: {}", out_path.display());
+					} else {
+						println!("{}", output_content);
 					}
 				}
 				Err(e) => {
@@ -515,38 +631,91 @@ fn main() -> Result<()> {
 				}
 			}
 		}
-		Some(Commands::Watch { target }) => {
-			let target_str = target.unwrap_or_else(|| "all".to_string());
-			log::info!("Starting watch mode for target: {}", target_str);
+		Some(Commands::Watch { target, component, test }) => {
+			log::info!("Starting watch mode");
 			let config = config::Config {
 				verbosity: config::VerbosityWrapper(cli.verbose),
-				target_filters: vec![target_str],
-				component_filters: vec![],
-				test_mode: false,
-				profile: None,
+				target_filters: target.clone(),
+				component_filters: component.clone(),
+				test_mode: test,
+				profile: cli.profile.clone(),
 			};
 
-			if let Err(e) = crate::watch::watch_project(project_path, config, policy) {
+			if let Err(e) = crate::watch::watch_project(
+				project_path,
+				config,
+				cli_mode,
+				cli.trace_access,
+				cli.why_non_hermetic,
+			) {
 				log::error!("Watch loop crashed: {}", e);
 				std::process::exit(1);
 			}
 		}
 		Some(Commands::Explain { target }) => {
-			log::info!("Dry-running target to generate explain traces: {}", target);
 			let config = config::Config {
 				verbosity: config::VerbosityWrapper(cli.verbose),
-				target_filters: vec![target.clone()],
+				target_filters: vec![], // Load everything first for metadata
 				component_filters: vec![],
 				test_mode: false,
-				profile: None,
+				profile: cli.profile.clone(),
 			};
 
-			let mut project = project::Project::new(project_path, config, policy.clone())?;
+			let mut project = project::Project::new(
+				project_path,
+				config,
+				cli_mode,
+				cli.trace_access,
+				cli.why_non_hermetic,
+			)?;
+			let _ = project.load_graph(); // We want to explain even if the graph has errors (e.g. visibility violations)
+
+			// 1. Show graph metadata for matched components
+			{
+				let graph = project.dependency_graph.lock().unwrap();
+				let matched_ids = graph.components_matching(&target);
+				
+				for id in matched_ids {
+					if let Some(comp) = graph.get_component(id) {
+						println!("\n=== Component: {}:{} ===", comp.target_name, comp.name);
+						println!("  Type:      {:?}", comp.component_type);
+						println!("  Package:   {}", comp.package.as_str());
+						println!("  Visibility: {:?}", comp.visibility);
+						if !comp.compatible_with.is_empty() {
+							println!("  Platforms: {:?}", comp.compatible_with);
+						}
+
+						let deps = graph.dependencies_of(id);
+						if !deps.is_empty() {
+							println!("  Depends on:");
+							for dep_id in deps {
+								if let Some(dep) = graph.get_component(dep_id) {
+									println!("    - {}:{}", dep.target_name, dep.name);
+								}
+							}
+						}
+
+						let rdeps = graph.reverse_dependencies(id);
+						if !rdeps.is_empty() {
+							println!("  Needed by:");
+							for rdep_id in rdeps {
+								if let Some(rdep) = graph.get_component(rdep_id) {
+									println!("    - {}:{}", rdep.target_name, rdep.name);
+								}
+							}
+						}
+					}
+				}
+			}
+
+			// 2. Show staleness traces (dry-run)
+			log::info!("Dry-running to detect stale components for '{}'...", target);
+			project.config.target_filters = vec![target.clone()];
 			project.run()?;
 
-			println!("\n=== Explain traces for targets in {}: ===", target);
+			println!("\n=== Cache Stale Traces ===");
 			if project.explain_trace.is_empty() {
-				println!("✓ All components are fully cached and up-to-date!");
+				println!("✓ All components matched by '{}' are fully cached and up-to-date!", target);
 			} else {
 				for entry in project.explain_trace.iter() {
 					println!("Component '{}':", entry.key());
@@ -556,75 +725,213 @@ fn main() -> Result<()> {
 				}
 			}
 		}
-		Some(Commands::Coverage { .. }) => {
-			println!("Not yet implemented");
+		Some(Commands::Fmt { check }) => {
+			log::info!("Formatting Lua build files with stylua...");
+
+			// Verify stylua is available
+			if std::process::Command::new("stylua").arg("--version").output().is_err() {
+				eprintln!("Error: 'stylua' is not installed or not available in PATH.");
+				eprintln!("Forge uses 'stylua' to format its build and prelude files.");
+				eprintln!("Please install it first: cargo install stylua");
+				std::process::exit(1);
+			}
+
+			let mut files = Vec::new();
+			let walker = ignore::WalkBuilder::new(&project_path).build();
+			for result in walker {
+				if let Ok(entry) = result {
+					let path = entry.path();
+					if path.is_file() {
+						if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+							if name.ends_with(".lua") || name == "FORGE" {
+								files.push(path.to_path_buf());
+							}
+						}
+					}
+				}
+			}
+
+			if files.is_empty() {
+				println!("No .lua or FORGE files found to format.");
+				return Ok(());
+			}
+
+			let mut fmt_failed = false;
+			// Process in chunks to avoid OS command line length limits
+			for chunk in files.chunks(100) {
+				let mut cmd = std::process::Command::new("stylua");
+				if check {
+					cmd.arg("--check");
+				}
+				for file in chunk {
+					cmd.arg(file);
+				}
+				match cmd.status() {
+					Ok(status) => {
+						if !status.success() {
+							fmt_failed = true;
+						}
+					}
+					Err(e) => {
+						eprintln!("Failed to execute stylua: {}", e);
+						std::process::exit(1);
+					}
+				}
+			}
+
+			if fmt_failed {
+				eprintln!("Formatting/check failed. See stylua output above.");
+				std::process::exit(1);
+			} else if check {
+				println!("All files formatted correctly!");
+			} else {
+				println!("Successfully formatted {} files.", files.len());
+			}
 		}
-		Some(Commands::Fmt { .. }) => {
-			println!("Not yet implemented");
-		}
-		Some(Commands::CompileCommands) => {
+		Some(Commands::CompileCommands { target, output, merge }) => {
 			log::info!("Generating compile_commands.json...");
 			let config = config::Config {
 				verbosity: config::VerbosityWrapper(cli.verbose),
-				target_filters: vec![],
+				target_filters: target,
 				component_filters: vec![],
 				test_mode: false,
-				profile: None,
+				profile: cli.profile.clone(),
 			};
-			let project = project::Project::new(project_path.clone(), config, policy.clone())?;
+			let project = project::Project::new(
+				project_path.clone(),
+				config,
+				cli_mode,
+				cli.trace_access,
+				cli.why_non_hermetic,
+			)?;
 			project.load_graph()?;
 
-			let mut cmds = Vec::new();
-			for entry in project.build_graph.iter() {
-				let rule = entry.value();
-				let exec = &rule.command;
-				if exec.contains("clang") || exec.contains("gcc") || exec.contains("g++") || exec.contains("c++") || exec.contains("cc") {
-					let mut full_cmd = exec.clone();
-					for arg in &rule.args {
-						// Simple escape for json
-						let safe_arg = arg.replace("\"", "\\\"");
-						full_cmd.push_str(&format!(" {}", safe_arg));
-					}
-					let file = rule.inputs.first().cloned().unwrap_or_default();
-					let dict = format!(
-						r#"  {{ "directory": "{}", "command": "{}", "file": "{}" }}"#,
-						project_path.display(),
-						full_cmd.replace("\"", "\\\""),
-						file.replace("\"", "\\\"")
-					);
-					cmds.push(dict);
+			// Compile-command detectors: match common C/C++ compiler driver names.
+			const COMPILER_INDICATORS: &[&str] = &[
+				"gcc", "g++", "clang", "clang++", "cc", "c++", "zig cc", "zig c++",
+			];
+			let is_compile_rule = |cmd: &str| -> bool {
+				let base = std::path::Path::new(cmd)
+					.file_name()
+					.map(|n| n.to_string_lossy().to_lowercase())
+					.unwrap_or_default();
+				COMPILER_INDICATORS.iter().any(|k| base.contains(k))
+			};
+
+			// Collect existing entries if merging
+			let out_path = output.unwrap_or_else(|| project_path.join("compile_commands.json"));
+			let mut entries: Vec<serde_json::Value> = if merge && out_path.exists() {
+				if let Ok(data) = std::fs::read_to_string(&out_path) {
+					serde_json::from_str(&data).unwrap_or_default()
+				} else {
+					vec![]
 				}
+			} else {
+				vec![]
+			};
+
+			// Track files already present to avoid duplicates when merging
+			let existing_files: std::collections::HashSet<String> = if merge {
+				entries.iter()
+					.filter_map(|e| e.get("file").and_then(|f| f.as_str()).map(String::from))
+					.collect()
+			} else {
+				std::collections::HashSet::new()
+			};
+
+			let mut new_count = 0usize;
+			for rule_entry in project.build_graph.iter() {
+				let rule = rule_entry.value();
+				if !is_compile_rule(&rule.command) {
+					continue;
+				}
+
+				// Find the primary source file: first .c / .cpp / .cc / .cxx in inputs
+				let source_file = rule.inputs.iter().find(|i| {
+					matches!(
+						std::path::Path::new(i).extension().and_then(|e| e.to_str()),
+						Some("c" | "cpp" | "cc" | "cxx" | "C" | "CPP")
+					)
+				});
+				let file_path = match source_file {
+					Some(f) => f.clone(),
+					None => continue, // skip link/archive rules
+				};
+
+				// Make file path absolute if it isn't
+				let abs_file = if std::path::Path::new(&file_path).is_absolute() {
+					file_path.clone()
+				} else {
+					rule.workdir.join(&file_path).to_string_lossy().to_string()
+				};
+
+				if merge && existing_files.contains(&abs_file) {
+					continue;
+				}
+
+				// Build the arguments list (for the 'arguments' array form)
+				let mut arguments: Vec<String> = vec![rule.command.clone()];
+				arguments.extend(rule.args.iter().cloned());
+
+				entries.push(serde_json::json!({
+					"directory": rule.workdir.to_string_lossy(),
+					"file": abs_file,
+					"arguments": arguments,
+				}));
+				new_count += 1;
 			}
-			let json = format!("[\n{}\n]\n", cmds.join(",\n"));
-			let out_path = project_path.join("compile_commands.json");
+
+			let json = serde_json::to_string_pretty(&entries)?;
+			if let Some(parent) = out_path.parent() {
+				std::fs::create_dir_all(parent)?;
+			}
 			std::fs::write(&out_path, json)?;
-			log::info!("Wrote compile_commands.json to {}", out_path.display());
+			println!(
+				"compile_commands.json written to {} ({} entries{})",
+				out_path.display(),
+				new_count,
+				if merge { " merged" } else { "" },
+			);
 		}
-		Some(Commands::Graph) => {
-			log::info!("Generating Graphviz DOT graph of workspace dependencies...");
+		Some(Commands::Graph { target, component, format }) => {
+			log::info!("Generating graph of workspace dependencies...");
 			let config = config::Config {
 				verbosity: config::VerbosityWrapper(cli.verbose),
-				target_filters: vec![],
-				component_filters: vec![],
+				target_filters: target,
+				component_filters: component,
 				test_mode: false,
-				profile: None,
+				profile: cli.profile.clone(),
 			};
-			let project = project::Project::new(project_path, config, policy.clone())?;
+			let project = project::Project::new(
+				project_path,
+				config,
+				cli_mode,
+				cli.trace_access,
+				cli.why_non_hermetic,
+			)?;
 			project.load_graph()?;
 			
-			let mut dot = String::new();
-			dot.push_str("digraph BuildGraph {\n");
-			dot.push_str("  node [shape=box];\n");
-			for entry in project.build_graph.iter() {
-				let name = entry.key();
-				let rule = entry.value();
-				dot.push_str(&format!("  \"{}\" [label=\"{}\"];\n", name, name));
-				for dep in &rule.dependencies {
-					dot.push_str(&format!("  \"{}\" -> \"{}\";\n", name, dep));
+			if format == "json" {
+				let mut rules = std::collections::HashMap::new();
+				for entry in project.build_graph.iter() {
+					rules.insert(entry.key().clone(), entry.value().clone());
 				}
+				println!("{}", serde_json::to_string_pretty(&rules)?);
+			} else {
+				let mut dot = String::new();
+				dot.push_str("digraph BuildGraph {\n");
+				dot.push_str("  node [shape=box];\n");
+				for entry in project.build_graph.iter() {
+					let name = entry.key();
+					let rule = entry.value();
+					dot.push_str(&format!("  \"{}\" [label=\"{}\"];\n", name, name));
+					for dep in &rule.dependencies {
+						dot.push_str(&format!("  \"{}\" -> \"{}\";\n", name, dep));
+					}
+				}
+				dot.push_str("}\n");
+				println!("{}", dot);
 			}
-			dot.push_str("}\n");
-			println!("{}", dot);
 		}
 		None => {
 			if cli.target.is_empty() {
@@ -639,13 +946,19 @@ fn main() -> Result<()> {
 				target_filters: cli.target,
 				component_filters: vec![],
 				test_mode: false,
-				profile: None,
+				profile: cli.profile.clone(),
 			};
 
 			log::info!("Building project at: {}", project_path.display());
 			log::info!("Targets: {}", config.target_filters.join(", "));
 
-			let mut project = project::Project::new(project_path, config, policy.clone())?;
+			let mut project = project::Project::new(
+				project_path,
+				config,
+				cli_mode,
+				cli.trace_access,
+				cli.why_non_hermetic,
+			)?;
 			project.run()?;
 
 			println!("\nBuild completed successfully!");
@@ -856,124 +1169,6 @@ fn clean_project(project_path: &Path) -> Result<()> {
 	Ok(())
 }
 
-fn run_target_test_mode(project_path: &PathBuf, target_name: &str, policy: &HermeticPolicy) -> Result<()> {
-	let forge_out = project_path.join("forge-out");
-	if !forge_out.exists() {
-		return Err(anyhow::anyhow!("forge-out directory not found at {}", forge_out.display()));
-	}
-
-	let target_dir = forge_out.join(target_name);
-	let test_executables = find_all_test_executables_in_dir(&target_dir);
-
-	if test_executables.is_empty() {
-		return Err(anyhow::anyhow!(
-			"No test executables found for target '{}' (looking for binaries with '_test' suffix)",
-			target_name
-		));
-	}
-
-	println!("Running {} test(s) for target '{}'...", test_executables.len(), target_name);
-
-	let mut all_passed = true;
-	for test_executable in test_executables {
-		println!(
-			"\n=== Running test: {} ===",
-			test_executable.file_name().unwrap().to_str().unwrap()
-		);
-		match run_executable_hermetic(&test_executable, project_path, policy) {
-			Ok(_) => {}
-			Err(e) => {
-				eprintln!("Test failed: {}", e);
-				all_passed = false;
-			}
-		}
-	}
-
-	if !all_passed {
-		return Err(anyhow::anyhow!("One or more tests failed"));
-	}
-
-	Ok(())
-}
-
-fn run_component_target_test_mode(
-	project_path: &PathBuf,
-	component_name: &str,
-	target_name: &str,
-	policy: &HermeticPolicy,
-) -> Result<()> {
-	let forge_out = project_path.join("forge-out");
-	if !forge_out.exists() {
-		return Err(anyhow::anyhow!("forge-out directory not found at {}", forge_out.display()));
-	}
-
-	let target_dir = forge_out.join(target_name);
-	if !target_dir.exists() || !target_dir.is_dir() {
-		return Err(anyhow::anyhow!(
-			"Target directory '{}' not found at {}",
-			target_name,
-			target_dir.display()
-		));
-	}
-
-	if let Some(test_executable) = find_test_executable_in_dir(&target_dir, Some(component_name)) {
-		// Compute cache key based on test executable
-		let cache_key = compute_test_cache_key(&test_executable)?;
-
-		// Check test result cache (in cas directory)
-		let sqlite_path = forge_out.join("cas").join("cache.db");
-
-		if sqlite_path.exists() {
-			if let Ok(db) = CacheDb::new(&sqlite_path) {
-				if let Ok(Some(result)) = db.get_test_result(&cache_key) {
-					if result.verdict == "PASSED" {
-						println!("[CACHE HIT] Test '{}' already passed (cached)", component_name);
-						if let Some(stdout) = result.stdout {
-							if !stdout.is_empty() {
-								print!("{}", stdout);
-							}
-						}
-						return Ok(());
-					}
-					println!("[CACHE MISS] Previous result was {}, re-running test...", result.verdict);
-				}
-			}
-		}
-
-		// Run the test and time it (hermetically)
-		let start = std::time::Instant::now();
-		let result = run_executable_hermetic(&test_executable, project_path, policy);
-		let duration_ms = start.elapsed().as_millis() as i64;
-
-		// Record result in cache
-		if sqlite_path.exists() {
-			if let Ok(db) = CacheDb::new(&sqlite_path) {
-				let verdict = if result.is_ok() { "PASSED" } else { "FAILED" };
-				let stdout = last_test_stdout.lock().unwrap().clone();
-				let stderr = last_test_stdout.lock().unwrap().clone();
-				let _ = db.record_test_result(
-					component_name,
-					target_name,
-					&cache_key,
-					verdict,
-					duration_ms,
-					0, // flake_count
-					1, // run_count
-					Some(&stdout),
-					Some(&stderr),
-				);
-			}
-		}
-
-		return result;
-	}
-
-	Err(anyhow::anyhow!(
-		"Test component executable '{}_test' not found in target directory {} (looking for binaries with '_test' suffix)",
-		component_name,
-		target_dir.display()
-	))
-}
 
 #[cfg(unix)]
 fn set_executable_permissions(path: &PathBuf) -> Result<()> {
@@ -1040,77 +1235,6 @@ fn execute_binary(executable_path: &PathBuf, project_path: &PathBuf) -> Result<(
 	Ok(())
 }
 
-fn run_executable_hermetic(executable_path: &PathBuf, project_path: &PathBuf, policy: &HermeticPolicy) -> Result<()> {
-	use crate::hermetic::{ActionSpec, SandboxRunner};
-	use std::collections::HashMap;
-
-	#[cfg(unix)]
-	set_executable_permissions(executable_path)?;
-
-	log::info!("Executing hermetically: {}", executable_path.display());
-
-	let runfiles_dir = project_path.join(".forge").join("test-runfiles");
-	let runner = SandboxRunner::new(policy.clone(), runfiles_dir);
-
-	let mut action_spec = ActionSpec::new(
-		executable_path
-			.file_name()
-			.and_then(|n| n.to_str())
-			.unwrap_or("test")
-			.to_string(),
-	);
-	action_spec.command = executable_path.to_string_lossy().to_string();
-	action_spec.args = vec![];
-	action_spec.inputs = vec![executable_path.clone()];
-	action_spec.outputs = vec![
-		project_path
-			.join(".forge")
-			.join("test-results")
-			.join(executable_path.file_name().unwrap_or_default()),
-	];
-	action_spec.env = HashMap::new();
-	action_spec.workdir = project_path.clone();
-
-	match runner.execute(&action_spec) {
-		Ok(result) => {
-			// Store stdout/stderr for test caching
-			if let Ok(mut s) = last_test_stdout.lock() {
-				*s = result.stdout.clone();
-			}
-			if let Ok(mut s) = last_test_stderr.lock() {
-				*s = result.stderr.clone();
-			}
-
-			let stdout = &result.stdout;
-			if !stdout.is_empty() {
-				print!("{}", stdout);
-			}
-
-			if !result.success {
-				return Err(anyhow::anyhow!(
-					"Test failed with exit code {:?}\nSTDOUT:\n{}\n\nSTDERR:\n{}",
-					result.exit_code,
-					result.stdout,
-					result.stderr
-				));
-			}
-			Ok(())
-		}
-		Err(e) => Err(anyhow::anyhow!("Hermetic test execution failed: {}", e)),
-	}
-}
-
-fn compute_test_cache_key(executable_path: &PathBuf) -> Result<String> {
-	use std::fs::File;
-	use std::io::Read;
-
-	let mut file = File::open(executable_path)?;
-	let mut buffer = Vec::new();
-	file.read_to_end(&mut buffer)?;
-
-	let hash = blake3::hash(&buffer);
-	Ok(hash.to_string())
-}
 
 fn find_executable_in_dir(dir: &PathBuf, name_pattern: Option<&str>) -> Option<PathBuf> {
 	if !dir.exists() || !dir.is_dir() {
@@ -1152,93 +1276,6 @@ fn find_executable_in_dir(dir: &PathBuf, name_pattern: Option<&str>) -> Option<P
 	None
 }
 
-fn find_all_test_executables_in_dir(dir: &PathBuf) -> Vec<PathBuf> {
-	let mut test_executables = Vec::new();
-
-	if !dir.exists() || !dir.is_dir() {
-		return test_executables;
-	}
-
-	let read_dir = match std::fs::read_dir(dir) {
-		Ok(rd) => rd,
-		Err(_) => return test_executables,
-	};
-
-	for entry in read_dir {
-		let entry = match entry {
-			Ok(e) => e,
-			Err(_) => continue,
-		};
-
-		let path = entry.path();
-		if !path.is_file() {
-			continue;
-		}
-
-		let filename = match path.file_name().and_then(|n| n.to_str()) {
-			Some(name) => name,
-			None => continue,
-		};
-
-		let is_test_executable = filename.ends_with("_test") || filename.ends_with("_test.exe");
-		if !is_test_executable {
-			continue;
-		}
-
-		if is_executable(&path) {
-			test_executables.push(path);
-		}
-	}
-
-	test_executables.sort();
-	test_executables
-}
-
-fn find_test_executable_in_dir(dir: &PathBuf, component_pattern: Option<&str>) -> Option<PathBuf> {
-	if !dir.exists() || !dir.is_dir() {
-		return None;
-	}
-
-	let read_dir = match std::fs::read_dir(dir) {
-		Ok(rd) => rd,
-		Err(_) => return None,
-	};
-
-	for entry in read_dir {
-		let entry = match entry {
-			Ok(e) => e,
-			Err(_) => continue,
-		};
-
-		let path = entry.path();
-		if !path.is_file() {
-			continue;
-		}
-
-		let filename = match path.file_name().and_then(|n| n.to_str()) {
-			Some(name) => name,
-			None => continue,
-		};
-
-		let is_test_executable = filename.ends_with("_test") || filename.ends_with("_test.exe");
-		if !is_test_executable {
-			continue;
-		}
-
-		if let Some(pattern) = component_pattern {
-			let expected_test_name = format!("{}_test", pattern);
-			if !filename.starts_with(&expected_test_name) {
-				continue;
-			}
-		}
-
-		if is_executable(&path) {
-			return Some(path);
-		}
-	}
-
-	None
-}
 
 fn handle_cache_command(action: CacheCommand, project_path: &Path) -> Result<()> {
 	let cas_dir = project_path.join("forge-out").join("cas");
@@ -1357,6 +1394,9 @@ fn handle_toolchain_command(
 	action: ToolchainCommand,
 	project_path: &Path,
 	verbosity: clap_verbosity_flag::Verbosity,
+	cli_mode: Option<crate::hermetic::PolicyMode>,
+	trace_access: bool,
+	why_non_hermetic: bool,
 ) -> Result<()> {
 	let config = crate::config::Config {
 		verbosity: crate::config::VerbosityWrapper(verbosity),
@@ -1365,8 +1405,13 @@ fn handle_toolchain_command(
 		test_mode: false,
 		profile: None,
 	};
-	let policy = crate::hermetic::HermeticPolicy::new(crate::hermetic::PolicyMode::Strict);
-	let mut project = crate::project::Project::new(project_path.to_path_buf(), config, policy)?;
+	let mut project = crate::project::Project::new(
+		project_path.to_path_buf(),
+		config,
+		cli_mode,
+		trace_access,
+		why_non_hermetic,
+	)?;
 
 	match action {
 		ToolchainCommand::Sync => {

@@ -140,6 +140,15 @@ impl SandboxRunner {
 			}
 		}
 
+		// Ensure output directories exist in runfiles_dir
+		for output in &spec.outputs {
+			let filename = output.file_name().unwrap_or_else(|| output.as_os_str());
+			let dest = self.runfiles_dir.join(filename);
+			if let Some(parent) = dest.parent() {
+				fs::create_dir_all(parent)?;
+			}
+		}
+
 		Ok(())
 	}
 
@@ -190,17 +199,30 @@ impl SandboxRunner {
 
 		cmd.args(&spec.args);
 
+		if !self.policy.mode.is_off() {
+			cmd.env_clear();
+		}
 		for (key, value) in env {
 			cmd.env(key, value);
 		}
 
+		let start = std::time::Instant::now();
 		let output = cmd.output()?;
+		let duration = start.elapsed();
+
+		let timed_out = if let Some(timeout) = spec.timeout_secs {
+			duration > std::time::Duration::from_secs(timeout)
+		} else {
+			false
+		};
 
 		Ok(ExecutionResult {
-			success: output.status.success(),
+			success: output.status.success() && !timed_out,
 			stdout: String::from_utf8_lossy(&output.stdout).to_string(),
 			stderr: String::from_utf8_lossy(&output.stderr).to_string(),
 			exit_code: output.status.code(),
+			duration,
+			timed_out,
 		})
 	}
 
@@ -222,6 +244,35 @@ impl SandboxRunner {
 
 		Ok(())
 	}
+
+	pub fn extract_coverage_data(&self, spec: &ActionSpec, dest_dir: &Path) -> Result<(), HermeticError> {
+		if !dest_dir.exists() {
+			fs::create_dir_all(dest_dir)?;
+		}
+		
+		let mut found = false;
+		if let Ok(entries) = fs::read_dir(&self.runfiles_dir) {
+			for entry in entries.flatten() {
+				let path = entry.path();
+				if path.is_file() {
+					let extension = path.extension().and_then(|s| s.to_str());
+					if extension == Some("profraw") || extension == Some("gcda") {
+						let filename = path.file_name().unwrap();
+						let dest = dest_dir.join(filename);
+						log::debug!("Extracting coverage file: {} to {}", path.display(), dest.display());
+						fs::copy(&path, &dest)?;
+						found = true;
+					}
+				}
+			}
+		}
+
+		if !found {
+			log::debug!("No coverage data found in {}", self.runfiles_dir.display());
+		}
+
+		Ok(())
+	}
 }
 
 pub struct ExecutionResult {
@@ -229,6 +280,8 @@ pub struct ExecutionResult {
 	pub stdout: String,
 	pub stderr: String,
 	pub exit_code: Option<i32>,
+	pub duration: std::time::Duration,
+	pub timed_out: bool,
 }
 
 fn chrono_lite_timestamp() -> String {
@@ -245,48 +298,68 @@ fn normalize_environment(
 ) -> Result<HashMap<String, String>, String> {
 	let mut normalized = HashMap::new();
 
-	for (key, value) in user_env {
-		normalized.insert(key.clone(), value.clone());
-	}
+	// Whitelist of safe environment variables to always allow
+	const SAFE_VARS: &[&str] = &["LANG", "LC_ALL", "LC_CTYPE", "TERM", "COLORTERM"];
 
 	if policy.mode.is_strict() {
-		let mut final_path_parts: Vec<PathBuf> = Vec::new();
+		// 1. Start with whitelisted system variables
+		for var in SAFE_VARS {
+			if let Ok(val) = std::env::var(var) {
+				normalized.insert(var.to_string(), val);
+			}
+		}
 
+		// 2. Add user-provided environment from Forge files
+		for (key, value) in user_env {
+			normalized.insert(key.clone(), value.clone());
+		}
+
+		// 3. Construct PATH strictly from toolchain paths
+		let mut final_path_parts: Vec<PathBuf> = Vec::new();
 		for path in toolchain_paths {
 			if path.exists() {
 				final_path_parts.push(path.clone());
 			}
 		}
 
-		if let Ok(system_path) = std::env::var("PATH") {
-			for p in std::env::split_paths(&system_path) {
-				if !final_path_parts.iter().any(|existing| existing == &p) {
-					final_path_parts.push(p);
+		// In strict mode, we ONLY include system paths if no toolchain paths were found,
+		// to avoid breaking basic things like 'cp' or 'mkdir' if they aren't in a toolchain.
+		// However, the goal is "Full environment stripping", so we should be very careful.
+		if final_path_parts.is_empty() {
+			if let Ok(system_path) = std::env::var("PATH") {
+				for p in std::env::split_paths(&system_path) {
+					if p.starts_with("/usr/bin") || p.starts_with("/bin") {
+						final_path_parts.push(p);
+					}
 				}
 			}
 		}
 
-		if final_path_parts.is_empty() {
-			log::warn!("Hermetic strict mode: PATH is empty after normalization");
-			normalized.insert("PATH".to_string(), String::new());
-		} else {
+		if !final_path_parts.is_empty() {
 			normalized.insert(
 				"PATH".to_string(),
 				std::env::join_paths(&final_path_parts)
 					.map(|p| p.to_string_lossy().to_string())
 					.unwrap_or_default(),
 			);
+		} else {
+			log::warn!("Hermetic strict mode: PATH is empty after normalization");
+			normalized.insert("PATH".to_string(), String::new());
 		}
 	} else {
-		if let Ok(system_path) = std::env::var("PATH") {
-			if user_env.contains_key("PATH") {
-				normalized.insert("PATH".to_string(), system_path);
-			}
+		// In relaxed/none mode, inherit more from system
+		for (key, value) in std::env::vars() {
+			normalized.insert(key, value);
+		}
+		// Overwrite with user-provided
+		for (key, value) in user_env {
+			normalized.insert(key.clone(), value.clone());
 		}
 	}
 
-	normalized.insert("LANG".to_string(), "C.UTF-8".to_string());
-	normalized.insert("LC_ALL".to_string(), "C.UTF-8".to_string());
+	// Always ensure basic locale if not set
+	normalized.entry("LANG".to_string()).or_insert_with(|| "C.UTF-8".to_string());
+	normalized.entry("LC_ALL".to_string()).or_insert_with(|| "C.UTF-8".to_string());
 
 	Ok(normalized)
 }

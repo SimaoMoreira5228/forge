@@ -5,11 +5,6 @@ zig.library({
 	targets = {
 		linux_x64 = {
 			target = zig.predefined_targets.linux_x64,
-			mode = "Debug",
-		},
-		linux_x64_release = {
-			target = zig.predefined_targets.linux_x64,
-			mode = "ReleaseFast",
 		},
 	},
 	root = "lib/math_utils.zig",
@@ -20,11 +15,6 @@ zig.executable({
 	targets = {
 		linux_x64 = {
 			target = zig.predefined_targets.linux_x64,
-			mode = "Debug",
-		},
-		linux_x64_release = {
-			target = zig.predefined_targets.linux_x64,
-			mode = "ReleaseFast",
 		},
 	},
 	main = "src/main.zig",

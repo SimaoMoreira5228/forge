@@ -249,6 +249,8 @@
 
 ---@class Graph
 ---@field create fun(project_root: any): any
+--- Set the current package being evaluated (called by Project loader)
+---@field set_package fun(path: string): nil
 --- Register a target platform for builds
 ---@field target fun(tbl: any): any
 --- Define a library component
@@ -257,6 +259,8 @@
 ---@field binary fun(tbl: any): any
 --- Define a custom component with arbitrary command
 ---@field custom fun(tbl: any): any
+--- Define a test component
+---@field test fun(tbl: any): any
 --- Get total component count
 ---@field component_count fun(): number
 --- Get target count
@@ -267,6 +271,8 @@
 ---@field execution_batches fun(): any
 --- Get direct dependencies of a component
 ---@field dependencies_of fun(name: string, target: string): string[]
+--- Get include directories of a component
+---@field get_component_includes fun(name: string, target: string): string[]
 --- Get all transitive dependencies of a component
 ---@field transitive_deps fun(name: string, target: string): string[]
 --- Find dependency cycles in the graph, returns empty table if none found
@@ -317,21 +323,32 @@
 ---@type Source
 
 ---@class Profile
---- Get compiler flags for the active profile
+---@field name fun(): any
+---@field opt_level fun(): any
+---@field debug fun(): any
+---@field lto fun(): any
+---@field strip fun(): any
+---@field coverage fun(): any
+---@field defines fun(): any
+---@field sanitizers fun(): any
 ---@field compiler_flags fun(): any
---- Get linker flags for the active profile
 ---@field linker_flags fun(): any
 
 ---@type Profile
 
----@class Constraint
----@field new fun(): any
---- Create or reference a constraint by name
----@field get fun(name: string): any
---- Add a new constraint type if not exists
----@field add fun(name: string): any
 
----@type Constraint
+---@class Constraint
+---@field check fun(setting: string, value: string): boolean Check if a constraint is satisfied
+
+---@class Toolchain
+--- Synchronize a toolchain by name and version.  This calls the corresponding toolchain driver in `@prelude/toolchains/`.
+---@field sync fun(name: string, options: any?): any
+--- List toolchains configured in FORGE_ROOT.
+---@field list fun(): any
+--- Resolve a toolchain's binaries path without necessarily syncing it.
+---@field resolve fun(name: string, options: any?): any
+
+---@type Toolchain
 
 ---@class Forge
 ---@field config table Configuration table
@@ -354,6 +371,7 @@
 ---@field graph Graph Build graph operations
 ---@field target Target Target resolution and management
 ---@field source Source Source file resolution
+---@field toolchain Toolchain Toolchain management operations
 ---@field rule fun(rule: table): nil Add a build rule
 ---@field sleep fun(seconds: number): nil Sleep for specified seconds
 

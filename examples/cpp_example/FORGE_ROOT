@@ -20,5 +20,26 @@ from = "version"
 version = "19.1.7"
 
 [toolchain.gcc]
-from = "version"
+from    = "version"
 version = "14.2"
+
+[profile.debug]
+opt_level = 0
+debug     = true
+
+[profile.release]
+opt_level = 3
+debug     = false
+lto       = true
+
+[profile.asan]
+inherits   = "debug"
+sanitizers = ["address"]
+
+[profile.tsan]
+inherits   = "debug"
+sanitizers = ["thread"]
+
+[profile.coverage]
+inherits = "debug"
+coverage = true

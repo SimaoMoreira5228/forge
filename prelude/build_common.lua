@@ -1,5 +1,35 @@
 local M = {}
 
+function M.get_out_dir(target_name, exec_cfg)
+	local profile_name = "debug"
+	if forge and forge.profile then
+		profile_name = forge.profile:name()
+	end
+
+	if exec_cfg == "host" or exec_cfg == "exec" then
+		local host_platform = forge.project.host_platform or "host"
+		return forge.path.join({
+			forge.project.root,
+			"forge-out",
+			"host-" .. host_platform,
+			profile_name,
+		})
+	end
+
+	local base_out = forge.path.join({
+		forge.project.root,
+		"forge-out",
+		target_name,
+		profile_name,
+	})
+
+	if forge.config and forge.config.test_mode then
+		return forge.path.join({ base_out, "test" })
+	end
+
+	return base_out
+end
+
 M.optimization_levels = {
 	debug = {
 		level = 0,
@@ -130,98 +160,79 @@ M.dependency_types = {
 	},
 }
 
-function M.get_build_profile(profile_name)
-	return M.build_profiles[profile_name] or M.build_profiles.debug
-end
-
-function M.get_optimization_flags(language, level)
-	local opt_config = M.optimization_levels[level]
-	if not opt_config then
-		error(("Unknown optimization level: %s"):format(level))
-	end
-
-	local flag_key = language .. "_flags"
-	return opt_config[flag_key] or {}
-end
-
-function M.get_debug_flags(language, level)
-	local debug_config = M.debug_levels[level]
-	if not debug_config then
-		error(("Unknown debug level: %s"):format(level))
-	end
-
-	local flag_key = language .. "_flags"
-	return debug_config[flag_key] or {}
-end
-
 function M.resolve_build_config(target_config, language)
-	local profile_name = target_config.profile or "debug"
-	if target_config.opt_level then
-		if target_config.opt_level == "0" then
-			profile_name = "debug"
-		elseif target_config.opt_level == "2" or target_config.opt_level == "3" then
-			profile_name = "release"
-		elseif target_config.opt_level == "s" or target_config.opt_level == "z" then
-			profile_name = "size"
-		end
+	local profile = forge.profile
+	if not profile then
+		error("forge.profile is not available in the Lua environment")
 	end
-
-	local profile = M.get_build_profile(profile_name)
 
 	local build_config = {
-		profile = profile_name,
-		optimization = profile.optimization,
-		debug_info = profile.debug_info,
-		defines = profile.defines or {},
-		is_release = profile_name ~= "debug" and profile_name ~= "dev",
+		profile = profile:name(),
+		defines = profile:defines() or {},
+		is_release = profile:name() ~= "debug" and profile:name() ~= "dev",
 	}
 
-	if target_config.optimization then
-		build_config.optimization = target_config.optimization
-	elseif target_config.opt_level then
-		local opt_level = target_config.opt_level
-		if opt_level == "0" or opt_level == 0 then
-			build_config.optimization = "debug"
-		elseif opt_level == "1" or opt_level == 1 then
-			build_config.optimization = "basic"
-		elseif opt_level == "2" or opt_level == 2 then
-			build_config.optimization = "some"
-		elseif opt_level == "3" or opt_level == 3 then
-			build_config.optimization = "full"
-		elseif opt_level == "s" then
-			build_config.optimization = "size"
-		elseif opt_level == "z" then
-			build_config.optimization = "size_aggressive"
-		end
-	end
-	if target_config.debug_info then
-		local debug_info = target_config.debug_info
-		if debug_info == "0" or debug_info == 0 then
-			build_config.debug_info = "none"
-		elseif debug_info == "1" or debug_info == 1 then
-			build_config.debug_info = "lines"
-		elseif debug_info == "2" or debug_info == 2 then
-			build_config.debug_info = "full"
-		else
-			build_config.debug_info = debug_info
-		end
-	end
 	if target_config.defines then
 		for k, v in pairs(target_config.defines) do
 			build_config.defines[k] = v
 		end
 	end
 
-	build_config.opt_flags = M.get_optimization_flags(language, build_config.optimization)
-	build_config.debug_flags = M.get_debug_flags(language, build_config.debug_info)
+	local opt_flags = {}
+	local debug_flags = {}
+	local opt_level = profile:opt_level()
+	local has_debug = profile:debug()
 
-	if forge and forge.profile and type(forge.profile.compiler_flags) == "function" then
-		build_config.profile_compiler_flags = forge.profile:compiler_flags()
-		build_config.profile_linker_flags = forge.profile:linker_flags()
-	else
-		build_config.profile_compiler_flags = {}
-		build_config.profile_linker_flags = {}
+	if language == "c" or language == "cpp" then
+		if opt_level == 0 then
+			table.insert(opt_flags, "-O0")
+		elseif opt_level == 1 then
+			table.insert(opt_flags, "-O1")
+		elseif opt_level == 2 then
+			table.insert(opt_flags, "-O2")
+		elseif opt_level >= 3 then
+			table.insert(opt_flags, "-O3")
+		end
+
+		if has_debug then
+			table.insert(debug_flags, "-g")
+		end
+		if profile:lto() then
+			table.insert(opt_flags, "-flto")
+		end
+
+	elseif language == "d" then
+		if opt_level > 0 then
+			table.insert(opt_flags, "-O")
+		end
+		if has_debug then
+			table.insert(debug_flags, "-g")
+		end
+		-- D LTO flag standard check, leaving empty for now but can add if using LDC
+		
+	elseif language == "zig" then
+		if opt_level == 0 then
+			table.insert(opt_flags, "-O")
+			table.insert(opt_flags, "Debug")
+		elseif opt_level == 3 then
+			table.insert(opt_flags, "-O")
+			table.insert(opt_flags, "ReleaseFast")
+		else
+			table.insert(opt_flags, "-O")
+			table.insert(opt_flags, "ReleaseSafe")
+		end
 	end
+
+	for _, san in ipairs(profile:sanitizers() or {}) do
+		if language == "c" or language == "cpp" or language == "d" then
+			table.insert(opt_flags, "-fsanitize=" .. san)
+		end
+	end
+
+	build_config.opt_flags = opt_flags
+	build_config.debug_flags = debug_flags
+	build_config.profile_compiler_flags = profile:compiler_flags() or {}
+	build_config.profile_linker_flags = profile:linker_flags() or {}
 
 	return build_config
 end

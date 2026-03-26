@@ -16,19 +16,13 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 
 	local compiler_info = common.get_compiler_for_target(compiler_name, target, compiler_path)
 
-	local out_dir = forge.path.join({
-		forge.project.root,
-		"forge-out",
-		target_common.get_target_directory(target_common.extract_base_target(target_name), target_name),
-	})
+	local out_dir = build_common.get_out_dir(target_name, program_info.exec_cfg)
 	ensure_dir(out_dir)
 
 	local output_name = program_info.name
-
-	if forge.config and forge.config.test_mode then
-		output_name = output_name .. "_test"
+	if forge.config and forge.config.test_mode and not program_info.is_explicit_test then
+		output_name = output_name .. "_t_bin"
 	end
-
 	if target.os == "windows" then
 		output_name = output_name .. ".exe"
 	end
@@ -50,16 +44,13 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 	local dep_inputs = {}
 	local dep_rules = {}
 	local link_libraries = {}
-	local library_paths = {}
+	local out_dir = build_common.get_out_dir(target_name, target_config)
+	local library_paths = { out_dir }
 
 	if program_info.dependencies then
 		for name, details in pairs(program_info.dependencies) do
 			if details.path then
-				local dep_out_dir = forge.path.join({
-					forge.project.root,
-					"forge-out",
-					target_common.get_target_directory(target_common.extract_base_target(target_name), target_name),
-				})
+				local dep_out_dir = build_common.get_out_dir(target_name, program_info.exec_cfg)
 				local dep_output_path = forge.path.join({ dep_out_dir, "lib" .. name .. ".a" })
 
 				local dep_rule_name = ("%s-lib-%s"):format(name, target_name)
@@ -180,20 +171,10 @@ function M.define_library_rules_for_target(library_info, target_name, target_con
 
 	local compiler_info = common.get_compiler_for_target(compiler_name, target, compiler_path)
 
-	local out_dir = forge.path.join({
-		forge.project.root,
-		"forge-out",
-		target_common.get_target_directory(target_common.extract_base_target(target_name), target_name),
-	})
+	local out_dir = build_common.get_out_dir(target_name, library_info.exec_cfg)
 	ensure_dir(out_dir)
 
-	local library_base_name = library_info.name
-
-	if forge.config and forge.config.test_mode then
-		library_base_name = library_base_name .. "_test"
-	end
-
-	local output_name = "lib" .. library_base_name .. ".a"
+	local output_name = "lib" .. library_info.name .. ".a"
 	local output_path = forge.path.join({ out_dir, output_name })
 
 	local sources

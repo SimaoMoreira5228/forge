@@ -1,0 +1,14 @@
+[project]
+name = "msvc_test"
+
+[discovery]
+include = ["."]
+
+[toolchain.msvc]
+from = "path"
+path = "/mnt/hdd/Projects/rust/forge/examples/msvc_test/mock_msvc"
+
+[platforms.windows_x64]
+os = "windows"
+arch = "x86_64"
+abi = "msvc"

@@ -1,0 +1,17 @@
+[project]
+name = "cross_compile_example"
+version = "0.1.0"
+
+[platforms.linux_x64]
+os = "linux"
+arch = "x86_64"
+abi = "gnu"
+
+[platforms.my_target]
+os = "linux"
+arch = "aarch64"
+abi = "gnu"
+
+[profile.debug]
+opt_level = 0
+debug = true

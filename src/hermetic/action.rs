@@ -12,6 +12,7 @@ pub struct ActionSpec {
 	pub env: HashMap<String, String>,
 	pub workdir: PathBuf,
 	pub toolchain_id: Option<String>,
+	pub timeout_secs: Option<u64>,
 }
 
 impl ActionSpec {
@@ -25,6 +26,7 @@ impl ActionSpec {
 			env: HashMap::new(),
 			workdir: PathBuf::new(),
 			toolchain_id: None,
+			timeout_secs: None,
 		}
 	}
 
@@ -63,6 +65,11 @@ impl ActionSpec {
 		self
 	}
 
+	pub fn with_timeout(mut self, timeout_secs: u64) -> Self {
+		self.timeout_secs = Some(timeout_secs);
+		self
+	}
+
 	pub fn validate(&self) -> Result<ActionContract, String> {
 		let mut missing: Vec<&str> = Vec::new();
 		let _unused: Vec<String> = Vec::new();
@@ -71,13 +78,12 @@ impl ActionSpec {
 			missing.push("command");
 		}
 
-		if self.inputs.is_empty() {
-			missing.push("inputs");
-		}
-
+		// Relaxation: output is not strictly required for all actions (e.g. tests)
+		/*
 		if self.outputs.is_empty() {
 			missing.push("outputs");
 		}
+		*/
 
 		if !missing.is_empty() {
 			return Err(format!("ActionSpec missing required fields: {:?}", missing));

@@ -4,15 +4,7 @@ local rust = require("@prelude/rust/rust.lua")
 c.library({
 	name = "math_native",
 	targets = {
-		linux_x64_debug = {
-			target = c.predefined_targets.linux_x64,
-			compiler = "gcc",
-		},
-		linux_x64_release = {
-			target = c.predefined_targets.linux_x64,
-			compiler = "gcc",
-		},
-		linux_x64_bench = {
+		linux_x64 = {
 			target = c.predefined_targets.linux_x64,
 			compiler = "gcc",
 		},
@@ -28,16 +20,8 @@ rust.library({
 	version = "0.1.0",
 	edition = "2024",
 	targets = {
-		linux_x64_debug = {
+		linux_x64 = {
 			triple = rust.predefined_targets.linux_x64,
-			opt_level = "0",
-			debug_info = "2",
-		},
-		linux_x64_release = {
-			triple = rust.predefined_targets.linux_x64,
-			opt_level = "3",
-			debug_info = "1",
-			lto = "thin",
 		},
 	},
 	root = "lib/crypto_utils/src/lib.rs",
@@ -53,17 +37,8 @@ rust.binary({
 	version = "0.1.0",
 	edition = "2024",
 	targets = {
-		linux_x64_debug = {
+		linux_x64 = {
 			triple = rust.predefined_targets.linux_x64,
-			opt_level = "0",
-			debug_info = "2",
-		},
-		linux_x64_release = {
-			triple = rust.predefined_targets.linux_x64,
-			opt_level = "3",
-			debug_info = "1",
-			lto = "thin",
-			panic = "abort",
 		},
 	},
 	root = "src/main.rs",
@@ -96,13 +71,8 @@ rust.binary({
 	version = "0.1.0",
 	edition = "2024",
 	targets = {
-		linux_x64_bench = {
+		linux_x64 = {
 			triple = rust.predefined_targets.linux_x64,
-			opt_level = "3",
-			debug_info = "0",
-			lto = "fat",
-			codegen_units = 1,
-			panic = "abort",
 		},
 	},
 	root = "src/main.rs",

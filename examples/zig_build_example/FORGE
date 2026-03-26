@@ -1,35 +1,17 @@
 local zig = require("@prelude/zig/zig.lua")
 
 zig.build_zig({
-	name = "external_project_debug",
+	name = "external_project",
 	targets = {
 		linux_x64 = {
 			target = zig.predefined_targets.linux_x64,
-			mode = "Debug",
 		},
 	},
 	build_file = "build.zig",
 	path = ".",
-	prefix = "zig-out-debug",
+	prefix = "zig-out",
 	steps = { "install" },
 	outputs = {
-		"zig-out-debug/bin/myapp",
-	},
-})
-
-zig.build_zig({
-	name = "external_project_release",
-	targets = {
-		linux_x64 = {
-			target = zig.predefined_targets.linux_x64,
-			mode = "ReleaseFast",
-		},
-	},
-	build_file = "build.zig",
-	path = ".",
-	prefix = "zig-out-release",
-	steps = { "install" },
-	outputs = {
-		"zig-out-release/bin/myapp",
+		"zig-out/bin/myapp",
 	},
 })

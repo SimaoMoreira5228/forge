@@ -33,14 +33,26 @@ pub struct ForgeRootConfig {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct PlatformConfig {
+	pub os: String,
+	pub arch: String,
+	pub abi: String,
+	pub cpu: Option<String>,
 	#[serde(default)]
 	pub constraint_values: Vec<String>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
 pub struct ProfileConfig {
-	#[serde(default)]
 	pub inherits: Option<String>,
+	pub opt_level: Option<u8>,
+	pub debug: Option<bool>,
+	pub lto: Option<bool>,
+	pub strip: Option<bool>,
+	pub coverage: Option<bool>,
+	#[serde(default)]
+	pub defines: Vec<String>,
+	#[serde(default)]
+	pub sanitizers: Vec<String>,
 	#[serde(default)]
 	pub compiler_flags: Vec<String>,
 	#[serde(default)]
@@ -87,6 +99,7 @@ pub struct ProjectConfig {
 	#[serde(default = "default_version")]
 	pub version: String,
 	pub description: Option<String>,
+	pub hermetic: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -191,6 +204,7 @@ impl ForgeRootConfig {
 				name: project_name.to_string(),
 				version: default_version(),
 				description: None,
+				hermetic: None,
 			},
 			discovery: DiscoveryConfig::default(),
 			build: BuildConfig::default(),

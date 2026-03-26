@@ -6,3 +6,24 @@ cache_dir = "forge-out"
 
 [discovery]
 exclude = ["target", "node_modules", ".git"]
+
+[profile.debug]
+opt_level = 0
+debug     = true
+
+[profile.release]
+opt_level = 3
+debug     = false
+lto       = true
+
+[profile.asan]
+inherits   = "debug"
+sanitizers = ["address"]
+
+[profile.tsan]
+inherits   = "debug"
+sanitizers = ["thread"]
+
+[profile.coverage]
+inherits = "debug"
+coverage = true

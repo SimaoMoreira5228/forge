@@ -15,28 +15,18 @@ function M.define_executable_rules_for_target(executable_info, target_name, targ
 
 	local executable_path = executable_info.path or forge.project.root
 	local target = target_config.target or common.get_host_target()
-	local build_mode = target_config.mode or "Debug"
+	local build_config = build_common.resolve_build_config(target_config, "zig")
 	local zig_command = target_config.compiler_path
 		or executable_info.compiler_path
 		or compiler_common.get_configured_tool_binary("zig", "zig", target)
 		or "zig"
-
-	if not common.validate_build_mode(build_mode) then
-		forge.log.warn(("Invalid build mode '%s' for executable '%s', using Debug"):format(build_mode, executable_info.name))
-		build_mode = "Debug"
-	end
-
 	local zig_target = common.get_zig_target_string(target)
 
 	if compiler_common.is_native_target(target) then
 		zig_target = "native"
 	end
 
-	local out_dir = forge.path.join({
-		forge.project.root,
-		"forge-out",
-		target_common.get_target_directory(target_common.extract_base_target(target_name), target_name),
-	})
+	local out_dir = build_common.get_out_dir(target_name)
 	ensure_dir(out_dir)
 
 	local output_name = executable_info.name
@@ -81,9 +71,16 @@ function M.define_executable_rules_for_target(executable_info, target_name, targ
 		main_file,
 		"-target",
 		zig_target,
-		"-O" .. build_mode,
-		"-femit-bin=" .. output_path,
 	}
+
+	for _, flag in ipairs(build_config.opt_flags) do
+		table.insert(args, flag)
+	end
+	table.insert(args, "-femit-bin=" .. output_path)
+
+	for _, flag in ipairs(build_config.profile_compiler_flags) do
+		table.insert(args, flag)
+	end
 
 	if executable_info.module_path then
 		local module_path = to_absolute_path(executable_info.module_path, executable_path)
@@ -104,11 +101,7 @@ function M.define_executable_rules_for_target(executable_info, target_name, targ
 	if executable_info.dependencies then
 		for name, details in pairs(executable_info.dependencies) do
 			if details.path then
-				local dep_out_dir = forge.path.join({
-					forge.project.root,
-					"forge-out",
-					target_common.get_target_directory(target_common.extract_base_target(target_name), target_name),
-				})
+				local dep_out_dir = build_common.get_out_dir(target_name)
 				local dep_output_path = forge.path.join({ dep_out_dir, "lib" .. name .. ".a" })
 
 				local dep_rule_name = ("%s-lib-%s"):format(name, target_name)
@@ -166,28 +159,18 @@ end
 function M.define_library_rules_for_target(library_info, target_name, target_config)
 	local library_path = library_info.path or forge.project.root
 	local target = target_config.target or common.get_host_target()
-	local build_mode = target_config.mode or "Debug"
+	local build_config = build_common.resolve_build_config(target_config, "zig")
 	local zig_command = target_config.compiler_path
 		or library_info.compiler_path
 		or compiler_common.get_configured_tool_binary("zig", "zig", target)
 		or "zig"
-
-	if not common.validate_build_mode(build_mode) then
-		forge.log.warn(("Invalid build mode '%s' for library '%s', using Debug"):format(build_mode, library_info.name))
-		build_mode = "Debug"
-	end
-
 	local zig_target = common.get_zig_target_string(target)
 
 	if compiler_common.is_native_target(target) then
 		zig_target = "native"
 	end
 
-	local out_dir = forge.path.join({
-		forge.project.root,
-		"forge-out",
-		target_common.get_target_directory(target_common.extract_base_target(target_name), target_name),
-	})
+	local out_dir = build_common.get_out_dir(target_name)
 	ensure_dir(out_dir)
 
 	local library_base_name = library_info.name
@@ -230,9 +213,16 @@ function M.define_library_rules_for_target(library_info, target_name, target_con
 		root_file,
 		"-target",
 		zig_target,
-		"-O" .. build_mode,
-		"-femit-bin=" .. output_path,
 	}
+
+	for _, flag in ipairs(build_config.opt_flags) do
+		table.insert(args, flag)
+	end
+	table.insert(args, "-femit-bin=" .. output_path)
+
+	for _, flag in ipairs(build_config.profile_compiler_flags) do
+		table.insert(args, flag)
+	end
 
 	if library_info.module_path then
 		local module_path = to_absolute_path(library_info.module_path, library_path)
@@ -270,17 +260,11 @@ function M.define_build_zig_rules_for_target(build_info, target_name, target_con
 	build_file = to_absolute_path(build_file, build_path)
 
 	local target = target_config.target or common.get_host_target()
-	local build_mode = target_config.mode or "Debug"
+	local build_config = build_common.resolve_build_config(target_config, "zig")
 	local zig_command = target_config.compiler_path
 		or build_info.compiler_path
 		or compiler_common.get_configured_tool_binary("zig", "zig", target)
 		or "zig"
-
-	if not common.validate_build_mode(build_mode) then
-		forge.log.warn(("Invalid build mode '%s' for build.zig '%s', using Debug"):format(build_mode, build_info.name))
-		build_mode = "Debug"
-	end
-
 	local zig_target = common.get_zig_target_string(target)
 
 	local host_target = common.get_host_target()
@@ -299,10 +283,20 @@ function M.define_build_zig_rules_for_target(build_info, target_name, target_con
 	local args = {
 		"build",
 		"-Dtarget=" .. zig_target,
-		"-Doptimize=" .. build_mode,
-		"--prefix",
-		build_prefix,
 	}
+	for _, flag in ipairs(build_config.opt_flags) do
+		-- build_config.opt_flags for zig are like {"-O", "Debug"}
+		-- We need to convert them to -Doptimize=... for zig build
+		if flag == "-O" then
+			-- skip, next one is the mode
+		elseif flag == "Debug" or flag == "ReleaseSafe" or flag == "ReleaseFast" or flag == "ReleaseSmall" then
+			table.insert(args, "-Doptimize=" .. flag)
+		else
+			table.insert(args, flag)
+		end
+	end
+	table.insert(args, "--prefix")
+	table.insert(args, build_prefix)
 
 	if build_info.steps then
 		for _, step in ipairs(build_info.steps) do

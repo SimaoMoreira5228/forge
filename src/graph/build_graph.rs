@@ -11,7 +11,7 @@ use thiserror::Error;
 // Errors
 // ---------------------------------------------------------------------------
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum GraphError {
 	#[error("Component '{name}' not found")]
 	ComponentNotFound { name: String },
@@ -123,6 +123,9 @@ impl BuildGraph {
 	pub fn add_component(&mut self, component: Component) -> Result<ComponentId, GraphError> {
 		let key = (component.name.clone(), component.target_name.clone());
 
+		let id = component.id;
+		self.components.insert(id, component.clone());
+
 		if self.component_index.contains_key(&key) {
 			return Err(GraphError::DuplicateComponent {
 				name: component.name.clone(),
@@ -158,20 +161,14 @@ impl BuildGraph {
 		to: ComponentRef,
 		edge: DependencyEdge,
 	) -> Result<(), GraphError> {
-		let from_idx = self.find_node_index(from)?;
-		let to_id = self.resolve_component_ref(to.clone())?;
-
-		// Enforcement: Check visibility before adding the edge
-		self.check_visibility(from, to_id)?;
-
-		// Enforcement: Check platform constraints
-		self.check_constraints(from, to_id)?;
-
-		let to_idx = self.find_node_index(to_id)?;
-
-		// Edge direction: dependency → dependent (to_idx → from_idx)
-		self.graph.add_edge(to_idx, from_idx, edge);
-		Ok(())
+		if let Some(comp) = self.components.get_mut(&from) {
+			comp.dependencies.push((to, edge));
+			Ok(())
+		} else {
+			Err(GraphError::ComponentNotFound {
+				name: format!("{:?}", from),
+			})
+		}
 	}
 
 	/// Check whether component `from` is compatible with the target platform
@@ -180,6 +177,7 @@ impl BuildGraph {
 		&self,
 		from: ComponentId,
 		to: ComponentId,
+		registry: Option<&crate::platform::PlatformRegistry>,
 	) -> Result<(), GraphError> {
 		let from_comp = self.components.get(&from).ok_or_else(|| GraphError::ComponentNotFound {
 			name: format!("{:?}", from),
@@ -194,15 +192,29 @@ impl BuildGraph {
 		// as a placeholder for a full platform/constraint engine.
 		if !to_comp.compatible_with.is_empty() {
 			let target = &from_comp.target_name;
-			let satisfied = to_comp.compatible_with.iter().any(|c| {
-				target.contains(c.as_str()) || c.as_str() == "all"
-			});
+			let satisfied = if let Some(reg) = registry {
+				if let Some(platform) = reg.get(target) {
+					// Use registry for robust check
+					to_comp.compatible_with.iter().all(|c| {
+						platform.constraint_values.contains(&c.0)
+							|| platform.name == c.0
+							|| platform.target.triple.contains(&c.0)
+							|| c.0 == "all"
+					})
+				} else {
+					// Fallback to simple string match if platform not found in registry
+					to_comp.compatible_with.iter().any(|c| target.contains(&c.0) || c.0 == "all")
+				}
+			} else {
+				// Fallback to simple string match if no registry provided
+				to_comp.compatible_with.iter().any(|c| target.contains(&c.0) || c.0 == "all")
+			};
 
 			if !satisfied {
 				return Err(GraphError::ConstraintViolation {
 					component: to_comp.name.clone(),
 					target: target.clone(),
-					constraints: to_comp.compatible_with.iter().map(|c| c.to_string()).collect(),
+					constraints: to_comp.compatible_with.iter().map(|c| c.0.clone()).collect(),
 				});
 			}
 		}
@@ -410,7 +422,71 @@ impl BuildGraph {
 			}
 		}
 
-		if violations.is_empty() { Ok(()) } else { Err(violations) }
+		if violations.is_empty() {
+			Ok(())
+		} else {
+			Err(violations)
+		}
+	}
+
+	/// Resolve all deferred dependencies and add them to the graph.
+	/// This should be called after all FORGE files have been loaded.
+	pub fn resolve_all_dependencies(
+		&mut self,
+		registry: Option<&crate::platform::PlatformRegistry>,
+	) -> Result<(), Vec<GraphError>> {
+		let mut errors = Vec::new();
+
+		let component_ids: Vec<_> = self.components.keys().copied().collect();
+
+		for from_id in component_ids {
+			let (name, dependencies) = {
+				let comp = self.components.get(&from_id).unwrap();
+				(comp.name.clone(), comp.dependencies.clone())
+			};
+
+			for (to_ref, edge) in dependencies {
+				// We need to clone to_ref because it's used in both resolution and error reporting
+				let to_ref_owned: crate::graph::ComponentRef = to_ref.clone();
+				
+				match self.resolve_component_ref(to_ref_owned) {
+					Ok(to_id) => {
+						// 1. Check visibility
+						if let Err(e) = self.check_visibility(from_id, to_id) {
+							errors.push(e);
+						}
+
+						// 2. Check platform constraints
+						if let Err(e) = self.check_constraints(from_id, to_id, registry) {
+							errors.push(e);
+						}
+
+						// 3. Add edge to graph
+						if let (Ok(from_idx), Ok(to_idx)) =
+							(self.find_node_index(from_id), self.find_node_index(to_id))
+						{
+							self.graph.add_edge(to_idx, from_idx, edge);
+						}
+					}
+					Err(_e) => {
+						errors.push(GraphError::ComponentNotFound {
+							name: match to_ref {
+								crate::graph::ComponentRef::Local { name } => name,
+								crate::graph::ComponentRef::WithTarget { name, target } => {
+									format!("{}:{}", name, target)
+								}
+							},
+						});
+					}
+				}
+			}
+		}
+
+		if errors.is_empty() {
+			Ok(())
+		} else {
+			Err(errors)
+		}
 	}
 
 	// -----------------------------------------------------------------------
@@ -577,6 +653,10 @@ impl BuildGraph {
 	/// xdot graph.dot
 	/// ```
 	pub fn output_dot(&self, opts: &DotOptions) -> String {
+		self.output_dot_subset(&self.components.keys().copied().collect::<HashSet<_>>(), opts)
+	}
+
+	pub fn output_dot_subset(&self, ids: &HashSet<ComponentId>, opts: &DotOptions) -> String {
 		let mut dot = String::from("digraph forge {\n");
 		dot.push_str("    rankdir=LR;\n");
 		dot.push_str("    node [shape=box fontname=\"monospace\" style=filled];\n");
@@ -584,31 +664,33 @@ impl BuildGraph {
 		dot.push('\n');
 
 		// Nodes
-		for comp in self.components.values() {
-			let (color, shape) = if opts.color_by_type {
-				match comp.component_type {
-					ComponentType::Library { .. } => ("#4A90D9", "box"),
-					ComponentType::Binary => ("#5CB85C", "oval"),
-					ComponentType::Test { .. } => ("#F0AD4E", "diamond"),
-					ComponentType::Module { .. } => ("#9B59B6", "box"),
-					ComponentType::Custom { .. } => ("#95A5A6", "box"),
-				}
-			} else {
-				("#CCCCCC", "box")
-			};
+		for id in ids {
+			if let Some(comp) = self.components.get(id) {
+				let (color, shape) = if opts.color_by_type {
+					match comp.component_type {
+						ComponentType::Library { .. } => ("#4A90D9", "box"),
+						ComponentType::Binary => ("#5CB85C", "oval"),
+						ComponentType::Test { .. } => ("#F0AD4E", "diamond"),
+						ComponentType::Module { .. } => ("#9B59B6", "box"),
+						ComponentType::Custom { .. } => ("#95A5A6", "box"),
+					}
+				} else {
+					("#CCCCCC", "box")
+				};
 
-			let vis_suffix = match &comp.visibility {
-				Visibility::Public => "",
-				Visibility::Package => " 📦",
-				Visibility::Private => " 🔒",
-				Visibility::Restricted(_) => " 🔐",
-			};
+				let vis_suffix = match &comp.visibility {
+					Visibility::Public => "",
+					Visibility::Package => " 📦",
+					Visibility::Private => " 🔒",
+					Visibility::Restricted(_) => " 🔐",
+				};
 
-			let label = format!("{}:{}{}", comp.target_name, comp.name, vis_suffix);
-			dot.push_str(&format!(
-				"    \"{}:{}\" [label={:?} fillcolor={:?} shape=\"{}\"];\n",
-				comp.target_name, comp.name, label, color, shape
-			));
+				let label = format!("{}:{}{}", comp.target_name, comp.name, vis_suffix);
+				dot.push_str(&format!(
+					"    \"{}:{}\" [label={:?} fillcolor={:?} shape=\"{}\"];\n",
+					comp.target_name, comp.name, label, color, shape
+				));
+			}
 		}
 
 		dot.push('\n');

@@ -5,10 +5,8 @@ rust.binary({
 	version = "0.1.0",
 	edition = "2024",
 	targets = {
-		linux_x64_debug = {
+		linux_x64 = {
 			triple = rust.predefined_targets.linux_x64,
-			opt_level = "0",
-			debug_info = "2",
 		},
 	},
 	root = "src/main.rs",

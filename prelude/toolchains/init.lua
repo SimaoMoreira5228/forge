@@ -10,6 +10,7 @@ local registry = {
 	gdc = require("@prelude/toolchains/gdc.lua"),
 	dmd = require("@prelude/toolchains/dmd.lua"),
 	ldc = require("@prelude/toolchains/ldc.lua"),
+	msvc = require("@prelude/toolchains/msvc.lua"),
 }
 
 local M = {}

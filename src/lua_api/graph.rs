@@ -94,15 +94,32 @@ impl GraphApi {
 			component = component.with_compiler_flags(cflags);
 		}
 
+		if let Ok(exec_cfg_str) = tbl.get::<String>("exec_cfg") {
+			let exec_cfg = match exec_cfg_str.as_str() {
+				"host" => crate::graph::ConfigTransition::Host,
+				"exec" => crate::graph::ConfigTransition::Exec,
+				"target" => crate::graph::ConfigTransition::Target,
+				_ => return Err(mlua::Error::RuntimeError(format!("Invalid exec_cfg: {}", exec_cfg_str))),
+			};
+			component = component.with_exec_cfg(Some(exec_cfg));
+		}
+
 		let mut g = self.graph.lock().unwrap();
 		let comp_id = g
 			.add_component(component)
 			.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
 
-		if let Ok(deps) = tbl.get::<Vec<String>>("deps") {
-			for dep in deps {
-				g.add_dependency(comp_id, ComponentRef::new(&dep), DependencyEdge::Hard)
-					.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+		if let Ok(deps) = tbl.get::<Value>("deps") {
+			match deps {
+				Value::Table(deps_tbl) => {
+					for pair in deps_tbl.pairs::<Value, Value>() {
+						let (_key, val) = pair?;
+						let (dep_ref, edge) = parse_dependency(val)?;
+						g.add_dependency(comp_id, dep_ref, edge)
+							.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+					}
+				}
+				_ => return Err(mlua::Error::RuntimeError("deps must be a list of strings or tables".into())),
 			}
 		}
 
@@ -154,15 +171,37 @@ impl GraphApi {
 			component = component.with_system_libs(system_libs);
 		}
 
+		if let Ok(exec_cfg_str) = tbl.get::<String>("exec_cfg") {
+			let exec_cfg = match exec_cfg_str.as_str() {
+				"host" => crate::graph::ConfigTransition::Host,
+				"exec" => crate::graph::ConfigTransition::Exec,
+				"target" => crate::graph::ConfigTransition::Target,
+				_ => {
+					return Err(mlua::Error::RuntimeError(format!(
+						"Invalid exec_cfg: {}",
+						exec_cfg_str
+					)))
+				}
+			};
+			component = component.with_exec_cfg(Some(exec_cfg));
+		}
+
 		let mut g = self.graph.lock().unwrap();
 		let comp_id = g
 			.add_component(component)
 			.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
 
-		if let Ok(deps) = tbl.get::<Vec<String>>("deps") {
-			for dep in deps {
-				g.add_dependency(comp_id, ComponentRef::new(&dep), DependencyEdge::Hard)
-					.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+		if let Ok(deps) = tbl.get::<Value>("deps") {
+			match deps {
+				Value::Table(deps_tbl) => {
+					for pair in deps_tbl.pairs::<Value, Value>() {
+						let (_key, val) = pair?;
+						let (dep_ref, edge) = parse_dependency(val)?;
+						g.add_dependency(comp_id, dep_ref, edge)
+							.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+					}
+				}
+				_ => return Err(mlua::Error::RuntimeError("deps must be a list of strings or tables".into())),
 			}
 		}
 
@@ -192,8 +231,153 @@ impl GraphApi {
 		}
 
 		let mut g = self.graph.lock().unwrap();
-		g.add_component(component)
+		let comp_id = g
+			.add_component(component)
 			.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+
+		if let Ok(deps) = tbl.get::<mlua::Value>("deps") {
+			match deps {
+				mlua::Value::Table(deps_tbl) => {
+					for pair in deps_tbl.pairs::<mlua::Value, mlua::Value>() {
+						let (_key, val) = pair?;
+						let (dep_ref, edge) = parse_dependency(val)?;
+						g.add_dependency(comp_id, dep_ref, edge)
+							.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+					}
+				}
+				_ => return Err(mlua::Error::RuntimeError("deps must be a list of strings or tables".into())),
+			}
+		}
+
+		Ok(mlua::Value::Nil)
+	}
+
+	/// Define a test component
+	pub fn test(&self, tbl: Table) -> Result<Value> {
+		let name: String = tbl.get("name")?;
+		let target: String = tbl.get("target").unwrap_or_else(|_| {
+			let first_target = {
+				let g = self.graph.lock().unwrap();
+				g.targets().next().map(|t| t.name.clone())
+			};
+			match first_target {
+				Some(t) => t,
+				None => {
+					// Auto-register a host target so bash/script tests work without preamble
+					let host_triple = if cfg!(target_os = "windows") {
+						"x86_64-pc-windows-msvc"
+					} else if cfg!(target_os = "macos") {
+						"aarch64-apple-darwin"
+					} else {
+						"x86_64-unknown-linux-gnu"
+					};
+					let host_target = crate::graph::Target::new("host", host_triple);
+					let mut g = self.graph.lock().unwrap();
+					let _ = g.add_target(host_target);
+					"host".to_string()
+				}
+			}
+		});
+
+		// Binary path (e.g. "forge-out/linux_x64/debug/test/my_test")
+		let executable: Option<PathBuf> = tbl.get::<String>("binary").ok().map(PathBuf::from);
+		// Explicit command list: { "bash", "-c", "..." }
+		let command: Option<Vec<String>> = tbl.get::<Vec<String>>("command").ok();
+
+		if executable.is_none() && command.is_none() {
+			return Err(mlua::Error::RuntimeError(format!(
+				"Test '{}' must specify either 'binary' (a path) or 'command' (a list of strings).",
+				name
+			)));
+		}
+
+		let mut component = Component::test(&name, &target, executable, command);
+
+		// Set package ID
+		{
+			let pkg = self.current_package.lock().unwrap();
+			component = component.with_package(crate::graph::PackageId::new(pkg.as_str()));
+		}
+
+		if let Ok(vis_val) = tbl.get::<Value>("visibility") {
+			component = component.with_visibility(parse_visibility(vis_val)?);
+		}
+
+		if let Ok(exec_cfg_str) = tbl.get::<String>("exec_cfg") {
+			let exec_cfg = match exec_cfg_str.as_str() {
+				"host" => crate::graph::ConfigTransition::Host,
+				"exec" => crate::graph::ConfigTransition::Exec,
+				"target" => crate::graph::ConfigTransition::Target,
+				_ => return Err(mlua::Error::RuntimeError(format!("Invalid exec_cfg: {}", exec_cfg_str))),
+			};
+			component = component.with_exec_cfg(Some(exec_cfg));
+		}
+
+		// Propagate test-specific fields into the component_type
+		use crate::graph::{TestKind, TestSize, ComponentType};
+		if let ComponentType::Test {
+			ref mut test_kind,
+			ref mut args,
+			ref mut data,
+			ref mut env,
+			ref mut timeout_secs,
+			ref mut size,
+			ref mut tags,
+			..
+		} = component.component_type
+		{
+			if let Ok(kind_str) = tbl.get::<String>("test_kind") {
+				*test_kind = match kind_str.as_str() {
+					"integration" => TestKind::Integration,
+					"e2e" => TestKind::E2E,
+					_ => TestKind::Unit,
+				};
+			}
+			if let Ok(extra_args) = tbl.get::<Vec<String>>("args") {
+				*args = extra_args;
+			}
+			if let Ok(data_files) = tbl.get::<Vec<String>>("data") {
+				*data = data_files.into_iter().map(PathBuf::from).collect();
+			}
+			if let Ok(env_table) = tbl.get::<Table>("env") {
+				for pair in env_table.pairs::<String, String>() {
+					let (k, v) = pair?;
+					env.insert(k, v);
+				}
+			}
+			if let Ok(timeout) = tbl.get::<u64>("timeout") {
+				*timeout_secs = timeout;
+			}
+			if let Ok(size_str) = tbl.get::<String>("size") {
+				*size = match size_str.as_str() {
+					"medium" => TestSize::Medium,
+					"large" => TestSize::Large,
+					_ => TestSize::Small,
+				};
+			}
+			if let Ok(tag_list) = tbl.get::<Vec<String>>("tags") {
+				*tags = tag_list;
+			}
+		}
+
+		let mut g = self.graph.lock().unwrap();
+		let comp_id = g
+			.add_component(component)
+			.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+
+		if let Ok(deps) = tbl.get::<Value>("deps") {
+			match deps {
+				Value::Table(deps_tbl) => {
+					for pair in deps_tbl.pairs::<Value, Value>() {
+						let (_key, val) = pair?;
+						let (dep_ref, edge) = parse_dependency(val)?;
+						g.add_dependency(comp_id, dep_ref, edge)
+							.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+					}
+				}
+				_ => return Err(mlua::Error::RuntimeError("deps must be a list of strings or tables".into())),
+			}
+		}
 
 		Ok(Value::Nil)
 	}
@@ -250,6 +434,16 @@ impl GraphApi {
 				.iter()
 				.filter_map(|id| g.get_component(*id).map(|c| c.name.clone()))
 				.collect()
+		} else {
+			vec![]
+		}
+	}
+
+	/// Get include directories of a component
+	pub fn get_component_includes(&self, name: String, target: String) -> Vec<String> {
+		let g = self.graph.lock().unwrap();
+		if let Some(comp) = g.get_component_by_name(&name, &target) {
+			comp.include_dirs.iter().map(|p| p.to_string_lossy().to_string()).collect()
 		} else {
 			vec![]
 		}
@@ -433,4 +627,30 @@ fn parse_visibility(val: Value) -> Result<crate::graph::Visibility> {
 pub fn create_graph_table(lua: &Lua, project_root: PathBuf, graph: Arc<Mutex<BuildGraph>>) -> Result<Table> {
 	let api = GraphApi::new(project_root, graph);
 	api.create_graph_table(lua)
+}
+
+fn parse_dependency(val: Value) -> Result<(ComponentRef, DependencyEdge)> {
+	match val {
+		Value::String(s) => Ok((ComponentRef::new(s.to_str()?.to_string()), DependencyEdge::Hard)),
+		Value::Table(t) => {
+			let name: String = t.get("name").or_else(|_| t.get(1))?;
+			let mut edge = DependencyEdge::Hard;
+			if let Ok(trans_str) = t.get::<String>("transition") {
+				let trans = match trans_str.as_str() {
+					"host" => crate::graph::ConfigTransition::Host,
+					"exec" => crate::graph::ConfigTransition::Exec,
+					"target" => crate::graph::ConfigTransition::Target,
+					_ => {
+						return Err(mlua::Error::RuntimeError(format!(
+							"Invalid transition: {}",
+							trans_str
+						)))
+					}
+				};
+				edge = DependencyEdge::Transition(trans);
+			}
+			Ok((ComponentRef::new(name), edge))
+		}
+		_ => Err(mlua::Error::RuntimeError("Dependency must be a string or a table".into())),
+	}
 }

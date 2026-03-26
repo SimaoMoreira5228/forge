@@ -28,9 +28,15 @@ pub fn setup_lua_environment(lua: &Lua, project: &Project) -> Result<(), ForgeEr
 	forge_table.set("table", lua_api::table::create_table_table(lua)?)?;
 	forge_table.set("json", lua_api::json::create_json_table(lua)?)?;
 	forge_table.set("toml", lua_api::toml::create_toml_table(lua)?)?;
-	forge_table.set("profile", lua_api::profile::create_profile_table(lua, project.config.profile.clone(), project.forge_root_config.clone())?)?;
+	forge_table.set("profile", lua_api::profile::create_profile_table(lua, project.build_profile.clone())?)?;
 	forge_table.set("constraint", lua_api::constraint::create_constraint_table(lua)?)?;
-	forge_table.set("project", lua_api::project::create_project_table(lua, project_path.clone())?)?;
+	let host_platform = project
+		.platform_registry
+		.get("host")
+		.map(|p| p.target.triple.clone())
+		.unwrap_or_else(|| format!("{}_{}", std::env::consts::OS, std::env::consts::ARCH).replace("linux_x86_64", "linux_x64"));
+	forge_table.set("project", lua_api::project::create_project_table(lua, project_path.clone(), host_platform)?)?;
+
 	forge_table.set("graph", lua_api::graph::create_graph_table(lua, project.path.clone(), project.dependency_graph.clone())?)?;
 	forge_table.set("target", lua_api::target::create_target_table(lua)?)?;
 	forge_table.set("source", lua_api::source::create_source_table(lua, project.path.clone())?)?;
@@ -64,6 +70,13 @@ pub fn setup_lua_environment(lua: &Lua, project: &Project) -> Result<(), ForgeEr
 		let dependencies: Vec<String> = tbl.get("dependencies").unwrap_or_default();
 		let env: Option<Table> = tbl.get("env")?;
 		let workdir: Option<String> = tbl.get("workdir")?;
+		let exec_cfg_str: Option<String> = tbl.get("exec_cfg").ok();
+		let exec_cfg = exec_cfg_str.as_deref().and_then(|s| match s {
+			"host" => Some(crate::graph::ConfigTransition::Host),
+			"exec" => Some(crate::graph::ConfigTransition::Exec),
+			"target" => Some(crate::graph::ConfigTransition::Target),
+			_ => None,
+		});
 
 		let env_map: std::collections::HashMap<String, String> = if let Some(env_table) = env {
 			env_table
@@ -89,6 +102,7 @@ pub fn setup_lua_environment(lua: &Lua, project: &Project) -> Result<(), ForgeEr
 			outputs: outputs.clone(),
 			dependencies,
 			workdir: rule_workdir,
+			exec_cfg,
 		};
 
 		for output in &outputs {
@@ -178,7 +192,7 @@ pub fn generate_types_lua() -> String {
 	types.push('\n');
 	types.push_str(lua_api::profile::ProfileApi::profile_lua_type_definitions());
 	types.push('\n');
-	types.push_str(lua_api::constraint::ConstraintApi::constraint_lua_type_definitions());
+	types.push_str(&lua_api::constraint::ConstraintApi::constraint_lua_type_definitions());
 	types.push('\n');
 	types.push_str(lua_api::toolchain::ToolchainApi::toolchain_lua_type_definitions());
 	types.push('\n');
@@ -211,6 +225,12 @@ pub fn generate_types_lua() -> String {
 
 	types.push_str("---@class Project\n");
 	types.push_str("---@field root string Absolute path to project root\n");
+	types.push_str(
+		"---@field get_component_includes fun(name: string, target: string): string[] Get include directories for a component\n",
+	);
+	types.push_str(
+		"---@field transitive_deps fun(name: string, target: string): string[] Get all transitive dependencies\n",
+	);
 	types.push_str(
 		"---@field resolve fun(path: string): string Convert relative path to absolute (relative to project root)\n",
 	);

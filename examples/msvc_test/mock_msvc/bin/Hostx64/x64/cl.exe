@@ -1,0 +1,30 @@
+#!/bin/bash
+# Mock cl.exe for MSVC testing on Linux
+
+ARGS=("$@")
+JSON_FILE=""
+
+# Find /scanDependencies file path
+for i in "${!ARGS[@]}"; do
+    if [[ "${ARGS[$i]}" == "/scanDependencies" ]]; then
+        JSON_FILE="${ARGS[$((i+1))]}"
+        break
+    fi
+done
+
+# If scanning, produce mock JSON based on the source file
+if [[ -n "$JSON_FILE" ]]; then
+    SRC_FILE=""
+    for arg in "${ARGS[@]}"; do
+        if [[ "$arg" == *".cppm" ]]; then SRC_FILE="math.cppm"; fi
+        if [[ "$arg" == *".cpp" ]]; then SRC_FILE="main.cpp"; fi
+    done
+
+    if [[ "$SRC_FILE" == "math.cppm" ]]; then
+        echo '{"Data": {"ProvidedModules": [{"Name": "math"}], "ImportedModules": []}, "Version": 1, "Revision": 0}' > "$JSON_FILE"
+    elif [[ "$SRC_FILE" == "main.cpp" ]]; then
+        echo '{"Data": {"ProvidedModules": [], "ImportedModules": [{"Name": "math"}]}, "Version": 1, "Revision": 0}' > "$JSON_FILE"
+    fi
+fi
+
+exit 0

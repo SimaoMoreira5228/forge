@@ -9,3 +9,24 @@ exclude = ["forge-out"]
 [toolchain.zig]
 from = "version"
 version = "0.13.0"
+
+[profile.debug]
+opt_level = 0
+debug     = true
+
+[profile.release]
+opt_level = 3
+debug     = false
+lto       = true
+
+[profile.asan]
+inherits   = "debug"
+sanitizers = ["address"]
+
+[profile.tsan]
+inherits   = "debug"
+sanitizers = ["thread"]
+
+[profile.coverage]
+inherits = "debug"
+coverage = true

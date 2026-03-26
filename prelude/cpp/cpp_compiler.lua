@@ -25,7 +25,7 @@ function M.define_module_bmi_rules(sources, program_info, target_name, target_co
 
 	for module_name, module_data in pairs(modules) do
 		local source_file = module_data.source_file
-		local bmi_name = module_name .. ".pcm"
+		local bmi_name = module_name .. (compiler_info.id == "msvc" and ".ifc" or ".pcm")
 		local bmi_path = out_dir .. "/" .. bmi_name
 		local obj_name = module_name .. ".o"
 		local obj_path = out_dir .. "/" .. obj_name
@@ -35,19 +35,31 @@ function M.define_module_bmi_rules(sources, program_info, target_name, target_co
 			table.insert(bmi_args, arg)
 		end
 
-		table.insert(bmi_args, "-std=c++20")
-		table.insert(bmi_args, "-fmodules")
-		table.insert(bmi_args, "-c")
-		table.insert(bmi_args, "-Xclang")
-		table.insert(bmi_args, "-emit-module-interface")
-		table.insert(bmi_args, "-fmodule-name=" .. module_name)
-		table.insert(bmi_args, "-o")
-		table.insert(bmi_args, bmi_path)
-		table.insert(bmi_args, to_absolute_path(source_file, program_path))
-
-		for _, inc in ipairs(include_dirs) do
-			local resolved_inc = to_absolute_path(inc, program_path)
-			table.insert(bmi_args, "-I" .. resolved_inc)
+		if compiler_info.id == "msvc" then
+			table.insert(bmi_args, "/c")
+			table.insert(bmi_args, "/interface")
+			table.insert(bmi_args, "/ifcOutput")
+			table.insert(bmi_args, bmi_path)
+			table.insert(bmi_args, "/Fo" .. obj_path)
+			table.insert(bmi_args, to_absolute_path(source_file, program_path))
+			for _, inc in ipairs(include_dirs) do
+				local resolved_inc = to_absolute_path(inc, program_path)
+				table.insert(bmi_args, "/I" .. resolved_inc)
+			end
+		else
+			table.insert(bmi_args, "-std=c++20")
+			table.insert(bmi_args, "-fmodules")
+			table.insert(bmi_args, "-c")
+			table.insert(bmi_args, "-Xclang")
+			table.insert(bmi_args, "-emit-module-interface")
+			table.insert(bmi_args, "-fmodule-name=" .. module_name)
+			table.insert(bmi_args, "-o")
+			table.insert(bmi_args, bmi_path)
+			table.insert(bmi_args, to_absolute_path(source_file, program_path))
+			for _, inc in ipairs(include_dirs) do
+				local resolved_inc = to_absolute_path(inc, program_path)
+				table.insert(bmi_args, "-I" .. resolved_inc)
+			end
 		end
 
 		local bmi_rule_name = ("%s-bmi-%s"):format(module_name, target_name)
@@ -57,7 +69,8 @@ function M.define_module_bmi_rules(sources, program_info, target_name, target_co
 			command = compiler_info.command,
 			args = bmi_args,
 			inputs = { source_file },
-			outputs = { bmi_path },
+			outputs = (compiler_info.id == "msvc") and { bmi_path, obj_path } or { bmi_path },
+			env = compiler_info.env,
 		})
 
 		local obj_args = {}
@@ -80,18 +93,20 @@ function M.define_module_bmi_rules(sources, program_info, target_name, target_co
 
 		local obj_rule_name = ("%s-obj-%s"):format(module_name, target_name)
 
-		forge.rule({
-			name = obj_rule_name,
-			command = compiler_info.command,
-			args = obj_args,
-			inputs = { source_file },
-			outputs = { obj_path },
-			dependencies = { bmi_rule_name },
-		})
+		if compiler_info.id ~= "msvc" then
+			forge.rule({
+				name = obj_rule_name,
+				command = compiler_info.command,
+				args = obj_args,
+				inputs = { source_file },
+				outputs = { obj_path },
+				dependencies = { bmi_rule_name },
+			})
+		end
 
 		table.insert(bmi_rules, {
 			rule_name = bmi_rule_name,
-			obj_rule_name = obj_rule_name,
+			obj_rule_name = (compiler_info.id == "msvc") and bmi_rule_name or obj_rule_name,
 			module_name = module_name,
 			bmi_path = bmi_path,
 			obj_path = obj_path,
@@ -116,19 +131,13 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 
 	local compiler_info = common.get_compiler_for_target(compiler_name, target, standard, compiler_path)
 
-	local out_dir = forge.path.join({
-		forge.project.root,
-		"forge-out",
-		target_common.get_target_directory(target_common.extract_base_target(target_name), target_name),
-	})
+	local out_dir = build_common.get_out_dir(target_name, program_info.exec_cfg)
 	ensure_dir(out_dir)
 
 	local output_name = program_info.name
-
-	if forge.config and forge.config.test_mode then
-		output_name = output_name .. "_test"
+	if forge.config and forge.config.test_mode and not program_info.is_explicit_test then
+		output_name = output_name .. "_t_bin"
 	end
-
 	if target.os == "windows" then
 		output_name = output_name .. ".exe"
 	end
@@ -173,7 +182,8 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 	local dep_inputs = {}
 	local dep_rules = {}
 	local link_libraries = {}
-	local library_paths = {}
+	local out_dir = build_common.get_out_dir(target_name, target_config)
+	local library_paths = { out_dir }
 
 	if program_info.dependencies then
 		for name, details in pairs(program_info.dependencies) do
@@ -181,7 +191,7 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 				local dep_out_dir = forge.path.join({
 					forge.project.root,
 					"forge-out",
-					target_common.get_target_directory(target_common.extract_base_target(target_name), target_name),
+					target_name,
 				})
 				local dep_output_path = forge.path.join({ dep_out_dir, "lib" .. name .. ".a" })
 
@@ -207,13 +217,20 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 	end
 
 	if #bmi_rules > 0 then
-		table.insert(args, "-std=c++20")
-		table.insert(args, "-fmodules")
-
-		for _, bmi in ipairs(bmi_rules) do
-			table.insert(args, "-fmodule-file=" .. bmi.module_name .. "=" .. bmi.bmi_path)
+		if compiler_info.id == "msvc" then
+			for _, bmi in ipairs(bmi_rules) do
+				table.insert(args, "/reference")
+				table.insert(args, bmi.module_name .. "=" .. bmi.bmi_path)
+			end
+			table.insert(args, "/I" .. out_dir)
+		else
+			table.insert(args, "-std=c++20")
+			table.insert(args, "-fmodules")
+			for _, bmi in ipairs(bmi_rules) do
+				table.insert(args, "-fmodule-file=" .. bmi.module_name .. "=" .. bmi.bmi_path)
+			end
+			table.insert(args, "-I" .. out_dir)
 		end
-		table.insert(args, "-I" .. out_dir)
 	end
 
 	for _, src in ipairs(non_module_sources) do
@@ -224,8 +241,12 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 		table.insert(args, bmi.obj_path)
 	end
 
-	table.insert(args, "-o")
-	table.insert(args, output_path)
+	if compiler_info.id == "msvc" then
+		table.insert(args, "/Fe" .. output_path)
+	else
+		table.insert(args, "-o")
+		table.insert(args, output_path)
+	end
 
 	local build_config = build_common.resolve_build_config(target_config, "cpp")
 
@@ -249,16 +270,21 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 	if program_info.includes then
 		local includes = common.resolve_includes(program_info.includes, program_path)
 		for _, include_dir in ipairs(includes) do
-			table.insert(args, "-I" .. include_dir)
+			if compiler_info.id == "msvc" then
+				table.insert(args, "/I" .. include_dir)
+			else
+				table.insert(args, "-I" .. include_dir)
+			end
 		end
 	end
 
 	if program_info.defines then
+		local pfx = (compiler_info.id == "msvc") and "/D" or "-D"
 		for name, value in pairs(program_info.defines) do
 			if value == true or value == "" then
-				table.insert(args, "-D" .. name)
+				table.insert(args, pfx .. name)
 			else
-				table.insert(args, "-D" .. name .. "=" .. tostring(value))
+				table.insert(args, pfx .. name .. "=" .. tostring(value))
 			end
 		end
 	end
@@ -319,6 +345,7 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 		inputs = inputs,
 		outputs = { output_path },
 		dependencies = dependencies,
+		env = compiler_info.env,
 	})
 end
 
@@ -331,20 +358,10 @@ function M.define_library_rules_for_target(library_info, target_name, target_con
 
 	local compiler_info = common.get_compiler_for_target(compiler_name, target, standard, compiler_path)
 
-	local out_dir = forge.path.join({
-		forge.project.root,
-		"forge-out",
-		target_common.get_target_directory(target_common.extract_base_target(target_name), target_name),
-	})
+	local out_dir = build_common.get_out_dir(target_name, library_info.exec_cfg)
 	ensure_dir(out_dir)
 
-	local library_base_name = library_info.name
-
-	if forge.config and forge.config.test_mode then
-		library_base_name = library_base_name .. "_test"
-	end
-
-	local output_name = "lib" .. library_base_name .. ".a"
+	local output_name = "lib" .. library_info.name .. ".a"
 	local output_path = forge.path.join({ out_dir, output_name })
 
 	local sources
@@ -388,10 +405,16 @@ function M.define_library_rules_for_target(library_info, target_name, target_con
 			table.insert(compile_args, arg)
 		end
 
-		table.insert(compile_args, "-c")
-		table.insert(compile_args, to_absolute_path(src, library_path))
-		table.insert(compile_args, "-o")
-		table.insert(compile_args, obj_path)
+		if compiler_info.id == "msvc" then
+			table.insert(compile_args, "/c")
+			table.insert(compile_args, to_absolute_path(src, library_path))
+			table.insert(compile_args, "/Fo" .. obj_path)
+		else
+			table.insert(compile_args, "-c")
+			table.insert(compile_args, to_absolute_path(src, library_path))
+			table.insert(compile_args, "-o")
+			table.insert(compile_args, obj_path)
+		end
 
 		local build_config = build_common.resolve_build_config(target_config, "cpp")
 
@@ -415,16 +438,21 @@ function M.define_library_rules_for_target(library_info, target_name, target_con
 		if library_info.includes then
 			local includes = common.resolve_includes(library_info.includes, library_path)
 			for _, include_dir in ipairs(includes) do
-				table.insert(compile_args, "-I" .. include_dir)
+				if compiler_info.id == "msvc" then
+					table.insert(compile_args, "/I" .. include_dir)
+				else
+					table.insert(compile_args, "-I" .. include_dir)
+				end
 			end
 		end
 
 		if library_info.defines then
+			local pfx = (compiler_info.id == "msvc") and "/D" or "-D"
 			for name, value in pairs(library_info.defines) do
 				if value == true or value == "" then
-					table.insert(compile_args, "-D" .. name)
+					table.insert(compile_args, pfx .. name)
 				else
-					table.insert(compile_args, "-D" .. name .. "=" .. tostring(value))
+					table.insert(compile_args, pfx .. name .. "=" .. tostring(value))
 				end
 			end
 		end
@@ -437,22 +465,28 @@ function M.define_library_rules_for_target(library_info, target_name, target_con
 
 		forge.rule({
 			name = compile_rule_name,
-			command = compiler_info.command,
-			args = compile_args,
 			inputs = { to_absolute_path(src, library_path) },
 			outputs = { obj_path },
+			env = compiler_info.env,
 		})
 	end
 
-	local ar_args = { "rcs", output_path }
+	local ar_args = {}
+	if compiler_info.id == "msvc" then
+		table.insert(ar_args, "/OUT:" .. output_path)
+	else
+		table.insert(ar_args, "rcs")
+		table.insert(ar_args, output_path)
+	end
+
 	for _, obj in ipairs(object_files) do
 		table.insert(ar_args, obj)
 	end
 
-	local ar_command = "ar"
+	local ar_command = (compiler_info.id == "msvc") and "lib" or "ar"
 	if forge.path.is_absolute(compiler_info.command) then
 		local compiler_bin_dir = forge.path.dirname(compiler_info.command)
-		local candidate_ar = forge.path.join({ compiler_bin_dir, "ar" })
+		local candidate_ar = forge.path.join({ compiler_bin_dir, ar_command })
 		if forge.fs.exists(candidate_ar) then
 			ar_command = candidate_ar
 		end
@@ -461,10 +495,10 @@ function M.define_library_rules_for_target(library_info, target_name, target_con
 	forge.rule({
 		name = ("%s-lib-%s"):format(library_info.name, target_name),
 		command = ar_command,
-		args = ar_args,
 		inputs = object_files,
 		outputs = { output_path },
 		dependencies = compile_rules,
+		env = compiler_info.env,
 	})
 end
 

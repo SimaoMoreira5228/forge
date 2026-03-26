@@ -55,3 +55,9 @@ bash.run_inline({
 	},
 	outputs = { "env_output.txt" },
 })
+
+bash.test({
+	name = "verify_unique_data",
+	args = { "-c", "test $(wc -l < processed/unique_data.txt) -eq 8 && echo 'Bash example OK'" },
+	size = "small",
+})

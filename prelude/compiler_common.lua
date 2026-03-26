@@ -26,16 +26,27 @@ end
 local function resolve_configured_compiler(toolchain_name, is_cpp, target)
 	local target_key = target_to_key(target)
 	local ok, resolved = pcall(toolchain_core.resolve_compiler, toolchain_name, { target_key = target_key })
-	if not ok or not resolved then
+	if not ok then
+		forge.log.error("resolve_compiler pcall failed: " .. tostring(resolved))
+		return nil
+	end
+	if not resolved then
+		forge.log.error("resolve_compiler returned nil for " .. toolchain_name)
 		return nil
 	end
 
 	local candidate = is_cpp and resolved.cpp or resolved.c
-	if candidate and forge.fs.exists(candidate) then
-		return candidate
+	if not candidate then
+		forge.log.error("candidate was nil. c=" .. tostring(resolved.c) .. " cpp=" .. tostring(resolved.cpp))
+		return nil
 	end
-
-	return nil
+	
+	if forge.fs.exists(candidate) then
+		return candidate
+	else
+		forge.log.error("candidate does not exist on disk: " .. candidate)
+		return nil
+	end
 end
 
 function M.get_configured_compiler(toolchain_name, is_cpp, target)

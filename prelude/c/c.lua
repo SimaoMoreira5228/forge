@@ -99,6 +99,24 @@ local function validate_binary(tbl)
 	return true
 end
 
+local function validate_test(tbl)
+	if not tbl.name then
+		error("Test definition must include a 'name' field")
+	end
+
+	if not tbl.targets then
+		error(("Test '%s' must specify targets"):format(tbl.name))
+	end
+
+	for target_name, target_config in pairs(tbl.targets) do
+		if not target_config.target then
+			error(("Test '%s' target '%s' must specify a target"):format(tbl.name, target_name))
+		end
+	end
+
+	return true
+end
+
 local function register_target(target_name, target_info)
 	local triple
 	if type(target_info.target) == "table" then
@@ -125,11 +143,13 @@ local function define_library_for_target(library_info, target_name, target_confi
 
 	local sources = normalize_sources(library_info.srcs, library_info.path)
 	local include_dirs = normalize_includes(library_info.includes, library_info.path)
-	local deps = normalize_deps(library_info.dependencies)
+	local deps = normalize_deps(library_info.deps or library_info.dependencies)
 
 	forge.graph.library({
 		name = library_info.name,
 		target = target_name,
+		visibility = library_info.visibility,
+		compatible_with = library_info.compatible_with,
 		sources = sources,
 		include_dirs = include_dirs,
 		defines = library_info.defines,
@@ -149,13 +169,36 @@ local function define_binary_for_target(binary_info, target_name, target_config)
 
 	local sources = normalize_sources(binary_info.srcs, binary_info.path)
 	local include_dirs = normalize_includes(binary_info.includes, binary_info.path)
-	local deps = normalize_deps(binary_info.dependencies)
+	local deps = normalize_deps(binary_info.deps or binary_info.dependencies)
+
+	local all_includes = include_dirs
+	forge.log.info(("Collecting includes for binary '%s'"):format(binary_info.name))
+	for _, dep_name in ipairs(deps) do
+		-- Add includes from the direct dependency
+		local dep_includes = forge.graph.get_component_includes(dep_name, target_name)
+		forge.log.info(("  Direct dep '%s' gives includes: %s"):format(dep_name, table.concat(dep_includes, ", ")))
+		for _, inc in ipairs(dep_includes) do
+			table.insert(all_includes, inc)
+		end
+		-- Add includes from transitive dependencies of this dependency
+		local trans_deps = forge.graph.transitive_deps(dep_name, target_name)
+		forge.log.info(("  Transitive deps of '%s': %s"):format(dep_name, table.concat(trans_deps, ", ")))
+		for _, trans_dep_name in ipairs(trans_deps) do
+			local trans_includes = forge.graph.get_component_includes(trans_dep_name, target_name)
+			forge.log.info(("    Trans-dep '%s' gives includes: %s"):format(trans_dep_name, table.concat(trans_includes, ", ")))
+			for _, inc in ipairs(trans_includes) do
+				table.insert(all_includes, inc)
+			end
+		end
+	end
 
 	forge.graph.binary({
 		name = binary_info.name,
 		target = target_name,
+		visibility = binary_info.visibility,
+		compatible_with = binary_info.compatible_with,
 		sources = sources,
-		include_dirs = include_dirs,
+		include_dirs = all_includes,
 		defines = binary_info.defines,
 		cflags = binary_info.cflags,
 		ldflags = binary_info.ldflags,
@@ -164,6 +207,43 @@ local function define_binary_for_target(binary_info, target_name, target_config)
 	})
 
 	compiler.define_program_rules_for_target(binary_info, target_name, target_config)
+end
+
+local function define_test_for_target(test_info, target_name, target_config)
+	if not should_build_target(target_name) then
+		return
+	end
+
+	register_target(target_name, target_config)
+	define_binary_for_target(test_info, target_name, target_config)
+
+	local out_dir = require("@prelude/build_common.lua").get_out_dir(target_name)
+	local binary_name = test_info.name
+	if forge.config and forge.config.test_mode and not test_info.is_explicit_test then
+		binary_name = binary_name .. "_t_bin"
+	end
+	if target_config.target and target_config.target.os == "windows" then
+		binary_name = binary_name .. ".exe"
+	end
+	local binary_path = forge.path.join({ out_dir, binary_name })
+
+	local env = test_info.env or {}
+	local profile = forge.profile
+	if profile and profile:name() == "coverage" then
+		env["LLVM_PROFILE_FILE"] = "%p.profraw"
+	end
+
+	forge.graph.test({
+		name = test_info.name .. "_run",
+		target = target_name,
+		binary = binary_path,
+		deps = { test_info.name },
+		args = test_info.args,
+		env = env,
+		timeout = test_info.timeout,
+		size = test_info.size or "small",
+		tags = test_info.tags,
+	})
 end
 
 function M.library(tbl)
@@ -183,6 +263,16 @@ function M.binary(tbl)
 
 	for target_name, target_config in pairs(tbl.targets) do
 		define_binary_for_target(tbl, target_name, target_config)
+	end
+end
+
+function M.test(tbl)
+	validate_test(tbl)
+
+	forge.log.info(("Defining C test '%s' with %d targets"):format(tbl.name, forge.table.length(tbl.targets)))
+
+	for target_name, target_config in pairs(tbl.targets) do
+		define_test_for_target(tbl, target_name, target_config)
 	end
 end
 

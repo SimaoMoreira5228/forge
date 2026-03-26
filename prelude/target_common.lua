@@ -11,39 +11,7 @@ end
 
 M.canonical_targets = load_targets()
 
-function M.get_target_directory(target_name, variant_name)
-	local target_info = M.canonical_targets[target_name]
-	if not target_info then
-		local resolved = forge.target.resolve(target_name)
-		if not resolved then
-			error(("Unknown target: %s"):format(target_name))
-		end
-		if variant_name then
-			return variant_name
-		else
-			return resolved.triple
-		end
-	end
 
-	if variant_name then
-		return variant_name
-	else
-		return target_info.triple or target_info.canonical_name
-	end
-end
-
-function M.extract_base_target(variant_name)
-	local base = variant_name:match("^([^_]+_[^_]+)")
-	if base and M.canonical_targets[base] then
-		return base
-	end
-
-	if M.canonical_targets[variant_name] then
-		return variant_name
-	end
-
-	return variant_name
-end
 
 function M.get_target_info(target_name)
 	return M.canonical_targets[target_name] or forge.target.resolve(target_name)

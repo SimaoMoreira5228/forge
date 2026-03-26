@@ -186,6 +186,63 @@ function M.run_inline(config)
 	})
 end
 
+function M.test(config)
+	if not config.name then
+		error("Test configuration must include a 'name' field")
+	end
+
+	-- bash tests run on the host; ensure at least one target is registered.
+	-- If no target exists yet, register the host target automatically.
+	if forge.graph.target_count() == 0 then
+		local os_name   = forge.platform.os()
+		local arch_name = forge.platform.arch()
+		-- Construct a basic triple: arch-unknown-os-gnu
+		local triple
+		if os_name == "windows" then
+			triple = arch_name .. "-pc-windows-msvc"
+		elseif os_name == "macos" then
+			triple = arch_name .. "-apple-darwin"
+		else
+			triple = arch_name .. "-unknown-linux-gnu"
+		end
+		forge.graph.target({
+			name   = "host",
+			triple = triple,
+		})
+	end
+
+	-- Build a proper command list: { "bash", "-c", <script> }
+	-- config.args is expected to be: { "-c", "<script>" } or just { "<script>" }
+	local args = config.args or {}
+	local cmd_list
+	if type(args) == "table" and #args >= 1 and args[1] == "-c" then
+		-- Already in { "-c", "..." } form — prepend bash
+		cmd_list = { "bash" }
+		for _, v in ipairs(args) do
+			table.insert(cmd_list, v)
+		end
+	elseif type(args) == "table" and #args >= 1 then
+		-- Treat first element as raw shell code
+		cmd_list = { "bash", "-c", args[1] }
+	elseif type(args) == "string" then
+		cmd_list = { "bash", "-c", args }
+	else
+		error(("Test '%s' must specify args with a shell command"):format(config.name))
+	end
+
+	forge.log.info(("Defining shell test '%s'"):format(config.name))
+
+	forge.graph.test({
+		name    = config.name .. "_run",
+		command = cmd_list,
+		env     = config.env or {},
+		deps    = config.dependencies or {},
+		timeout = config.timeout or 60,
+		size    = config.size or "small",
+		tags    = config.tags or {},
+	})
+end
+
 M.script = M.run_script
 M.command = M.run_command
 M.inline = M.run_inline

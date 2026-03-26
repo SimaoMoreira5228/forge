@@ -16,11 +16,7 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 
 	local compiler_info = common.get_compiler_for_target(compiler_name, target, compiler_path)
 
-	local out_dir = forge.path.join({
-		forge.project.root,
-		"forge-out",
-		target_common.get_target_directory(target_common.extract_base_target(target_name), target_name),
-	})
+	local out_dir = build_common.get_out_dir(target_name)
 	ensure_dir(out_dir)
 
 	local output_name = program_info.name
@@ -57,11 +53,7 @@ function M.define_program_rules_for_target(program_info, target_name, target_con
 	local dep_rules = {}
 	if program_info.dependencies then
 		for name, details in pairs(program_info.dependencies) do
-			local dep_out_dir = forge.path.join({
-				forge.project.root,
-				"forge-out",
-				target_common.get_target_directory(target_common.extract_base_target(target_name), target_name),
-			})
+			local dep_out_dir = build_common.get_out_dir(target_name)
 			local dep_output_path = forge.path.join({ dep_out_dir, "lib" .. name .. ".a" })
 
 			table.insert(dep_rules, ("%s-lib-%s"):format(name, target_name))
@@ -103,11 +95,7 @@ function M.define_library_rules_for_target(library_info, target_name, target_con
 	local target = target_config.target or common.get_host_target()
 	local compiler_name = target_config.compiler or "gdc"
 
-	local out_dir = forge.path.join({
-		forge.project.root,
-		"forge-out",
-		target_common.get_target_directory(target_common.extract_base_target(target_name), target_name),
-	})
+	local out_dir = build_common.get_out_dir(target_name)
 	ensure_dir(out_dir)
 
 	local output_name = "lib" .. library_info.name .. ".a"

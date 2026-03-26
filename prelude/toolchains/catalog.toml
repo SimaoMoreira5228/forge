@@ -164,3 +164,9 @@ url = "https://github.com/ldc-developers/ldc/releases/download/v{version}/ldc2-{
 
 [toolchains.ldc.targets.windows-x86_64]
 url = "https://github.com/ldc-developers/ldc/releases/download/v{version}/ldc2-{version}-windows-x64.7z"
+
+[toolchains.msvc]
+aliases = ["cl", "visual-studio"]
+default_version = "14.3"
+binary_names = ["cl.exe", "link.exe", "lib.exe", "vswhere.exe"]
+is_system = true

@@ -1,0 +1,12 @@
+local c = require("@prelude/c/c.lua")
+
+c.library({
+    name = "internal_lib",
+    visibility = "private",
+    targets = {
+        linux_x64 = {
+            target = "linux_x64"
+        }
+    },
+    srcs = { "internal.c" },
+})

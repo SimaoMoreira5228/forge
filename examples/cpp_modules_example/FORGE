@@ -1,24 +1,26 @@
 local cpp = require("@prelude/cpp/cpp.lua")
 
 cpp.binary({
-    name = "calculator",
-    targets = {
-        linux_x64 = {
-            target = "linux_x64",
-            compiler = "clang",
-        },
-    },
-    srcs = { "src/main.cpp", "src/math_utils.cpp" },
+	name = "calculator",
+	targets = {
+		linux_x64 = {
+			target = "linux_x64",
+			compiler = "clang",
+		},
+	},
+	srcs = { "src/main.cpp", "src/math_utils.cpp" },
 })
 
-cpp.binary({
-    name = "math_utils_test",
-    targets = {
-        linux_x64 = {
-            target = "linux_x64",
-            compiler = "clang",
-        },
-    },
-    srcs = { "src/math_utils_test.cpp", "src/math_utils.cpp" },
-    system_libs = { "gtest", "gtest_main", "pthread" },
+cpp.test({
+	name = "math_utils_test",
+	targets = {
+		linux_x64 = {
+			target = "linux_x64",
+			compiler = "clang",
+		},
+	},
+	srcs = { "src/math_utils_test.cpp", "src/math_utils.cpp" },
+	system_libs = { "gtest", "gtest_main", "pthread" },
+	size = "small",
+	tags = { "unit" },
 })

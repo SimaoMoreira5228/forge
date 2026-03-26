@@ -28,7 +28,7 @@ impl std::str::FromStr for PolicyMode {
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
 		match s.to_lowercase().as_str() {
-			"off" => Ok(PolicyMode::Off),
+			"off" | "relaxed" => Ok(PolicyMode::Off),
 			"warn" => Ok(PolicyMode::Warn),
 			"strict" => Ok(PolicyMode::Strict),
 			_ => Err(format!("Unknown hermetic mode: {}. Use off, warn, or strict", s)),

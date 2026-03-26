@@ -1,6 +1,7 @@
 local c = require("@prelude/c/c.lua")
 local cpp = require("@prelude/cpp/cpp.lua")
 local d = require("@prelude/d/d.lua")
+local bash = require("@prelude/bash/bash.lua")
 
 local host_target = forge.target:host()
 
@@ -37,3 +38,10 @@ d.binary {
         }
     }
 }
+
+bash.test({
+    name = "d_interop_test",
+    args = { "-c", "./forge-out/" .. forge.target:host().name .. "/debug/d_interop" },
+    dependencies = { "d_interop" },
+    size = "small",
+})

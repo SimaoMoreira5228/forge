@@ -41,19 +41,6 @@ function M.resolve_includes(includes, base_path)
 	return result
 end
 
-function M.get_target_directory(target_name, variant_name)
-	if variant_name then
-		return variant_name
-	end
-
-	local resolved = forge.target.resolve(target_name)
-	if resolved and resolved.triple then
-		return resolved.triple
-	end
-
-	return target_name
-end
-
 function M.get_compiler_for_target(compiler, target, compiler_path)
 	local args = {}
 
