@@ -50,7 +50,7 @@ pub fn setup_lua_environment(lua: &Lua, project: &Project) -> Result<(), ForgeEr
 		.get("host")
 		.map(|p| p.target.triple.clone())
 		.unwrap_or_else(|| {
-			format!("{}_{}", std::env::consts::OS, std::env::consts::ARCH).replace("linux_x86_64", "linux_x64")
+			format!("{}_{}", std::env::consts::OS, std::env::consts::ARCH).replace("linux_x86_128", "linux_x64")
 		});
 	forge_table.set(
 		"project",

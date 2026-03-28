@@ -1,0 +1,6 @@
+[project]
+name = "js_example"
+
+[toolchain.node]
+from = "version"
+version = "22.14.0"

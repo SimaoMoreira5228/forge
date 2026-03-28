@@ -1,0 +1,11 @@
+local js = require("@prelude/js/js.lua")
+
+js.project({
+    name = "my_deno_app",
+    src_dir = ".",
+    srcs = forge.source.glob("src/**/*.js"),
+    package_manager = "deno",
+    build_script = "build",
+    outputs = { "dist" },
+    targets = { host = { target = forge.target:host(), runtime = "deno" } }
+})

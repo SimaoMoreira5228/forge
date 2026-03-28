@@ -148,6 +148,35 @@ function M.resolve_version_url(name, version, target_key)
 	}
 end
 
+function M.find_binary_path(root, binary_name)
+	local direct = M.path_join({ root, binary_name })
+	if forge.fs.exists(direct) then
+		return direct
+	end
+
+	local bin_dir = M.path_join({ root, "bin" })
+	local bin_direct = M.path_join({ bin_dir, binary_name })
+	if forge.fs.exists(bin_direct) then
+		return bin_direct
+	end
+
+	local candidates = {}
+	for _, entry in ipairs(forge.fs.walk(root, { recursive = true })) do
+		if not forge.fs.is_dir(entry) and forge.path.basename(entry) == binary_name then
+			table.insert(candidates, entry)
+		end
+	end
+	
+	if #candidates > 0 then
+		table.sort(candidates, function(a, b)
+			return #a < #b
+		end)
+		return candidates[1]
+	end
+
+	return nil
+end
+
 function M.find_bin_dir(root)
 	local direct = M.path_join({ root, "bin" })
 	if forge.fs.is_dir(direct) then

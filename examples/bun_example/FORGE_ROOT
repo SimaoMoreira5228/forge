@@ -1,0 +1,6 @@
+[project]
+name = "bun_example"
+
+[toolchain.bun]
+from = "version"
+version = "1.1.27"

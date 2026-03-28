@@ -1022,13 +1022,14 @@ impl Project {
 					std::fs::create_dir_all(parent)?;
 				}
 
-				if is_compressed {
-					let compressed_path = artifact_path.join(&output_filename).with_extension("lz4");
-					if compressed_path.exists() {
-						self.decompress_file(&compressed_path, &dest_path)?;
-					}
-				} else {
-					let src_path = artifact_path.join(&output_filename);
+				let compressed_path = artifact_path.join(&output_filename).with_extension("lz4");
+				let src_path = artifact_path.join(&output_filename);
+
+				if compressed_path.exists() {
+					self.decompress_file(&compressed_path, &dest_path)?;
+				} else if src_path.is_dir() {
+					self.copy_dir_all(&src_path, &dest_path)?;
+				} else if src_path.exists() {
 					std::fs::copy(&src_path, &dest_path).with_context(|| {
 						format!(
 							"Failed to copy cached artifact from {} to {}",
@@ -1036,6 +1037,12 @@ impl Project {
 							dest_path.display()
 						)
 					})?;
+				} else {
+					return Err(ForgeError::Other(anyhow::anyhow!(
+						"Artifact not found in cache for rule '{}': {}",
+						rule_name,
+						output_filename
+					)));
 				}
 			}
 			self.cache.rule_hashes.insert(rule_name.to_string(), new_hash);
@@ -1155,21 +1162,24 @@ impl Project {
 				.to_string();
 			let dest_path = artifact_path.join(&output_filename);
 
-			let src_metadata = std::fs::metadata(&src_path)?;
-			artifact_metadata.size += src_metadata.len();
-
-			if src_metadata.len() > 1024 * 1024 {
-				let compressed_path = dest_path.with_extension("lz4");
-				self.compress_file(&src_path, &compressed_path)?;
-				artifact_metadata.compressed = true;
+			let src_metadata = std::fs::metadata(&src_path).with_context(|| format!("Output path not found: {}", src_path.display()))?;
+			if src_metadata.is_dir() {
+				self.copy_dir_all(&src_path, &dest_path)?;
 			} else {
-				std::fs::copy(&src_path, &dest_path).with_context(|| {
-					format!(
-						"Failed to copy artifact from {} to cache at {}",
-						src_path.display(),
-						dest_path.display()
-					)
-				})?;
+				artifact_metadata.size += src_metadata.len();
+				if src_metadata.len() > 1024 * 1024 {
+					let compressed_path = dest_path.with_extension("lz4");
+					self.compress_file(&src_path, &compressed_path)?;
+					artifact_metadata.compressed = true;
+				} else {
+					std::fs::copy(&src_path, &dest_path).with_context(|| {
+						format!(
+							"Failed to copy artifact from {} to cache at {}",
+							src_path.display(),
+							dest_path.display()
+						)
+					})?;
+				}
 			}
 		}
 
@@ -1399,6 +1409,20 @@ impl Project {
 		let mut contents = Vec::new();
 		decoder.read_to_end(&mut contents)?;
 		std::fs::write(dest, contents)?;
+		Ok(())
+	}
+
+	fn copy_dir_all(&self, src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(), ForgeError> {
+		std::fs::create_dir_all(&dst)?;
+		for entry in std::fs::read_dir(src)? {
+			let entry = entry?;
+			let ty = entry.file_type()?;
+			if ty.is_dir() {
+				self.copy_dir_all(entry.path(), dst.as_ref().join(entry.file_name()))?;
+			} else {
+				std::fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
+			}
+		}
 		Ok(())
 	}
 }

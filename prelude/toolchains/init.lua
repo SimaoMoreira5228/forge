@@ -11,6 +11,9 @@ local registry = {
 	dmd = require("@prelude/toolchains/dmd.lua"),
 	ldc = require("@prelude/toolchains/ldc.lua"),
 	msvc = require("@prelude/toolchains/msvc.lua"),
+	node = require("@prelude/toolchains/node.lua"),
+	bun = require("@prelude/toolchains/bun.lua"),
+	deno = require("@prelude/toolchains/deno.lua"),
 }
 
 local M = {}

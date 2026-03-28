@@ -1,0 +1,5 @@
+{
+  "tasks": {
+    "build": "mkdir -p dist && echo 'Hello from Forge Deno' > dist/bundle.js"
+  }
+}

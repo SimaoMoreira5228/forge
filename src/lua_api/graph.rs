@@ -122,17 +122,12 @@ impl GraphApi {
 			.add_component(component)
 			.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
 
-		if let Ok(deps) = tbl.get::<Value>("deps") {
-			match deps {
-				Value::Table(deps_tbl) => {
-					for pair in deps_tbl.pairs::<Value, Value>() {
-						let (_key, val) = pair?;
-						let (dep_ref, edge) = parse_dependency(val)?;
-						g.add_dependency(comp_id, dep_ref, edge)
-							.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
-					}
-				}
-				_ => return Err(mlua::Error::RuntimeError("deps must be a list of strings or tables".into())),
+				if let Ok(Some(deps_tbl)) = tbl.get::<Option<Table>>("deps") {
+			for pair in deps_tbl.pairs::<Value, Value>() {
+				let (_key, val) = pair?;
+				let (dep_ref, edge) = parse_dependency(val)?;
+				g.add_dependency(comp_id, dep_ref, edge)
+					.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
 			}
 		}
 
@@ -217,17 +212,12 @@ impl GraphApi {
 			.add_component(component)
 			.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
 
-		if let Ok(deps) = tbl.get::<Value>("deps") {
-			match deps {
-				Value::Table(deps_tbl) => {
-					for pair in deps_tbl.pairs::<Value, Value>() {
-						let (_key, val) = pair?;
-						let (dep_ref, edge) = parse_dependency(val)?;
-						g.add_dependency(comp_id, dep_ref, edge)
-							.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
-					}
-				}
-				_ => return Err(mlua::Error::RuntimeError("deps must be a list of strings or tables".into())),
+				if let Ok(Some(deps_tbl)) = tbl.get::<Option<Table>>("deps") {
+			for pair in deps_tbl.pairs::<Value, Value>() {
+				let (_key, val) = pair?;
+				let (dep_ref, edge) = parse_dependency(val)?;
+				g.add_dependency(comp_id, dep_ref, edge)
+					.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
 			}
 		}
 
@@ -277,17 +267,12 @@ impl GraphApi {
 			.add_component(component)
 			.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
 
-		if let Ok(deps) = tbl.get::<mlua::Value>("deps") {
-			match deps {
-				mlua::Value::Table(deps_tbl) => {
-					for pair in deps_tbl.pairs::<mlua::Value, mlua::Value>() {
-						let (_key, val) = pair?;
-						let (dep_ref, edge) = parse_dependency(val)?;
-						g.add_dependency(comp_id, dep_ref, edge)
-							.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
-					}
-				}
-				_ => return Err(mlua::Error::RuntimeError("deps must be a list of strings or tables".into())),
+		if let Ok(Some(deps_tbl)) = tbl.get::<Option<Table>>("deps") {
+			for pair in deps_tbl.pairs::<Value, Value>() {
+				let (_key, val) = pair?;
+				let (dep_ref, edge) = parse_dependency(val)?;
+				g.add_dependency(comp_id, dep_ref, edge)
+					.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
 			}
 		}
 
@@ -407,17 +392,12 @@ impl GraphApi {
 			.add_component(component)
 			.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
 
-		if let Ok(deps) = tbl.get::<Value>("deps") {
-			match deps {
-				Value::Table(deps_tbl) => {
-					for pair in deps_tbl.pairs::<Value, Value>() {
-						let (_key, val) = pair?;
-						let (dep_ref, edge) = parse_dependency(val)?;
-						g.add_dependency(comp_id, dep_ref, edge)
-							.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
-					}
-				}
-				_ => return Err(mlua::Error::RuntimeError("deps must be a list of strings or tables".into())),
+				if let Ok(Some(deps_tbl)) = tbl.get::<Option<Table>>("deps") {
+			for pair in deps_tbl.pairs::<Value, Value>() {
+				let (_key, val) = pair?;
+				let (dep_ref, edge) = parse_dependency(val)?;
+				g.add_dependency(comp_id, dep_ref, edge)
+					.map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
 			}
 		}
 
