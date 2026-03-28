@@ -18,7 +18,7 @@ cache_dir = "forge-out"
 
 [toolchain.gcc]
 from = "version"
-version = "14.2.0"
+version = "13"
 
 [toolchain.clang]
 from = "version"

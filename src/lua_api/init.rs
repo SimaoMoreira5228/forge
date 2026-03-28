@@ -12,6 +12,7 @@ pub fn setup_lua_environment(lua: &Lua, project: &Project) -> Result<(), ForgeEr
 	let config_tbl = lua.to_value(&project.config)?;
 	if let mlua::Value::Table(ref tbl) = config_tbl {
 		tbl.set("toolchain", lua.to_value(&project.forge_root_config.toolchain)?)?;
+		tbl.set("platforms", lua.to_value(&project.forge_root_config.platforms)?)?;
 	}
 	forge_table.set("config", config_tbl)?;
 
@@ -30,18 +31,6 @@ pub fn setup_lua_environment(lua: &Lua, project: &Project) -> Result<(), ForgeEr
 	forge_table.set("toml", lua_api::toml::create_toml_table(lua)?)?;
 	forge_table.set("profile", lua_api::profile::create_profile_table(lua, project.build_profile.clone())?)?;
 	forge_table.set("constraint", lua_api::constraint::create_constraint_table(lua)?)?;
-	let host_platform = project
-		.platform_registry
-		.get("host")
-		.map(|p| p.target.triple.clone())
-		.unwrap_or_else(|| format!("{}_{}", std::env::consts::OS, std::env::consts::ARCH).replace("linux_x86_64", "linux_x64"));
-	forge_table.set("project", lua_api::project::create_project_table(lua, project_path.clone(), host_platform)?)?;
-
-	forge_table.set("graph", lua_api::graph::create_graph_table(lua, project.path.clone(), project.dependency_graph.clone())?)?;
-	forge_table.set("target", lua_api::target::create_target_table(lua)?)?;
-	forge_table.set("source", lua_api::source::create_source_table(lua, project.path.clone())?)?;
-	forge_table.set("toolchain", lua_api::toolchain::create_toolchain_table(lua, project.path.clone())?)?;
-
 	let mut prelude_path = project.path.join("prelude");
 	if !prelude_path.exists() {
 		// Try to find it in parent directories (case of examples in the repo)
@@ -55,6 +44,28 @@ pub fn setup_lua_environment(lua: &Lua, project: &Project) -> Result<(), ForgeEr
 			current = parent;
 		}
 	}
+
+	let host_platform = project
+		.platform_registry
+		.get("host")
+		.map(|p| p.target.triple.clone())
+		.unwrap_or_else(|| {
+			format!("{}_{}", std::env::consts::OS, std::env::consts::ARCH).replace("linux_x86_64", "linux_x64")
+		});
+	forge_table.set(
+		"project",
+		lua_api::project::create_project_table(
+			lua,
+			project_path.clone(),
+			host_platform,
+			prelude_path.to_string_lossy().to_string(),
+		)?,
+	)?;
+
+	forge_table.set("graph", lua_api::graph::create_graph_table(lua, project.path.clone(), project.dependency_graph.clone())?)?;
+	forge_table.set("target", lua_api::target::create_target_table(lua)?)?;
+	forge_table.set("source", lua_api::source::create_source_table(lua, project.path.clone())?)?;
+	forge_table.set("toolchain", lua_api::toolchain::create_toolchain_table(lua, project.path.clone())?)?;
 
 	let build_graph = project.build_graph.clone();
 	let output_map = project.output_map.clone();

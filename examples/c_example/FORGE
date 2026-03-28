@@ -48,7 +48,6 @@ c.test({
 	args = { "2", "3" },
 	dependencies = {
 		math_utils = { path = "lib" },
-		calc = { path = "." },
 	},
 	system_libs = { "m" },
 })

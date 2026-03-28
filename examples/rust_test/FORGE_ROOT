@@ -1,0 +1,10 @@
+[project]
+name = "rust_test"
+version = "0.1.0"
+
+[build]
+cache_dir = "forge-out"
+
+[toolchain.rust]
+from = "version"
+version = "1.93.1"

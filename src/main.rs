@@ -256,6 +256,7 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+	println!("@@@ FORGE STARTING @@@");
 	let cli = Cli::parse();
 
 	// Default to Info level (errors, warnings, info)

@@ -4,7 +4,7 @@ mod runner;
 mod sandbox;
 mod toolchain;
 
-pub use action::ActionSpec;
+pub use action::{ActionSpec, ActionInput};
 pub use policy::{HermeticPolicy, PolicyMode};
 pub use runner::SandboxRunner;
 pub use sandbox::{SandboxProvider, get_sandbox};

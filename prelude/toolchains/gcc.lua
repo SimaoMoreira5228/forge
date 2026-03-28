@@ -51,12 +51,28 @@ function M.resolve_compiler(name, options)
 		return nil
 	end
 
-	local gcc = common.path_join({ info.bin_dir, "gcc" })
-	local gpp = common.path_join({ info.bin_dir, "g++" })
+	local prefix = info.prefix or ""
+	local gcc = common.path_join({ info.bin_dir, prefix .. "gcc" })
+	local gpp = common.path_join({ info.bin_dir, prefix .. "g++" })
+	local ar = common.path_join({ info.bin_dir, prefix .. "ar" })
+	
+	-- Fallback to unprefixed if prefixed doesn't exist
+	if not forge.fs.exists(gcc) then
+		gcc = common.path_join({ info.bin_dir, "gcc" })
+	end
+	if not forge.fs.exists(gpp) then
+		gpp = common.path_join({ info.bin_dir, "g++" })
+	end
+	if not forge.fs.exists(ar) then
+		ar = common.path_join({ info.bin_dir, "ar" })
+	end
+
 	return {
 		c = forge.fs.exists(gcc) and gcc or nil,
 		cpp = forge.fs.exists(gpp) and gpp or nil,
+		ar = forge.fs.exists(ar) and ar or nil,
 		bin_dir = info.bin_dir,
+		env = info.env,
 	}
 end
 

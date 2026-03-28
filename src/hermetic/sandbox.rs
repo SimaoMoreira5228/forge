@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::hermetic::{ActionSpec, Error as HermeticError, HermeticPolicy};
@@ -12,6 +12,7 @@ pub trait SandboxProvider {
 		&self,
 		spec: &ActionSpec,
 		runfiles_dir: &Path,
+		toolchain_paths: &[PathBuf],
 	) -> Result<Command, HermeticError>;
 }
 
@@ -30,39 +31,58 @@ impl SandboxProvider for LinuxBwrapSandbox {
 	fn create_command(
 		&self,
 		spec: &ActionSpec,
-		runfiles_dir: &Path,
+		_runfiles_dir: &Path,
+		toolchain_paths: &[PathBuf],
 	) -> Result<Command, HermeticError> {
-		let mut cmd = Command::new("bwrap");
+		// Use absolute path for bwrap to avoid PATH resolution issues after env_clear()
+		let mut cmd = Command::new("/usr/bin/bwrap");
 		
-		// Setup basic namespace isolation container:
-		// Drop privileges, setup proc, mount root as read-only.
 		cmd.args([
 			"--unshare-all", 
 			"--die-with-parent"
 		]);
 		
-		// Map standard Linux paths read-only
+		// System paths (read-only)
 		for p in &["/usr", "/bin", "/lib", "/lib64", "/nix", "/etc"] {
 			if Path::new(p).exists() {
 				cmd.args(["--ro-bind", p, p]);
 			}
 		}
 
-		// Virtual directories
 		cmd.args(["--proc", "/proc"]);
 		cmd.args(["--dev", "/dev"]);
 		cmd.args(["--dir", "/tmp"]);
 
-		// Mount execution environments
-		let workdir_str = spec.workdir.to_string_lossy();
-		if spec.workdir.exists() {
-			cmd.args(["--bind", &workdir_str, &workdir_str]);
+		// Emit --dir for each ancestor of the given path
+		fn emit_parent_dirs(cmd: &mut Command, path: &Path) {
+			let mut current = PathBuf::from("/");
+			for component in path.parent().unwrap_or(Path::new("")).components() {
+				if let std::path::Component::Normal(c) = component {
+					current.push(c);
+					cmd.args(["--dir", &current.to_string_lossy()]);
+				}
+			}
 		}
 
-		let run_str = runfiles_dir.to_string_lossy();
-		cmd.args(["--ro-bind", &run_str, &run_str]);
+		// Bind workdir (writable) — this covers all project files including .forge/toolchains
+		if spec.workdir.exists() {
+			emit_parent_dirs(&mut cmd, &spec.workdir);
+			let p = spec.workdir.to_string_lossy();
+			cmd.args(["--bind", &p, &p]);
+		}
 
-		// Terminal arg separator
+		// Only bind toolchain paths that are OUTSIDE the workdir tree
+		for toolchain_path in toolchain_paths {
+			if toolchain_path.exists() && !toolchain_path.starts_with(&spec.workdir) {
+				let bind_target = if let Some(parent) = toolchain_path.parent() { parent.to_path_buf() } else { toolchain_path.to_path_buf() };
+				if bind_target.exists() && !bind_target.starts_with(&spec.workdir) {
+					emit_parent_dirs(&mut cmd, &bind_target);
+					let p = bind_target.to_string_lossy().into_owned();
+					cmd.args(["--ro-bind", &p, &p]);
+				}
+			}
+		}
+
 		cmd.arg("--");
 		cmd.arg(&spec.command);
 		
@@ -75,8 +95,9 @@ impl SandboxProvider for LinuxUnshareSandbox {
 		&self,
 		spec: &ActionSpec,
 		_runfiles_dir: &Path,
+		_toolchain_paths: &[PathBuf],
 	) -> Result<Command, HermeticError> {
-		let mut cmd = Command::new("unshare");
+		let mut cmd = Command::new("/usr/bin/unshare");
 		
 		// Setup namespace isolation using unshare command:
 		// --map-root-user: Map current user to root in the new namespace
@@ -107,6 +128,7 @@ impl SandboxProvider for MacOsSeatbeltSandbox {
 		&self,
 		spec: &ActionSpec,
 		runfiles_dir: &Path,
+		toolchain_paths: &[PathBuf],
 	) -> Result<Command, HermeticError> {
 		let mut cmd = Command::new("sandbox-exec");
 		cmd.arg("-p");
@@ -118,7 +140,7 @@ impl SandboxProvider for MacOsSeatbeltSandbox {
 		
 		// Allow reading inputs
 		for input in &spec.inputs {
-			profile.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", input.display()));
+			profile.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", input.src.display()));
 		}
 		
 		// Allow reading/writing outputs
@@ -126,9 +148,12 @@ impl SandboxProvider for MacOsSeatbeltSandbox {
 			profile.push_str(&format!("(allow file-read* file-write* (subpath \"{}\"))\n", output.display()));
 		}
 		
-		// Allow workdir and runfiles
+		// Allow workdir, runfiles and toolchains
 		profile.push_str(&format!("(allow file-read* file-write* (subpath \"{}\"))\n", spec.workdir.display()));
 		profile.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", runfiles_dir.display()));
+		for tp in toolchain_paths {
+			profile.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", tp.display()));
+		}
 
 		cmd.arg(profile);
 		cmd.arg(&spec.command);
@@ -141,6 +166,7 @@ impl SandboxProvider for WindowsSandbox {
 		&self,
 		spec: &ActionSpec,
 		_runfiles_dir: &Path,
+		_toolchain_paths: &[PathBuf],
 	) -> Result<Command, HermeticError> {
 		// Stub: Windows Job Objects apply after process start, requiring an OS-level Win32 spawn implementation hook.
 		log::info!("Windows Sandbox uses a generic process for now. (Job Object execution stub)");
@@ -153,6 +179,7 @@ impl SandboxProvider for NullSandbox {
 		&self,
 		spec: &ActionSpec,
 		_runfiles_dir: &Path,
+		_toolchain_paths: &[PathBuf],
 	) -> Result<Command, HermeticError> {
 		Ok(Command::new(&spec.command))
 	}

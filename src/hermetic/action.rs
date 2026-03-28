@@ -2,12 +2,18 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ActionInput {
+	pub src: PathBuf,
+	pub dest: PathBuf,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionSpec {
 	pub name: String,
 	pub command: String,
 	pub args: Vec<String>,
-	pub inputs: Vec<PathBuf>,
+	pub inputs: Vec<ActionInput>,
 	pub outputs: Vec<PathBuf>,
 	pub env: HashMap<String, String>,
 	pub workdir: PathBuf,
@@ -40,7 +46,7 @@ impl ActionSpec {
 		self
 	}
 
-	pub fn with_inputs(mut self, inputs: Vec<PathBuf>) -> Self {
+	pub fn with_inputs(mut self, inputs: Vec<ActionInput>) -> Self {
 		self.inputs = inputs;
 		self
 	}
@@ -103,7 +109,7 @@ impl ActionSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionContract {
 	pub name: String,
-	pub inputs: Vec<PathBuf>,
+	pub inputs: Vec<ActionInput>,
 	pub outputs: Vec<PathBuf>,
 	pub env_keys: Vec<String>,
 	pub toolchain_id: Option<String>,
@@ -113,15 +119,17 @@ pub struct ActionContract {
 impl ActionContract {
 	pub fn verify_execution(&self, actual_inputs: &[PathBuf], actual_outputs: &[PathBuf]) -> Result<(), Vec<String>> {
 		let mut violations = Vec::new();
+		
+		let declared_input_srcs: Vec<PathBuf> = self.inputs.iter().map(|i| i.src.clone()).collect();
 
 		for input in &self.inputs {
-			if !actual_inputs.contains(input) {
-				violations.push(format!("Missing declared input: {:?}", input));
+			if !actual_inputs.contains(&input.src) {
+				violations.push(format!("Missing declared input: {:?}", input.src));
 			}
 		}
 
 		for actual in actual_inputs {
-			if !self.inputs.contains(actual) {
+			if !declared_input_srcs.contains(actual) {
 				violations.push(format!("Undeclared input accessed: {:?}", actual));
 			}
 		}

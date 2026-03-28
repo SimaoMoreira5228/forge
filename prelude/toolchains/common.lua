@@ -57,7 +57,7 @@ function M.downloads_root()
 end
 
 function M.load_catalog()
-	local catalog_path = M.path_join({ forge.project.root, "prelude", "toolchains", "catalog.toml" })
+	local catalog_path = M.path_join({ forge.project.prelude_root, "toolchains", "catalog.toml" })
 	local content = forge.fs.read(catalog_path)
 	local decoded = forge.toml.decode(content)
 	if not decoded.toolchains then

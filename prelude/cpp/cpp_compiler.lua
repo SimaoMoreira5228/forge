@@ -465,7 +465,9 @@ function M.define_library_rules_for_target(library_info, target_name, target_con
 
 		forge.rule({
 			name = compile_rule_name,
-			inputs = { to_absolute_path(src, library_path) },
+			command = compiler_info.command,
+			args = compile_args,
+			inputs = { src }, -- src is already absolute from common.resolve_sources
 			outputs = { obj_path },
 			env = compiler_info.env,
 		})
@@ -483,8 +485,8 @@ function M.define_library_rules_for_target(library_info, target_name, target_con
 		table.insert(ar_args, obj)
 	end
 
-	local ar_command = (compiler_info.id == "msvc") and "lib" or "ar"
-	if forge.path.is_absolute(compiler_info.command) then
+	local ar_command = compiler_info.ar or ((compiler_info.id == "msvc") and "lib" or "ar")
+	if not compiler_info.ar and forge.path.is_absolute(compiler_info.command) then
 		local compiler_bin_dir = forge.path.dirname(compiler_info.command)
 		local candidate_ar = forge.path.join({ compiler_bin_dir, ar_command })
 		if forge.fs.exists(candidate_ar) then
@@ -492,9 +494,11 @@ function M.define_library_rules_for_target(library_info, target_name, target_con
 		end
 	end
 
+	local final_rule_name = ("%s:%s"):format(library_info.name, target_name)
 	forge.rule({
-		name = ("%s-lib-%s"):format(library_info.name, target_name),
+		name = final_rule_name,
 		command = ar_command,
+		args = ar_args,
 		inputs = object_files,
 		outputs = { output_path },
 		dependencies = compile_rules,

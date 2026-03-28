@@ -116,9 +116,26 @@ function M.ensure_dir(path)
 end
 
 function M.get_gcc_cross_compiler(target, is_cpp)
-	local configured = resolve_configured_compiler("gcc", is_cpp, target)
-	if configured then
-		return configured
+	local info = M.get_gcc_info(target, is_cpp)
+	return info.command
+end
+
+function M.get_gcc_info(target, is_cpp)
+	local target_key = target_to_key(target)
+	local ok, resolved = pcall(toolchain_core.resolve_compiler, "gcc", { target_key = target_key })
+	
+	if ok and resolved then
+		local command = is_cpp and resolved.cpp or resolved.c
+		if command then
+			local info = { command = command, args = {} }
+			-- Copy other fields like 'ar', 'env' if they exist in resolved
+			for k, v in pairs(resolved) do
+				if k ~= "c" and k ~= "cpp" then
+					info[k] = v
+				end
+			end
+			return info
+		end
 	end
 
 	local host_target = forge.target:host()
@@ -139,7 +156,7 @@ function M.get_gcc_cross_compiler(target, is_cpp)
 		end
 	end
 
-	return gcc_cmd
+	return { command = gcc_cmd, args = {} }
 end
 
 function M.get_zig_target_string(target)

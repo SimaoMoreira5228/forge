@@ -21,7 +21,7 @@ version = "19.1.7"
 
 [toolchain.gcc]
 from    = "version"
-version = "14.2"
+version = "13"
 
 [profile.debug]
 opt_level = 0

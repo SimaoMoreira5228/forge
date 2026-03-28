@@ -101,11 +101,12 @@ function M.get_compiler_for_target(compiler, target, standard, compiler_path)
 		end
 		return { id = "msvc", command = "cl.exe", args = args }
 	else
-		local cpp_cmd = compiler_common.get_gcc_cross_compiler(target, true)
+		local info = compiler_common.get_gcc_info(target, true)
 		if std_flag then
-			table.insert(args, std_flag)
+			table.insert(info.args, std_flag)
 		end
-		return { id = "gcc", command = cpp_cmd, args = args }
+		info.id = "gcc"
+		return info
 	end
 end
 

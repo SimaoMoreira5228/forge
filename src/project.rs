@@ -366,6 +366,66 @@ impl Project {
 			}
 		}
 
+		self.compile_dependency_graph()?;
+
+		Ok(())
+	}
+
+	fn compile_dependency_graph(&self) -> Result<(), ForgeError> {
+		let dep_graph = self.dependency_graph.lock().unwrap();
+		println!("DEBUG: Compiling dependency graph with {} components", dep_graph.component_count());
+		for id in dep_graph.component_ids() {
+			let comp = match dep_graph.get_component(id) {
+				Some(c) => c,
+				None => continue,
+			};
+			log::debug!("Processing component: {} (type: {:?})", comp.name, comp.component_type.kind_name());
+
+			// Create a unique name for the rule (include target)
+			let rule_name = format!("{}:{}", comp.name, comp.target_name);
+
+			// For now, we only handle Custom components (Mode 1)
+			if let crate::graph::ComponentType::Custom { command, args } = &comp.component_type {
+				// Resolve dependencies to rule names and collect their outputs as our inputs
+				let mut rule_deps = Vec::new();
+				let mut extra_inputs = Vec::new();
+
+				for (dep_ref, _edge) in &comp.dependencies {
+					let dep_name = dep_ref.name();
+					let dep_target = dep_ref.target().unwrap_or(&comp.target_name);
+
+					if let Some(dep_comp) = dep_graph.get_component_by_name(dep_name, dep_target) {
+						let full_name = format!("{}:{}", dep_comp.name, dep_comp.target_name);
+						println!("@@@ DEBUG: Found component {} -> rule {}", dep_name, full_name);
+						rule_deps.push(full_name);
+						// Automatically add dependency outputs to our inputs
+						for output in &dep_comp.outputs {
+							extra_inputs.push(output.to_string_lossy().to_string());
+						}
+					} else {
+						println!("@@@ DEBUG: Component NOT FOUND: name={}, target={}", dep_name, dep_target);
+						// Fallback to literal name if not found in graph
+						rule_deps.push(dep_name.to_string());
+					}
+				}
+
+				let mut rule_inputs = comp.sources.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>();
+				rule_inputs.extend(extra_inputs);
+
+				let rule = Rule {
+					name: rule_name.clone(),
+					command: command.clone(),
+					args: args.clone(),
+					inputs: rule_inputs,
+					outputs: comp.outputs.iter().map(|p| p.to_string_lossy().to_string()).collect(),
+					env: comp.env.clone(),
+					workdir: comp.workdir.clone(),
+					dependencies: rule_deps,
+					exec_cfg: comp.exec_cfg.clone(),
+				};
+				self.build_graph.insert(rule_name, rule);
+			}
+		}
 		Ok(())
 	}
 
@@ -997,7 +1057,10 @@ impl Project {
 		let action_spec = ActionSpec::new(rule_name)
 			.with_command(&rule_ref.value().command)
 			.with_args(args_strings)
-			.with_inputs(rule_ref.value().inputs.iter().map(|p| self.path.join(p)).collect())
+			.with_inputs(rule_ref.value().inputs.iter().map(|p| crate::hermetic::ActionInput {
+				src: self.path.join(p),
+				dest: PathBuf::from(p),
+			}).collect())
 			.with_outputs(rule_ref.value().outputs.iter().map(|p| self.path.join(p)).collect())
 			.with_env(rule_ref.value().env.clone())
 			.with_workdir(rule_ref.value().workdir.clone());
@@ -1125,6 +1188,7 @@ impl Project {
 	}
 
 	fn create_parallel_batches(&self) -> Result<Vec<Vec<String>>, ForgeError> {
+		let all_rules: Vec<String> = self.build_graph.iter().map(|r| r.key().to_string()).collect();
 		let mut reverse_deps: HashMap<String, Vec<String>> = HashMap::new();
 		let mut in_degrees: HashMap<String, usize> = self.build_graph.iter().map(|r| (r.key().to_string(), 0)).collect();
 		let mut rule_complexity: HashMap<String, f64> = HashMap::new();
@@ -1139,6 +1203,7 @@ impl Project {
 		for rule_ref in self.build_graph.iter() {
 			let name = rule_ref.key();
 			let rule = rule_ref.value();
+			println!("@@@ DEBUG: Rule '{}' has deps: {:?}", name, rule.dependencies);
 
 			for input in &rule.inputs {
 				if let Some(dep_rule_name) = self.output_map.get(input) {

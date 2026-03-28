@@ -1,0 +1,18 @@
+[project]
+name = "minimal_rust_example"
+version = "0.1.0"
+
+[discovery]
+include = ["."]
+use_gitignore = true
+
+[build]
+cache_dir = "forge-out"
+
+[profile.debug]
+opt_level = 0
+debug     = true
+
+[profile.release]
+opt_level = 3
+debug     = false

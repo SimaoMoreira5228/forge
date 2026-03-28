@@ -138,17 +138,23 @@ local function define_library_for_target(library_info, target_name, target_confi
 	local include_dirs = normalize_includes(library_info.includes, library_info.path)
 	local deps = normalize_deps(library_info.dependencies)
 
-	forge.graph.library({
-		name = library_info.name,
+	local out_dir = require("@prelude/build_common.lua").get_out_dir(target_name, library_info.exec_cfg)
+	local output_name = "lib" .. library_info.name .. ".a"
+	if target_config.target and type(target_config.target) == "table" and target_config.target.os == "windows" then
+		output_name = library_info.name .. ".lib"
+	end
+	local output_path = forge.path.join({ out_dir, output_name })
+
+	local library_cfg = forge.table.merge(library_info, { 
 		target = target_name,
 		sources = sources,
 		include_dirs = include_dirs,
-		defines = library_info.defines,
-		cflags = library_info.cxxflags,
+		outputs = { output_path },
 		deps = deps,
 	})
 
-	compiler.define_library_rules_for_target(library_info, target_name, target_config)
+	forge.graph.library(library_cfg)
+	compiler.define_library_rules_for_target(library_cfg, target_name, target_config)
 end
 
 local function define_binary_for_target(binary_info, target_name, target_config)
@@ -179,19 +185,16 @@ local function define_binary_for_target(binary_info, target_name, target_config)
 		end
 	end
 
-	forge.graph.binary({
-		name = binary_info.name,
+	local binary_cfg = forge.table.merge(binary_info, { 
 		target = target_name,
 		sources = sources,
 		include_dirs = all_includes,
-		defines = binary_info.defines,
-		cflags = binary_info.cxxflags,
-		ldflags = binary_info.ldflags,
-		system_libs = target_config.system_libs or binary_info.system_libs,
+		includes = all_includes,
 		deps = deps,
 	})
 
-	compiler.define_program_rules_for_target(binary_info, target_name, target_config)
+	forge.graph.binary(binary_cfg)
+	compiler.define_program_rules_for_target(binary_cfg, target_name, target_config)
 end
 
 local function define_test_for_target(test_info, target_name, target_config)

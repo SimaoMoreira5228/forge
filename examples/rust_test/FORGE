@@ -1,0 +1,21 @@
+local rust = require("@prelude/rust/rust.lua")
+local cpp = require("@prelude/cpp/cpp.lua")
+
+cpp.library({
+    name = "libc_interop",
+    targets = {
+        host = { target = forge.target:host() }
+    },
+    srcs = { "src/lib.cpp" },
+    includes = { "src" },
+})
+
+rust.binary({
+    name = "hello_rust",
+    targets = {
+        host = { target = forge.target:host() }
+    },
+    srcs = { "src/main.rs", "Cargo.toml" },
+    deps = { "libc_interop" },
+    libs = { "stdc++" },
+})

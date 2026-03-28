@@ -62,7 +62,6 @@ cpp.test({
 	includes = { "lib" },
 	dependencies = {
 		string_utils = { path = "." },
-		text_processor = { path = "." },
 	},
 	size = "small",
 })

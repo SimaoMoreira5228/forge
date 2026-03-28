@@ -32,7 +32,7 @@ impl AccessTrace {
 		let declared_inputs: Vec<PathBuf> = spec
 			.inputs
 			.iter()
-			.map(|p| if p.is_absolute() { p.clone() } else { workdir.join(p) })
+			.map(|i| if i.src.is_absolute() { i.src.clone() } else { workdir.join(&i.src) })
 			.collect();
 
 		let declared_outputs: Vec<PathBuf> = spec
@@ -98,6 +98,14 @@ impl SandboxRunner {
 		let mut access_trace = AccessTrace::new();
 		let result = self.run_in_sandbox(spec, &normalized_env, &mut access_trace)?;
 
+		println!("@@@ DEBUG: Command result: success={}, exit_code={:?}, duration={:?}", result.success, result.exit_code, result.duration);
+		if !result.stdout.is_empty() {
+			println!("@@@ DEBUG: Stdout:\n{}", result.stdout);
+		}
+		if !result.stderr.is_empty() {
+			println!("@@@ DEBUG: Stderr:\n{}", result.stderr);
+		}
+
 		if self.policy.trace_access || self.policy.mode.is_strict() {
 			let violations = access_trace.check_violations(spec, &spec.workdir);
 			if !violations.is_empty() {
@@ -130,13 +138,17 @@ impl SandboxRunner {
 		fs::create_dir_all(&self.runfiles_dir)?;
 
 		for input in &spec.inputs {
-			let filename = input.file_name().unwrap_or_else(|| input.as_os_str());
-			let dest = self.runfiles_dir.join(filename);
+			let dest = self.runfiles_dir.join(&input.dest);
 			if let Some(parent) = dest.parent() {
 				fs::create_dir_all(parent)?;
 			}
-			if input.exists() {
-				fs::copy(input, &dest)?;
+			if input.src.exists() {
+				if input.src == dest {
+					continue;
+				}
+				fs::copy(&input.src, &dest)?;
+			} else {
+				println!("@@@ DEBUG: Input path DOES NOT EXIST: {:?}", input.src);
 			}
 		}
 
@@ -164,7 +176,7 @@ impl SandboxRunner {
 		let mut sorted_inputs: Vec<_> = spec.inputs.clone();
 		sorted_inputs.sort();
 		for input in sorted_inputs {
-			writeln!(manifest_file, "{}", input.display())?;
+			writeln!(manifest_file, "{}", input.src.display())?;
 		}
 
 		writeln!(manifest_file, "")?;
@@ -189,7 +201,7 @@ impl SandboxRunner {
 		log::debug!("Running command: {} with PATH: {}", spec.command, path);
 
 		let provider = crate::hermetic::sandbox::get_sandbox(&self.policy);
-		let mut cmd = provider.create_command(spec, &self.runfiles_dir)?;
+		let mut cmd = provider.create_command(spec, &self.runfiles_dir, &self.toolchain_paths)?;
 
 		if spec.workdir.exists() {
 			cmd.current_dir(&spec.workdir);
@@ -207,6 +219,7 @@ impl SandboxRunner {
 		}
 
 		let start = std::time::Instant::now();
+		println!("@@@ DEBUG: Executing final command: {:?}", cmd);
 		let output = cmd.output()?;
 		let duration = start.elapsed();
 
@@ -232,6 +245,7 @@ impl SandboxRunner {
 		for output in &spec.outputs {
 			let filename = output.file_name().unwrap_or_else(|| output.as_os_str());
 			let path = self.runfiles_dir.join(filename);
+			println!("@@@ DEBUG: Verifying output: {:?} (path.exists={}, output.exists={})", output, path.exists(), output.exists());
 			if !path.exists() && !output.exists() {
 				missing.push(output.clone());
 			}
@@ -322,30 +336,25 @@ fn normalize_environment(
 			}
 		}
 
-		// In strict mode, we ONLY include system paths if no toolchain paths were found,
-		// to avoid breaking basic things like 'cp' or 'mkdir' if they aren't in a toolchain.
-		// However, the goal is "Full environment stripping", so we should be very careful.
-		if final_path_parts.is_empty() {
-			if let Ok(system_path) = std::env::var("PATH") {
-				for p in std::env::split_paths(&system_path) {
-					if p.starts_with("/usr/bin") || p.starts_with("/bin") {
-						final_path_parts.push(p);
-					}
+		// Also grab PATH pieces provided by user_env (like rust.lua's PATH additions)
+		if let Some(user_path) = user_env.get("PATH") {
+			for p in std::env::split_paths(user_path) {
+				if !final_path_parts.contains(&p) {
+					final_path_parts.push(p);
 				}
 			}
 		}
 
-		if !final_path_parts.is_empty() {
-			normalized.insert(
-				"PATH".to_string(),
-				std::env::join_paths(&final_path_parts)
-					.map(|p| p.to_string_lossy().to_string())
-					.unwrap_or_default(),
-			);
-		} else {
-			log::warn!("Hermetic strict mode: PATH is empty after normalization");
-			normalized.insert("PATH".to_string(), String::new());
+		// ALWAYS ensure basic system bin paths so the linker `cc` can be found
+		for basic in &["/usr/bin", "/bin"] {
+			let p = PathBuf::from(basic);
+			if !final_path_parts.contains(&p) {
+				final_path_parts.push(p);
+			}
 		}
+
+		let path_val = std::env::join_paths(final_path_parts).unwrap_or_default();
+		normalized.insert("PATH".to_string(), path_val.to_string_lossy().to_string());
 	} else {
 		// In relaxed/none mode, inherit more from system
 		for (key, value) in std::env::vars() {

@@ -104,6 +104,19 @@ impl GraphApi {
 			component = component.with_exec_cfg(Some(exec_cfg));
 		}
 
+		if let Ok(outputs) = tbl.get::<Vec<String>>("outputs") {
+			component = component.with_outputs(outputs.into_iter().map(PathBuf::from).collect());
+		}
+
+		if let Ok(env_table) = tbl.get::<Table>("env") {
+			let mut env_map = std::collections::HashMap::new();
+			for pair in env_table.pairs::<String, String>() {
+				let (k, v) = pair?;
+				env_map.insert(k, v);
+			}
+			component = component.with_env(env_map);
+		}
+
 		let mut g = self.graph.lock().unwrap();
 		let comp_id = g
 			.add_component(component)
@@ -186,6 +199,19 @@ impl GraphApi {
 			component = component.with_exec_cfg(Some(exec_cfg));
 		}
 
+		if let Ok(outputs) = tbl.get::<Vec<String>>("outputs") {
+			component = component.with_outputs(outputs.into_iter().map(PathBuf::from).collect());
+		}
+
+		if let Ok(env_table) = tbl.get::<Table>("env") {
+			let mut env_map = std::collections::HashMap::new();
+			for pair in env_table.pairs::<String, String>() {
+				let (k, v) = pair?;
+				env_map.insert(k, v);
+			}
+			component = component.with_env(env_map);
+		}
+
 		let mut g = self.graph.lock().unwrap();
 		let comp_id = g
 			.add_component(component)
@@ -211,12 +237,19 @@ impl GraphApi {
 	/// Define a custom component with arbitrary command
 	pub fn custom(&self, tbl: Table) -> Result<Value> {
 		let name: String = tbl.get("name")?;
+		let target: String = tbl.get("target").or_else(|_| {
+			let g = self.graph.lock().unwrap();
+			g.targets()
+				.next()
+				.map(|t| t.name.clone())
+				.ok_or_else(|| mlua::Error::RuntimeError("No targets defined. Call forge.graph.target() first.".into()))
+		})?;
 		let command: String = tbl.get("command")?;
 		let args: Vec<String> = tbl.get("args").unwrap_or_default();
 		let sources: Vec<String> = tbl.get("sources").or_else(|_| tbl.get("srcs")).unwrap_or_default();
 		let outputs: Vec<String> = tbl.get("outputs").unwrap_or_default();
 
-		let mut component = Component::custom(&name, "default", command, args)
+		let mut component = Component::custom(&name, &target, command, args)
 			.with_sources(sources.iter().map(PathBuf::from).collect())
 			.with_outputs(outputs.iter().map(PathBuf::from).collect());
 
@@ -228,6 +261,15 @@ impl GraphApi {
 
 		if let Ok(vis_val) = tbl.get::<Value>("visibility") {
 			component = component.with_visibility(parse_visibility(vis_val)?);
+		}
+
+		if let Ok(env_table) = tbl.get::<Table>("env") {
+			let mut env_map = std::collections::HashMap::new();
+			for pair in env_table.pairs::<String, String>() {
+				let (k, v) = pair?;
+				env_map.insert(k, v);
+			}
+			component = component.with_env(env_map);
 		}
 
 		let mut g = self.graph.lock().unwrap();
@@ -444,6 +486,16 @@ impl GraphApi {
 		let g = self.graph.lock().unwrap();
 		if let Some(comp) = g.get_component_by_name(&name, &target) {
 			comp.include_dirs.iter().map(|p| p.to_string_lossy().to_string()).collect()
+		} else {
+			vec![]
+		}
+	}
+
+	/// Get output files of a component
+	pub fn get_component_outputs(&self, name: String, target: String) -> Vec<String> {
+		let g = self.graph.lock().unwrap();
+		if let Some(comp) = g.get_component_by_name(&name, &target) {
+			comp.outputs.iter().map(|p| p.to_string_lossy().to_string()).collect()
 		} else {
 			vec![]
 		}

@@ -226,12 +226,24 @@ local function define_build_zig_for_target(build_info, target_name, target_confi
 
 	local build_prefix = build_info.prefix or forge.path.join({ build_path, "zig-out" })
 
+	local cache_dir = forge.path.join({ build_path, ".zig-cache" })
+	local global_cache_dir = forge.path.join({ forge.project.root, "forge-out/zig-global-cache" })
+
 	local args = {
 		"build",
 		"-Dtarget=" .. zig_target,
 		"-Doptimize=" .. build_mode,
+		"--cache-dir",
+		cache_dir,
+		"--global-cache-dir",
+		global_cache_dir,
 		"--prefix",
 		build_prefix,
+	}
+
+	local env = {
+		ZIG_GLOBAL_CACHE_DIR = global_cache_dir,
+		ZIG_LOCAL_CACHE_DIR = cache_dir,
 	}
 
 	if build_info.steps then
@@ -283,6 +295,7 @@ local function define_build_zig_for_target(build_info, target_name, target_confi
 		args = args,
 		inputs = inputs,
 		outputs = outputs,
+		env = env,
 		dependencies = normalize_deps(build_info.dependencies),
 		workdir = build_path,
 	})

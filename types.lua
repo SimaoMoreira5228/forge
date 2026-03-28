@@ -377,6 +377,8 @@
 
 ---@class Project
 ---@field root string Absolute path to project root
+---@field get_component_includes fun(name: string, target: string): string[] Get include directories for a component
+---@field transitive_deps fun(name: string, target: string): string[] Get all transitive dependencies
 ---@field resolve fun(path: string): string Convert relative path to absolute (relative to project root)
 
 ---@type Forge
