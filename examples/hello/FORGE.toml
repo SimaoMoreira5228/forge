@@ -1,0 +1,14 @@
+[library.math]
+visibility = "public"
+srcs       = ["${glob('lib/*.c')}"]
+hdrs       = ["${glob('lib/*.h')}"]
+includes   = ["lib"]
+
+[binary.hello]
+deps     = ["math"]
+srcs     = ["src/main.c"]
+compiler = "gcc"
+
+[test.math_test]
+srcs = ["tests/math_test.c"]
+deps  = ["math"]

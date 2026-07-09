@@ -1,0 +1,9 @@
+[project]
+name = "hello"
+
+[discovery]
+include = ["."]
+
+[toolchains.gcc]
+from = "path"
+path = "/usr"

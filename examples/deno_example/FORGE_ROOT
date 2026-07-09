@@ -1,6 +1,0 @@
-[project]
-name = "deno_example"
-
-[toolchain.deno]
-from = "version"
-version = "1.46.3"

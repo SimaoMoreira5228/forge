@@ -1,0 +1,13 @@
+[package]
+name = "forge-diagnostics"
+description = "miette-powered diagnostics: error codes, spans, fuzzy suggestions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+miette.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

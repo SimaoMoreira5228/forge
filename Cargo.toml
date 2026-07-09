@@ -1,52 +1,37 @@
-[package]
-name = "forge"
-version = "0.1.0"
-edition = "2024"
-
 [workspace]
-members = ["forge-macros"]
+resolver = "3"
+members = ["crates/*"]
 
-[dependencies]
-anyhow = "1"
-blake3 = { version = "1.8", features = ["rayon", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "4", features = ["derive"] }
-clap-verbosity-flag = { version = "3.0.4", features = ["serde"] }
-dashmap = { version = "6", features = ["serde", "rayon"] }
-dirs = "6.0"
-env_logger = "0.11"
-flate2 = "1.1"
-forge-macros = { path = "./forge-macros" }
-futures-util = "0.3"
-glob = "0.3"
-globset = "0.4"
-ignore = "0.4"
-indicatif = "0.18"
-lazy_static = "1.4"
-log = { version = "0.4", features = ["serde"] }
-lz4 = "1.24"
-mlua = { version = "0.11", features = ["lua54", "serde", "anyhow", "userdata-wrappers", "vendored", "send"] }
-notify = "6.1.1"
-num_cpus = "1.16"
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.lints.clippy]
+result_large_err = "allow"
+
+[workspace.dependencies]
+forge-core = { path = "crates/forge-core" }
+forge-diagnostics = { path = "crates/forge-diagnostics" }
+forge-engine = { path = "crates/forge-engine" }
+forge-script = { path = "crates/forge-script" }
+
+blake3 = "1"
+parking_lot = "0.12"
 petgraph = "0.8"
-proc-macro2 = "1.0"
-quote = "1.0"
-rayon = "1.11"
-reqwest = { version = "0.13", features = ["stream", "multipart", "blocking"] }
-rusqlite = { version = "0.39", features = ["bundled"] }
-semver = { version = "1.0", features = ["serde"] }
+miette = { version = "7", features = ["fancy"] }
+thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
-sonic-rs = "0.5"
-syn = { version = "2.0", features = ["full"] }
-tar = "0.4"
-tempfile = "3"
-thiserror = "2"
-tokio = { version = "1", features = ["full"] }
-toml = "0.9"
-ureq = { version = "3", features = ["json"] }
-uuid = { version = "1", features = ["v4"] }
-walkdir = "2.5"
-xz2 = "0.1"
-zip = "8"
+toml = "1.1"
+toml_edit = "0.25"
+rhai = "1"
+clap = { version = "4", features = ["derive"] }
+rayon = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+ureq = "3"
+walkdir = "2"
+
+[profile.release]
+lto = true
+strip = true

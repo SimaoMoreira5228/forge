@@ -1,7 +1,0 @@
-{
-  "name": "bun-example",
-  "version": "1.0.0",
-  "scripts": {
-    "build": "mkdir -p dist && echo 'Hello from Forge Bun' > dist/bundle.js"
-  }
-}

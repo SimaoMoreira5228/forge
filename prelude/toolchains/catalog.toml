@@ -1,6 +1,9 @@
+# Forge toolchain catalog — single source of truth for download URLs.
+# Workspaces pin versions in FORGE_ROOT; {version} expands at sync time.
+
 [toolchains.clang]
 aliases = ["llvm"]
-default_version = "19.1.7"
+default_version = "23.1.0"
 
 [toolchains.clang.targets.linux-x86_64]
 url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-Linux-X64.tar.xz"
@@ -9,22 +12,18 @@ url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/
 url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-Linux-ARM64.tar.xz"
 
 [toolchains.clang.targets.darwin-x86_64]
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-macOS.tar.xz"
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-macOS-X64.tar.xz"
 
 [toolchains.clang.targets.darwin-aarch64]
 url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-macOS-ARM64.tar.xz"
 
-[toolchains.clang.targets.windows-x86_64]
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-win64.exe.tar.xz"
-
 [toolchains.gcc]
 default_version = "14"
+
 [toolchains.gcc.version_aliases]
-"10" = "2021.11"
-"11" = "2022.08"
-"12" = "2024.02"
-"13" = "2024.05"
 "14" = "2025.08"
+"13" = "2024.05"
+"12" = "2024.02"
 
 [toolchains.gcc.targets.linux-x86_64]
 url = "https://toolchains.bootlin.com/downloads/releases/toolchains/x86-64/tarballs/x86-64--glibc--stable-{version}-1.tar.xz"
@@ -32,120 +31,39 @@ url = "https://toolchains.bootlin.com/downloads/releases/toolchains/x86-64/tarba
 [toolchains.gcc.targets.linux-aarch64]
 url = "https://toolchains.bootlin.com/downloads/releases/toolchains/aarch64/tarballs/aarch64--glibc--stable-{version}-1.tar.xz"
 
-[toolchains.gcc.targets.linux-armv7]
-url = "https://toolchains.bootlin.com/downloads/releases/toolchains/armv7-eabihf/tarballs/armv7-eabihf--glibc--stable-{version}-1.tar.xz"
-
-[toolchains.gcc.targets.linux-x86_64_v3]
-url = "https://toolchains.bootlin.com/downloads/releases/toolchains/x86-64-v3/tarballs/x86-64-v3--glibc--stable-{version}-1.tar.xz"
-
-[toolchains.gcc.targets.linux-x86_64_v4]
-url = "https://toolchains.bootlin.com/downloads/releases/toolchains/x86-64-v4/tarballs/x86-64-v4--glibc--stable-{version}-1.tar.xz"
-
-[toolchains.rust]
-default_version = "1.93.1"
-
-[toolchains.rust.targets.linux-x86_64]
-url = "https://static.rust-lang.org/dist/rust-{version}-x86_64-unknown-linux-gnu.tar.gz"
-
-[toolchains.rust.targets.darwin-x86_64]
-url = "https://static.rust-lang.org/dist/rust-{version}-x86_64-apple-darwin.tar.gz"
-
-[toolchains.rust.targets.darwin-aarch64]
-url = "https://static.rust-lang.org/dist/rust-{version}-aarch64-apple-darwin.tar.gz"
-
-[toolchains.rust.targets.windows-x86_64]
-url = "https://static.rust-lang.org/dist/rust-{version}-x86_64-pc-windows-msvc.tar.gz"
-
 [toolchains.zig]
-default_version = "0.13.0"
+default_version = "0.16.0"
 
 [toolchains.zig.targets.linux-x86_64]
-url = "https://ziglang.org/download/{version}/zig-linux-x86_64-{version}.tar.xz"
+url = "https://ziglang.org/download/{version}/zig-x86_64-linux-{version}.tar.xz"
 
 [toolchains.zig.targets.linux-aarch64]
-url = "https://ziglang.org/download/{version}/zig-linux-aarch64-{version}.tar.xz"
+url = "https://ziglang.org/download/{version}/zig-aarch64-linux-{version}.tar.xz"
 
-[toolchains.zig.targets.darwin-x86_64]
-url = "https://ziglang.org/download/{version}/zig-macos-x86_64-{version}.tar.xz"
+[toolchains.zig.targets.macos-x86_64]
+url = "https://ziglang.org/download/{version}/zig-x86_64-macos-{version}.tar.xz"
 
-[toolchains.zig.targets.darwin-aarch64]
-url = "https://ziglang.org/download/{version}/zig-macos-aarch64-{version}.tar.xz"
-
-[toolchains.zig.targets.windows-x86_64]
-url = "https://ziglang.org/download/{version}/zig-windows-x86_64-{version}.zip"
+[toolchains.zig.targets.macos-aarch64]
+url = "https://ziglang.org/download/{version}/zig-aarch64-macos-{version}.tar.xz"
 
 [toolchains.cmake]
-default_version = "3.31.6"
+default_version = "4.4.3"
 
 [toolchains.cmake.targets.linux-x86_64]
 url = "https://github.com/Kitware/CMake/releases/download/v{version}/cmake-{version}-linux-x86_64.tar.gz"
 
-[toolchains.cmake.targets.linux-aarch64]
-url = "https://github.com/Kitware/CMake/releases/download/v{version}/cmake-{version}-linux-aarch64.tar.gz"
-
-[toolchains.cmake.targets.darwin-x86_64]
-url = "https://github.com/Kitware/CMake/releases/download/v{version}/cmake-{version}-macos-universal.tar.gz"
-
-[toolchains.cmake.targets.darwin-aarch64]
-url = "https://github.com/Kitware/CMake/releases/download/v{version}/cmake-{version}-macos-universal.tar.gz"
-
-[toolchains.cmake.targets.windows-x86_64]
-url = "https://github.com/Kitware/CMake/releases/download/v{version}/cmake-{version}-windows-x86_64.zip"
-
 [toolchains.make]
-aliases = ["gmake", "gnu-make"]
+aliases = ["gmake"]
 default_version = "4.4.1"
 
 [toolchains.make.targets.linux-x86_64]
 url = "https://ftp.gnu.org/gnu/make/make-{version}.tar.gz"
 
-[toolchains.make.targets.linux-aarch64]
-url = "https://ftp.gnu.org/gnu/make/make-{version}.tar.gz"
-
-[toolchains.make.targets.darwin-x86_64]
-url = "https://ftp.gnu.org/gnu/make/make-{version}.tar.gz"
-
-[toolchains.make.targets.darwin-aarch64]
-url = "https://ftp.gnu.org/gnu/make/make-{version}.tar.gz"
-
-[toolchains.make.targets.windows-x86_64]
-url = "https://ftp.gnu.org/gnu/make/make-{version}.tar.gz"
-
-[toolchains.gdc]
-default_version = "6.3.0"
-
-[toolchains.gdc.targets.linux-x86_64]
-url = "https://gdcproject.org/archive/binaries/6.3.0/x86_64-linux-gnu/gdc-6.3.0+2.068.2.tar.xz"
-
-[toolchains.gdc.targets.linux-i686]
-url = "https://gdcproject.org/archive/binaries/6.3.0/i686-linux-gnu/gdc-6.3.0+2.068.2.tar.xz"
-
-[toolchains.gdc.targets.linux-arm]
-url = "https://gdcproject.org/archive/binaries/6.3.0/arm-linux-gnueabi/gdc-6.3.0+2.068.2.tar.xz"
-
-[toolchains.gdc.targets.linux-armv7]
-url = "https://gdcproject.org/archive/binaries/6.3.0/arm-linux-gnueabihf/gdc-6.3.0+2.068.2.tar.xz"
-
-[toolchains.gdc.targets.windows-x86_64]
-url = "https://gdcproject.org/archive/binaries/6.3.0/x86_64-w64-mingw32/gdc-6.3.0+2.068.2-x86_64-linux-gnu.7z"
-
-[toolchains.gdc.targets.windows-i686]
-url = "https://gdcproject.org/archive/binaries/6.3.0/i686-w64-mingw32/gdc-6.3.0+2.068.2-x86_64-linux-gnu.7z"
-
 [toolchains.dmd]
-default_version = "2.112.0"
+default_version = "2.113.0"
 
 [toolchains.dmd.targets.linux-x86_64]
 url = "https://downloads.dlang.org/releases/2026/dmd.{version}.linux.tar.xz"
-
-[toolchains.dmd.targets.windows-x86_64]
-url = "https://downloads.dlang.org/releases/2026/dmd.{version}.windows.zip"
-
-[toolchains.dmd.targets.darwin-x86_64]
-url = "https://downloads.dlang.org/releases/2026/dmd.{version}.osx.tar.xz"
-
-[toolchains.dmd.targets.darwin-aarch64]
-url = "https://downloads.dlang.org/releases/2026/dmd.{version}.osx.tar.xz"
 
 [toolchains.ldc]
 default_version = "1.42.0"
@@ -156,82 +74,17 @@ url = "https://github.com/ldc-developers/ldc/releases/download/v{version}/ldc2-{
 [toolchains.ldc.targets.linux-aarch64]
 url = "https://github.com/ldc-developers/ldc/releases/download/v{version}/ldc2-{version}-linux-aarch64.tar.xz"
 
-[toolchains.ldc.targets.darwin-x86_64]
-url = "https://github.com/ldc-developers/ldc/releases/download/v{version}/ldc2-{version}-osx-x86_64.tar.xz"
+[toolchains.rust]
+default_version = "1.98.0"
 
-[toolchains.ldc.targets.darwin-aarch64]
-url = "https://github.com/ldc-developers/ldc/releases/download/v{version}/ldc2-{version}-osx-arm64.tar.xz"
+[toolchains.rust.targets.linux-x86_64]
+url = "https://static.rust-lang.org/dist/rust-{version}-x86_64-unknown-linux-gnu.tar.gz"
 
-[toolchains.ldc.targets.windows-x86_64]
-url = "https://github.com/ldc-developers/ldc/releases/download/v{version}/ldc2-{version}-windows-x64.7z"
+[toolchains.rust.targets.linux-aarch64]
+url = "https://static.rust-lang.org/dist/rust-{version}-aarch64-unknown-linux-gnu.tar.gz"
 
-[toolchains.msvc]
-aliases = ["cl", "visual-studio"]
-default_version = "14.3"
-binary_names = ["cl.exe", "link.exe", "lib.exe", "vswhere.exe"]
-is_system = true
+[toolchains.rust.targets.darwin-x86_64]
+url = "https://static.rust-lang.org/dist/rust-{version}-x86_64-apple-darwin.tar.gz"
 
-[toolchains.node]
-default_version = "22.14.0"
-
-[toolchains.node.targets.linux-x86_64]
-url = "https://nodejs.org/dist/v{version}/node-v{version}-linux-x64.tar.gz"
-sha256 = "9d942932535988091034dc94cc5f42b6dc8784d6366df3a36c4c9ccb3996f0c2"
-
-[toolchains.node.targets.linux-aarch64]
-url = "https://nodejs.org/dist/v{version}/node-v{version}-linux-arm64.tar.gz"
-sha256 = "8cf30ff7250f9463b53c18f89c6c606dfda70378215b2c905d0a9a8b08bd45e0"
-
-[toolchains.node.targets.darwin-x86_64]
-url = "https://nodejs.org/dist/v{version}/node-v{version}-darwin-x64.tar.gz"
-sha256 = "6698587713ab565a94a360e091df9f6d91c8fadda6d00f0cf6526e9b40bed250"
-
-[toolchains.node.targets.darwin-aarch64]
-url = "https://nodejs.org/dist/v{version}/node-v{version}-darwin-arm64.tar.gz"
-sha256 = "e9404633bc02a5162c5c573b1e2490f5fb44648345d64a958b17e325729a5e42"
-
-[toolchains.node.targets.windows-x86_64]
-url = "https://nodejs.org/dist/v{version}/node-v{version}-win-x64.zip"
-sha256 = "55b639295920b219bb2acbcfa00f90393a2789095b7323f79475c9f34795f217"
-
-[toolchains.bun]
-default_version = "1.1.27"
-
-[toolchains.bun.targets.linux-x86_64]
-url = "https://github.com/oven-sh/bun/releases/download/bun-v{version}/bun-linux-x64.zip"
-sha256 = "22bd04407f9b9c73f03936a4acefd943aa7278e5af86ee5b2b98fe60b37c3327"
-
-[toolchains.bun.targets.linux-aarch64]
-url = "https://github.com/oven-sh/bun/releases/download/bun-v{version}/bun-linux-aarch64.zip"
-sha256 = "2ef223096c7b7ddd0438b118f6acb6e924b9ff9ced02f10f29dbfc9941be4c20"
-
-[toolchains.bun.targets.darwin-x86_64]
-url = "https://github.com/oven-sh/bun/releases/download/bun-v{version}/bun-darwin-x64.zip"
-sha256 = "2ce2750c1006cb72351aae38bee3a859529a83d19c1105e1238652631d1b741e"
-
-[toolchains.bun.targets.darwin-aarch64]
-url = "https://github.com/oven-sh/bun/releases/download/bun-v{version}/bun-darwin-aarch64.zip"
-sha256 = "23f6b160e5d72d4e55fbcda37cdc2c9a18f018e3242be7b94b1ee92aa425bc11"
-
-[toolchains.bun.targets.windows-x86_64]
-url = "https://github.com/oven-sh/bun/releases/download/bun-v{version}/bun-windows-x64.zip"
-sha256 = "606e586b67ebe54eed754bc5253fb59ef3fc90a2fb00e1174a9d49ca5c9c68be"
-
-[toolchains.deno]
-default_version = "1.46.3"
-
-[toolchains.deno.targets.linux-x86_64]
-url = "https://github.com/denoland/deno/releases/download/v{version}/deno-x86_64-unknown-linux-gnu.zip"
-sha256 = "39bb1d21ad19c16fcb14f9d58fb542c2bccf0cd92c19aee8127ac5112b48bf83"
-
-[toolchains.deno.targets.linux-aarch64]
-url = "https://github.com/denoland/deno/releases/download/v{version}/deno-aarch64-unknown-linux-gnu.zip"
-sha256 = "acf7e0110e186fc515a1b7367d9c56a9f0205ad448c1c08ab769b8e3ce6f700f"
-
-[toolchains.deno.targets.darwin-aarch64]
-url = "https://github.com/denoland/deno/releases/download/v{version}/deno-aarch64-apple-darwin.zip"
-sha256 = "e74f8ddd6d8205654905a4e42b5a605ab110722a7898aef68bc35d6e704c2946"
-
-[toolchains.deno.targets.windows-x86_64]
-url = "https://github.com/denoland/deno/releases/download/v{version}/deno-x86_64-pc-windows-msvc.zip"
-sha256 = "d9428daa1b3763bdf562054d0fc40832658515b7071c7f7e98d61961adc2d61a"
+[toolchains.rust.targets.darwin-aarch64]
+url = "https://static.rust-lang.org/dist/rust-{version}-aarch64-apple-darwin.tar.gz"

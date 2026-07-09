@@ -1,0 +1,9 @@
+[project]
+name = "hello-rhai"
+
+[discovery]
+include = ["."]
+
+[toolchains.gcc]
+from = "path"
+path = "/usr"

@@ -1,9 +1,0 @@
-local js = require("@prelude/js/js.lua")
-
-js.project({
-    name = "my_js_app",
-    src_dir = ".",
-    srcs = forge.source.glob("src/**/*.js"),
-    build_script = "build",
-    outputs = { "dist" },
-})

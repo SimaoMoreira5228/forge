@@ -1,0 +1,23 @@
+[package]
+name = "forge"
+description = "A hermetic, content-addressed build system"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "forge"
+path = "src/main.rs"
+
+[dependencies]
+forge-core.workspace = true
+forge-diagnostics.workspace = true
+forge-engine.workspace = true
+forge-script.workspace = true
+
+clap.workspace = true
+miette.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
