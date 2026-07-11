@@ -1,7 +1,7 @@
 use forge_diagnostics::{ForgeDiagnostic, codes};
 use toml_edit::{Item, Value};
 
-use crate::document::{FieldsBuilder, TargetDecl, TargetKind};
+use crate::document::{FieldsBuilder, PlatformOverride, TargetDecl, TargetKind};
 
 pub fn parse_forge_toml(text: &str) -> Result<Vec<TargetDecl>, ForgeDiagnostic> {
 	let doc = text.parse::<toml_edit::DocumentMut>().map_err(|e| syntax_error(&e, text))?;
@@ -20,10 +20,53 @@ pub fn parse_forge_toml(text: &str) -> Result<Vec<TargetDecl>, ForgeDiagnostic> 
 		for (target_name, target_item) in targets.iter() {
 			let mut builder = FieldsBuilder::new(kind, target_name)?;
 			fill_fields(&mut builder, kind, target_item, text)?;
-			decls.push(builder.finish().map_err(|d| d.with_source("FORGE.toml", text))?);
+			let mut decl = builder.finish().map_err(|d| d.with_source("FORGE.toml", text))?;
+			collect_overlays(&mut decl, kind, target_item, text)?;
+			decls.push(decl);
 		}
 	}
 	Ok(decls)
+}
+
+fn collect_overlays(decl: &mut TargetDecl, kind: TargetKind, item: &Item, file_text: &str) -> Result<(), ForgeDiagnostic> {
+	let Some(table) = item.as_table_like() else {
+		return Ok(());
+	};
+	for (key_name, value) in table.iter() {
+		if key_name != "target" {
+			continue;
+		}
+		let Some(matchers) = value.as_table_like() else {
+			return Err(ForgeDiagnostic::error(
+				codes::script::WRONG_TYPE,
+				format!("`[{}.target]` must be a table of matchers", decl.name),
+			)
+			.with_help(format!("example: [{}.target.\"os=linux arch=x86_64\"]", decl.name)));
+		};
+		if matchers.is_empty() {
+			return Err(ForgeDiagnostic::error(
+				codes::script::WRONG_TYPE,
+				format!("`[{}.target]` declares no platform matchers", decl.name),
+			));
+		}
+		for (matcher_key, matcher_item) in matchers.iter() {
+			let mut overlay_builder = FieldsBuilder::new(kind, decl.name.clone())?;
+			fill_fields(&mut overlay_builder, kind, matcher_item, file_text)?;
+			let overlay = overlay_builder.finish().map_err(|d| d.with_source("FORGE.toml", file_text))?;
+			let is_predicates = matcher_key.contains('=');
+			decl.overrides.push(PlatformOverride {
+				key: matcher_key.to_string(),
+				platform_name: (!is_predicates).then(|| matcher_key.to_string()),
+				predicates: if is_predicates {
+					matcher_key.split_whitespace().map(str::to_string).collect()
+				} else {
+					Vec::new()
+				},
+				overlay,
+			});
+		}
+	}
+	Ok(())
 }
 
 fn kind_from_name(name: &str) -> Option<TargetKind> {
@@ -41,6 +84,9 @@ fn fill_fields(builder: &mut FieldsBuilder, kind: TargetKind, item: &Item, file_
 		return Ok(());
 	};
 	for (key_name, value) in table.iter() {
+		if key_name == "target" {
+			continue;
+		}
 		apply_field(builder, kind, key_name, value, file_text).map_err(|d| enrich(d, file_text))?;
 	}
 	Ok(())
@@ -62,7 +108,7 @@ fn apply_field(
 			return builder.visibility_patterns(patterns);
 		}
 		if !LIST_KEYS.contains(&key) {
-			return Err(ForgeDiagnostic::error(103, format!("field `{key}` does not accept an array")));
+			return builder.string_list(key, Vec::new());
 		}
 		let mut values = Vec::new();
 		for element in array.iter() {
@@ -157,6 +203,7 @@ const LIST_KEYS: &[&str] = &[
 	"flags",
 	"compatible_with",
 	"system_libs",
+	"link_flags",
 	"data",
 ];
 

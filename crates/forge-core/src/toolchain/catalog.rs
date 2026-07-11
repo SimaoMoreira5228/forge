@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use forge_diagnostics::ForgeDiagnostic;
+use forge_diagnostics::{ForgeDiagnostic, codes};
 use serde::Deserialize;
 
 #[derive(Debug, Default, Clone)]
@@ -13,18 +13,44 @@ pub struct ToolchainEntry {
 	pub default_version: String,
 	pub aliases: Vec<String>,
 	pub version_aliases: BTreeMap<String, String>,
-	pub targets: BTreeMap<String, String>,
+	pub targets: BTreeMap<String, TargetUrl>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TargetUrl {
+	pub url: String,
+	pub sha256: Option<String>,
 }
 
 impl ToolchainEntry {
-	pub fn url_for(&self, version: &str, platform_key: &str) -> Result<String, ForgeDiagnostic> {
-		let template = self.targets.get(platform_key).ok_or_else(|| {
+	pub fn url_for(&self, version: &str, platform_key: &str) -> Result<TargetUrl, ForgeDiagnostic> {
+		let target = self.targets.get(platform_key).ok_or_else(|| {
 			ForgeDiagnostic::error(
-				7,
-				format!("toolchain `{self:?}` has no download for platform `{platform_key}`"),
+				codes::hermetic::TOOLCHAIN_MISMATCH,
+				format!("toolchain has no download for platform `{platform_key}`"),
 			)
 		})?;
-		Ok(template.replace("{version}", version))
+		Ok(TargetUrl {
+			url: target.url.replace("{version}", version),
+			sha256: target.sha256.clone(),
+		})
+	}
+
+	pub fn merge_over(&mut self, override_entry: &ToolchainEntry) {
+		if !override_entry.default_version.is_empty() {
+			self.default_version = override_entry.default_version.clone();
+		}
+		for alias in &override_entry.aliases {
+			if !self.aliases.contains(alias) {
+				self.aliases.push(alias.clone());
+			}
+		}
+		for (version, canonical) in &override_entry.version_aliases {
+			self.version_aliases.insert(version.clone(), canonical.clone());
+		}
+		for (platform, url) in &override_entry.targets {
+			self.targets.insert(platform.clone(), url.clone());
+		}
 	}
 }
 
@@ -50,6 +76,8 @@ impl Catalog {
 		#[derive(Deserialize)]
 		struct RawTarget {
 			url: String,
+			#[serde(default)]
+			sha256: Option<String>,
 		}
 
 		let raw: RawCatalog =
@@ -65,7 +93,19 @@ impl Catalog {
 						default_version: e.default_version.unwrap_or_default(),
 						aliases: e.aliases,
 						version_aliases: e.version_aliases,
-						targets: e.targets.into_iter().map(|(k, t)| (k, t.url)).collect(),
+						targets: e
+							.targets
+							.into_iter()
+							.map(|(k, t)| {
+								(
+									k,
+									TargetUrl {
+										url: t.url,
+										sha256: t.sha256,
+									},
+								)
+							})
+							.collect(),
 					},
 				)
 			})
@@ -106,6 +146,21 @@ impl Catalog {
 			version,
 			entry: entry.clone(),
 		})
+	}
+
+	pub fn merge_over(&mut self, overrides: &Catalog) {
+		for (name, entry) in &overrides.entries {
+			match self.entries.get_mut(name) {
+				Some(existing) => existing.merge_over(entry),
+				None => {
+					self.entries.insert(name.clone(), entry.clone());
+				}
+			}
+		}
+	}
+
+	pub fn entry_names(&self) -> impl Iterator<Item = &String> {
+		self.entries.keys()
 	}
 
 	pub fn get(&self, name: &str) -> Option<&ToolchainEntry> {
@@ -152,7 +207,7 @@ url = "https://example.com/gcc-{version}.tar.xz"
 		let r = cat.resolve("clang", None).unwrap();
 		assert_eq!(r.version, "19.1.7");
 		assert_eq!(
-			r.entry.url_for("19.1.7", "linux-x86_64").unwrap(),
+			r.entry.url_for("19.1.7", "linux-x86_64").unwrap().url,
 			"https://example.com/llvm-19.1.7-linux.tar.xz"
 		);
 	}
@@ -184,6 +239,53 @@ url = "https://example.com/gcc-{version}.tar.xz"
 	fn unknown_toolchain_errors() {
 		let cat = Catalog::parse(CATALOG).unwrap();
 		assert!(cat.resolve("dmd", None).is_err());
+	}
+
+	#[test]
+	fn workspace_catalogs_deep_merge_over_bundled() {
+		let mut base = Catalog::parse(CATALOG).unwrap();
+		let override_toml = r#"
+[toolchains.clang.targets.linux-aarch64]
+url = "https://mirror.corp/llvm-{version}-arm64.tar.xz"
+
+[toolchains.mold]
+default_version = "2.39.0"
+
+[toolchains.mold.targets.linux-x86_64]
+url = "https://github.com/rui314/mold/releases/download/v{version}/mold-{version}-x86_64-linux.tar.gz"
+
+[toolchains.gcc.version_aliases]
+"15" = "2026.02"
+"#;
+		let overrides = Catalog::parse(override_toml).unwrap();
+		base.merge_over(&overrides);
+
+		let clang = base.get("clang").unwrap();
+		assert!(clang.targets.contains_key("linux-x86_64"), "bundled target must survive");
+		assert_eq!(
+			clang.targets["linux-aarch64"].url,
+			"https://mirror.corp/llvm-{version}-arm64.tar.xz"
+		);
+
+		let gcc = base.resolve("gcc", Some("15")).unwrap();
+		assert_eq!(gcc.version, "2026.02");
+		assert!(base.resolve("gcc", None).is_ok(), "existing aliases survive");
+
+		let mold = base.resolve("mold", None).unwrap();
+		assert_eq!(mold.version, "2.39.0");
+	}
+
+	#[test]
+	fn sha256_is_optional_per_target() {
+		let cat = Catalog::parse(
+			r#"
+[toolchains.t.targets.linux-x86_64]
+url = "https://x/y.tar.gz"
+sha256 = "aa"
+"#,
+		)
+		.unwrap();
+		assert_eq!(cat.get("t").unwrap().targets["linux-x86_64"].sha256.as_deref(), Some("aa"));
 	}
 }
 

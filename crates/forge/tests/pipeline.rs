@@ -135,3 +135,75 @@ fn read_action_count(dir: &Path) -> usize {
 		.map(|entries| entries.flatten().count())
 		.unwrap_or(0)
 }
+
+#[test]
+fn early_cutoff_prunes_downstream_when_outputs_are_unchanged() {
+	if !have_compiler() {
+		eprintln!("skipping: no system compiler");
+		return;
+	}
+	let dir = std::env::temp_dir().join(format!("forge-ieco-{}", std::process::id()));
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(&dir).unwrap();
+	write_workspace(&dir);
+	std::fs::write(
+        dir.join("FORGE_ROOT"),
+        "[project]\nname = \"eco\"\n\n[discovery]\ninclude = [\".\"]\n\n[toolchains.gcc]\nfrom = \"path\"\npath = \"/usr\"\n\n[profile.release]\nopt_level = 3\n",
+    )
+    .unwrap();
+
+	let (ok, log) = run_forge(&dir, &["build", "--profile", "release"]);
+	assert!(ok, "first build failed: {log}");
+
+	let mut math = std::fs::read_to_string(dir.join("lib/math.c")).unwrap();
+	math.push_str("// non-semantic edit\n");
+	std::fs::write(dir.join("lib/math.c"), math).unwrap();
+
+	let (_, log2) = run_forge(&dir, &["build", "--profile", "release"]);
+	assert!(
+		log2.contains("1 executed") && log2.contains("3 cache hits"),
+		"expected only the changed compile to run, got: {log2}"
+	);
+
+	let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn platform_overlays_activate_for_the_host() {
+	if !have_compiler() {
+		eprintln!("skipping: no system compiler");
+		return;
+	}
+	let host_os = std::env::consts::OS;
+	let dir = std::env::temp_dir().join(format!("forge-iover-{}", std::process::id()));
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(&dir).unwrap();
+	write_workspace(&dir);
+
+	std::fs::write(
+        dir.join("src/main.c"),
+        "#include <stdio.h>\n#ifndef HOST_PLATFORM_MARKER\n#error \"overlay did not activate\"\n#endif\nint main(void) { printf(\"ok\\n\"); return 0; }\n",
+    )
+    .unwrap();
+	std::fs::write(
+		dir.join("FORGE.toml"),
+		format!(
+			"[binary.app]\nsrcs = [\"src/main.c\"]\n\n[binary.app.target.\"os={host_os}\"]\ndefines = [\"HOST_PLATFORM_MARKER\"]\n"
+		),
+	)
+	.unwrap();
+
+	let (ok, log) = run_forge(&dir, &["build"]);
+	assert!(ok, "matching overlay must activate: {log}");
+
+	std::fs::write(
+		dir.join("FORGE.toml"),
+		"[binary.app]\nsrcs = [\"src/main.c\"]\n\n[binary.app.target.\"os=plan9\"]\ndefines = [\"HOST_PLATFORM_MARKER\"]\n",
+	)
+	.unwrap();
+	let (ok2, log2) = run_forge(&dir, &["build"]);
+	assert!(!ok2, "non-matching overlay must not activate: {log2}");
+	assert!(log2.contains("overlay did not activate"));
+
+	let _ = std::fs::remove_dir_all(&dir);
+}

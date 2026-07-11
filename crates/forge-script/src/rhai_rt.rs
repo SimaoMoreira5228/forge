@@ -8,18 +8,33 @@ use rhai::{Dynamic, EvalAltResult, Map};
 use crate::document::{FieldsBuilder, TargetDecl, TargetKind};
 use crate::glob;
 
-pub fn run_forge_rhai(script: &str, package_dir: &Path) -> Result<Vec<TargetDecl>, ForgeDiagnostic> {
+pub fn run_forge_rhai(
+	script: &str,
+	package_dir: &Path,
+	platform: &forge_core::Platform,
+) -> Result<Vec<TargetDecl>, ForgeDiagnostic> {
 	let decls: Rc<RefCell<Vec<TargetDecl>>> = Rc::new(RefCell::new(Vec::new()));
 	let mut engine = rhai::Engine::new();
+	engine.set_max_expr_depths(128, 128);
 
 	register_collectors(&mut engine, &decls);
 	register_glob(&mut engine, package_dir);
+	register_platform(&mut engine, platform);
 
 	engine
 		.eval::<()>(script)
 		.map_err(|e| ForgeDiagnostic::error(101, format!("rhai error: {e}")).with_source("FORGE.rhai", script))?;
 
 	Ok(decls.borrow().clone())
+}
+
+fn register_platform(engine: &mut rhai::Engine, platform: &forge_core::Platform) {
+	let os = platform.os.clone();
+	engine.register_fn("platform_os", move || -> String { os.clone() });
+	let arch = platform.arch.clone();
+	engine.register_fn("platform_arch", move || -> String { arch.clone() });
+	let abi = platform.abi.clone().unwrap_or_default();
+	engine.register_fn("platform_abi", move || -> String { abi.clone() });
 }
 
 fn register_glob(engine: &mut rhai::Engine, package_dir: &Path) {

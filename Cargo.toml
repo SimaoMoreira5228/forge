@@ -31,6 +31,10 @@ rayon = "1"
 rusqlite = { version = "0.40", features = ["bundled"] }
 ureq = "3"
 walkdir = "2"
+tar = "0.4"
+flate2 = "1"
+xz2 = { version = "0.1", features = ["static"] }
+sha2 = "0.11"
 
 [profile.release]
 lto = true

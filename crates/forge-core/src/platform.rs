@@ -24,6 +24,13 @@ impl Platform {
 		format!("{}-{}", self.os, self.arch)
 	}
 
+	pub fn covers(&self, active: &Platform) -> bool {
+		self.os == active.os
+			&& self.arch == active.arch
+			&& self.abi.as_deref().is_none_or(|abi| Some(abi) == active.abi.as_deref())
+			&& self.cpu.as_deref().is_none_or(|cpu| Some(cpu) == active.cpu.as_deref())
+	}
+
 	pub fn matches(&self, predicate: &str) -> bool {
 		let Some((field, value)) = predicate.split_once('=') else {
 			return false;

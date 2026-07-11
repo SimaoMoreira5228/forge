@@ -40,7 +40,8 @@ impl Engine {
 	fn prepare(&self) -> Result<Prepared, ForgeDiagnostic> {
 		let config = forge_script::WorkspaceConfig::load(&self.workspace)?;
 		let packages = discover_packages(&self.workspace, &config.discovery)?;
-		let (graph, decls) = load_workspace(&self.workspace, &packages)?;
+		let platform = Platform::host();
+		let (graph, decls) = load_workspace(&self.workspace, &packages, &platform, &config.platforms)?;
 		graph
 			.check_visibility()
 			.map_err(|errs| errs.into_iter().next().expect("non-empty"))?;
@@ -59,7 +60,8 @@ impl Engine {
 		let prepared = self.prepare()?;
 		let profile = prepared.config.resolve_profile(profile_name)?;
 		let platform = Platform::host();
-		let toolchains = ToolchainStore::new(&self.workspace, prepared.config.clone()).resolve_all()?;
+		let toolchains = ToolchainStore::load(&self.workspace, prepared.config.clone())?.resolve_all()?;
+		let cells = crate::std_cells::StdCells::load(&self.workspace, &prepared.config.std_patches)?;
 
 		let ctx = PlanContext {
 			graph: &prepared.graph,
@@ -67,6 +69,7 @@ impl Engine {
 			profile: &profile,
 			platform: &platform,
 			toolchains: &toolchains,
+			cells: &cells,
 		};
 		let dag = build_action_dag(&ctx)?;
 
@@ -170,15 +173,17 @@ impl ExecContext<'_> {
 		}
 
 		let sandbox = self.runner.prepare(&key, spec)?;
-		let report = self.runner.execute(
-			spec,
-			&sandbox,
-			spec.toolchain_id
-				.as_ref()
-				.and_then(|id| id.split('@').next())
-				.and_then(|name| self.toolchains.get(name))
-				.map(|t| t.bin_dir.as_path()),
-		);
+		let mut bins: Vec<&Path> = self.toolchains.values().map(|t| t.bin_dir.as_path()).collect();
+		let primary = spec
+			.toolchain_id
+			.as_ref()
+			.and_then(|id| id.split('@').next())
+			.and_then(|name| self.toolchains.get(name))
+			.map(|t| t.bin_dir.clone());
+		if let Some(primary) = &primary {
+			bins.sort_by_key(|p| *p != primary.as_path());
+		}
+		let report = self.runner.execute(spec, &sandbox, &bins);
 
 		if !report.success {
 			if is_test_run {

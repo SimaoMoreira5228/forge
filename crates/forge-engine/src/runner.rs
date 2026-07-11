@@ -51,7 +51,7 @@ impl SandboxRunner {
 		Ok(dir)
 	}
 
-	pub fn execute(&self, spec: &ActionSpec, sandbox: &Path, toolchain_bin: Option<&Path>) -> ExecReport {
+	pub fn execute(&self, spec: &ActionSpec, sandbox: &Path, toolchain_bins: &[&Path]) -> ExecReport {
 		let mut command = Command::new(&spec.command);
 		command
 			.args(&spec.args)
@@ -63,10 +63,15 @@ impl SandboxRunner {
 		for (k, v) in RUNNER_LANG_ENV {
 			command.env(k, v);
 		}
-		if let Some(bin) = toolchain_bin {
-			command.env("PATH", bin);
+		if !toolchain_bins.is_empty() {
+			let joined = toolchain_bins
+				.iter()
+				.map(|p| p.to_string_lossy().into_owned())
+				.collect::<Vec<_>>()
+				.join(":");
+			command.env("PATH", joined);
 		} else {
-			command.env("PATH", "/usr/bin:/bin");
+			command.env("PATH", fallback_path());
 		}
 		for (k, v) in &spec.env {
 			command.env(k, v);
@@ -183,4 +188,12 @@ fn io_err(stage: &str, path: &Path, e: std::io::Error) -> ForgeDiagnostic {
 		codes::hermetic::HERMETIC_VIOLATION,
 		format!("{stage} `{}`: {e}", path.display()),
 	)
+}
+
+fn fallback_path() -> String {
+	match std::env::consts::OS {
+		"macos" => "/usr/bin:/bin:/usr/sbin:/sbin".to_string(),
+		"windows" => std::env::var("PATH").unwrap_or_default(),
+		_ => "/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
+	}
 }

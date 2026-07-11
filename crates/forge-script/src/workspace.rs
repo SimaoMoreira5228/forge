@@ -12,6 +12,8 @@ pub struct WorkspaceConfig {
 	pub toolchains: BTreeMap<String, ToolchainSelection>,
 	pub profiles: BTreeMap<String, Profile>,
 	pub platforms: BTreeMap<String, forge_core::Platform>,
+	pub std_patches: BTreeMap<String, PathBuf>,
+	pub catalog_files: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -24,6 +26,10 @@ pub struct Discovery {
 pub enum ToolchainSelection {
 	Version {
 		version: String,
+	},
+	Url {
+		url: String,
+		sha256: Option<String>,
 	},
 	Path {
 		path: PathBuf,
@@ -44,6 +50,27 @@ impl WorkspaceConfig {
 			profile: BTreeMap<String, RawProfile>,
 			#[serde(default)]
 			platforms: BTreeMap<String, RawPlatform>,
+			#[serde(default)]
+			patch: Option<RawPatch>,
+			#[serde(default)]
+			catalog: Option<RawCatalogSection>,
+		}
+
+		#[derive(Deserialize)]
+		struct RawCatalogSection {
+			#[serde(default)]
+			files: Vec<String>,
+		}
+
+		#[derive(Deserialize)]
+		struct RawPatch {
+			#[serde(default)]
+			std: BTreeMap<String, RawCellPatch>,
+		}
+
+		#[derive(Deserialize)]
+		struct RawCellPatch {
+			path: String,
 		}
 
 		#[derive(Deserialize, Default)]
@@ -65,6 +92,10 @@ impl WorkspaceConfig {
 			from: String,
 			#[serde(default)]
 			version: Option<String>,
+			#[serde(default)]
+			url: Option<String>,
+			#[serde(default)]
+			sha256: Option<String>,
 			#[serde(default)]
 			path: Option<String>,
 		}
@@ -125,12 +156,21 @@ impl WorkspaceConfig {
 						)
 					})?,
 				},
+				"url" => ToolchainSelection::Url {
+					url: t.url.ok_or_else(|| {
+						ForgeDiagnostic::error(
+							codes::hermetic::TOOLCHAIN_MISMATCH,
+							format!("toolchain `{name}` sets from=\"url\" but has no url"),
+						)
+					})?,
+					sha256: t.sha256,
+				},
 				other => {
 					return Err(ForgeDiagnostic::error(
 						codes::script::WRONG_TYPE,
 						format!("toolchain `{name}` has unknown from=`{other}`"),
 					)
-					.with_help("expected \"version\" or \"path\""));
+					.with_help("expected \"version\", \"url\", or \"path\""));
 				}
 			};
 			toolchains.insert(name, selection);
@@ -177,7 +217,21 @@ impl WorkspaceConfig {
 			);
 		}
 
+		let catalog_files = raw
+			.catalog
+			.map(|c| c.files.into_iter().map(PathBuf::from).collect())
+			.unwrap_or_default();
+
+		let mut std_patches = BTreeMap::new();
+		if let Some(patch) = raw.patch {
+			for (cell, entry) in patch.std {
+				std_patches.insert(cell, PathBuf::from(entry.path));
+			}
+		}
+
 		Ok(Self {
+			std_patches,
+			catalog_files,
 			name: raw.project.name.unwrap_or_else(|| "unnamed".into()),
 			discovery: Discovery {
 				include: raw

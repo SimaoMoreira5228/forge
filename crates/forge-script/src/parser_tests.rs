@@ -78,3 +78,57 @@ fn rule_requires_command() {
 	let err = parse_forge_toml("[rule.bad]\ninputs = [\"x\"]\n").unwrap_err();
 	assert!(format!("{err}").contains("requires `command`"));
 }
+
+#[test]
+fn target_tables_become_overlays() {
+	let decls = parse_forge_toml(
+		r#"
+[binary.app]
+srcs = ["src/main.c"]
+flags = ["-Wall"]
+
+[binary.app.target."os=linux arch=x86_64"]
+link_flags = ["-fuse-ld=mold"]
+
+[binary.app.target."os=windows"]
+flags = ["/W4"]
+"#,
+	)
+	.unwrap();
+	let bin = &decls[0];
+	assert_eq!(bin.overrides.len(), 2);
+	assert_eq!(bin.overrides[0].predicates, vec!["os=linux", "arch=x86_64"]);
+	assert_eq!(bin.overrides[1].predicates, vec!["os=windows"]);
+	assert_eq!(bin.overrides[0].link_flags_overlay_len(), 1);
+	assert!(bin.overrides[0].platform_name.is_none());
+}
+
+#[test]
+fn named_platform_matchers_are_recognized() {
+	let decls = parse_forge_toml(
+		r#"
+[binary.fw]
+srcs = ["fw.c"]
+
+[binary.fw.target.embedded_arm]
+linker = "arm-none-eabi-ld"
+"#,
+	)
+	.unwrap();
+	let fw = &decls[0];
+	assert_eq!(fw.overrides.len(), 1);
+	assert_eq!(fw.overrides[0].platform_name.as_deref(), Some("embedded_arm"));
+}
+
+#[test]
+fn unknown_field_inside_target_overlay_is_rejected() {
+	let err =
+		parse_forge_toml("[binary.a]\nsrcs=[\"a.c\"]\n\n[binary.a.target.\"os=linux\"]\nsrcc = [\"x\"]\n").unwrap_err();
+	assert!(format!("{err}").contains("unknown key"));
+}
+
+#[test]
+fn empty_target_table_is_rejected() {
+	let err = parse_forge_toml("[binary.a]\nsrcs=[\"a.c\"]\n\n[binary.a.target]\n").unwrap_err();
+	assert!(format!("{err}").contains("no platform matchers"));
+}

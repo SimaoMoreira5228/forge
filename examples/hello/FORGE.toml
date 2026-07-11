@@ -5,10 +5,11 @@ hdrs       = ["${glob('lib/*.h')}"]
 includes   = ["lib"]
 
 [binary.hello]
-deps     = ["math"]
-srcs     = ["src/main.c"]
-compiler = "gcc"
+deps      = ["math"]
+srcs      = ["src/main.c"]
+compiler  = "gcc"
+link_flags = ["-fuse-ld=mold"]
 
 [test.math_test]
-srcs = ["tests/math_test.c"]
+srcs  = ["tests/math_test.c"]
 deps  = ["math"]

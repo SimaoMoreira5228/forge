@@ -7,3 +7,10 @@ include = ["."]
 [toolchains.gcc]
 from = "path"
 path = "/usr"
+
+[toolchains.mold]
+from = "version"
+version = "2.42.0"
+
+[profile.release]
+opt_level = 3

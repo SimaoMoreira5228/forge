@@ -1,3 +1,4 @@
+pub mod cells;
 pub mod discover;
 pub mod document;
 pub mod glob;

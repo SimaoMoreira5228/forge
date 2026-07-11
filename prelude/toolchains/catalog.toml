@@ -59,6 +59,15 @@ default_version = "4.4.1"
 [toolchains.make.targets.linux-x86_64]
 url = "https://ftp.gnu.org/gnu/make/make-{version}.tar.gz"
 
+[toolchains.mold]
+default_version = "2.42.0"
+
+[toolchains.mold.targets.linux-x86_64]
+url = "https://github.com/rui314/mold/releases/download/v{version}/mold-{version}-x86_64-linux.tar.gz"
+
+[toolchains.mold.targets.linux-aarch64]
+url = "https://github.com/rui314/mold/releases/download/v{version}/mold-{version}-aarch64-linux.tar.gz"
+
 [toolchains.dmd]
 default_version = "2.113.0"
 

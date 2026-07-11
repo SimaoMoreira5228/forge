@@ -13,3 +13,4 @@ pub use label::Label;
 pub use platform::Platform;
 pub use profile::Profile;
 pub use toolchain::Catalog;
+pub use toolchain::catalog::TargetUrl;

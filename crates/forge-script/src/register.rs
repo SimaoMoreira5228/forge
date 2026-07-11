@@ -8,11 +8,6 @@ use forge_diagnostics::{ForgeDiagnostic, codes};
 use crate::document::{SourceExpr, TargetDecl};
 use crate::glob;
 
-pub struct Registration {
-	pub graph: BuildGraph,
-	pub decls: Vec<(TargetDecl, Label)>,
-}
-
 pub fn register_package(
 	graph: &mut BuildGraph,
 	decls: Vec<TargetDecl>,
@@ -137,6 +132,8 @@ pub type DeclMap = BTreeMap<String, TargetDecl>;
 pub fn load_workspace(
 	workspace: &std::path::Path,
 	packages: &[PackageSource],
+	platform: &forge_core::Platform,
+	declared_platforms: &std::collections::BTreeMap<String, forge_core::Platform>,
 ) -> Result<(BuildGraph, DeclMap), ForgeDiagnostic> {
 	let mut graph = BuildGraph::new();
 	let mut pending_wires: Vec<(String, Vec<TargetDecl>)> = Vec::new();
@@ -145,10 +142,15 @@ pub fn load_workspace(
 		let text = std::fs::read_to_string(&pkg.file)
 			.map_err(|e| ForgeDiagnostic::error(codes::inputs::MISSING_INPUT, format!("{}: {e}", pkg.file.display())))?;
 		let file_decls = if pkg.file.extension().is_some_and(|e| e == "rhai") {
-			crate::rhai_rt::run_forge_rhai(&text, &package_dir)?
+			crate::rhai_rt::run_forge_rhai(&text, &package_dir, platform)?
 		} else {
 			crate::parser::parse_forge_toml(&text)?
 		};
+		let mut file_decls = file_decls;
+		for decl in &mut file_decls {
+			decl.apply_platform_overrides(platform, declared_platforms);
+			decl.resolved_inputs = resolve_sources(&decl.inputs, &package_dir)?;
+		}
 		register_components(&mut graph, file_decls.clone(), &pkg.package, &package_dir)?;
 		pending_wires.push((pkg.package.clone(), file_decls));
 	}

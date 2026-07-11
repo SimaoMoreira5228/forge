@@ -41,7 +41,21 @@ enum Command {
 		#[arg(long)]
 		expunge: bool,
 	},
-	Toolchains,
+	Toolchains {
+		#[command(subcommand)]
+		action: ToolchainAction,
+	},
+}
+
+#[derive(Subcommand)]
+enum ToolchainAction {
+	List,
+	Sync {
+		name: Option<String>,
+	},
+	Verify {
+		name: Option<String>,
+	},
 }
 
 #[derive(Subcommand)]
@@ -94,7 +108,30 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 			println!("clean");
 			Ok(())
 		}
-		Command::Toolchains => toolchains(&workspace),
+		Command::Toolchains { action } => match action {
+			ToolchainAction::List => toolchains(&workspace),
+			ToolchainAction::Sync { name } => {
+				let config = forge_script::WorkspaceConfig::load(&workspace)?;
+				let store = forge_engine::toolchain::ToolchainStore::load(&workspace, config)?;
+				for (name, outcome) in forge_engine::toolchain::sync::sync_all(&store, name.as_deref())? {
+					match outcome {
+						forge_engine::toolchain::sync::SyncOutcome::AlreadyInstalled => println!("{name}: up to date"),
+						forge_engine::toolchain::sync::SyncOutcome::Downloaded { url } => {
+							println!("{name}: installed from {url}")
+						}
+					}
+				}
+				Ok(())
+			}
+			ToolchainAction::Verify { name } => {
+				let config = forge_script::WorkspaceConfig::load(&workspace)?;
+				let store = forge_engine::toolchain::ToolchainStore::load(&workspace, config)?;
+				for line in forge_engine::toolchain::sync::verify_installed(&store, name.as_deref())? {
+					println!("{line}");
+				}
+				Ok(())
+			}
+		},
 	}
 }
 
@@ -148,7 +185,8 @@ fn run_target(workspace: &std::path::Path, name: &str, profile: &str, args: &[St
 fn load_graph(workspace: &std::path::Path) -> Result<forge_core::BuildGraph, ForgeDiagnostic> {
 	let config = forge_script::WorkspaceConfig::load(workspace)?;
 	let packages = forge_script::discover_packages(workspace, &config.discovery)?;
-	let (graph, _) = forge_script::load_workspace(workspace, &packages)?;
+	let platform = forge_core::Platform::host();
+	let (graph, _) = forge_script::load_workspace(workspace, &packages, &platform, &config.platforms)?;
 	graph.check_visibility().map_err(|mut errs| errs.swap_remove(0))?;
 	Ok(graph)
 }
@@ -196,7 +234,13 @@ fn graph(workspace: &std::path::Path, output: &str) -> Result<(), ForgeDiagnosti
 
 fn toolchains(workspace: &std::path::Path) -> Result<(), ForgeDiagnostic> {
 	let config = forge_script::WorkspaceConfig::load(workspace)?;
-	let store = forge_engine::toolchain::ToolchainStore::new(workspace, config);
+	let store = match forge_engine::toolchain::ToolchainStore::load(workspace, config) {
+		Ok(store) => store,
+		Err(e) => {
+			println!("{e}");
+			return Ok(());
+		}
+	};
 	for (name, selection) in store.configured() {
 		match store.resolve(name, selection) {
 			Ok(resolved) => println!("{name}: ready at {}", resolved.bin_dir.display()),
