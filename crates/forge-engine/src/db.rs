@@ -4,7 +4,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use forge_diagnostics::{ForgeDiagnostic, codes};
 use rusqlite::Connection;
 
-const MIGRATIONS: &[(&str, &str)] = &[("0001_initial", include_str!("../migrations/0001_initial.sql"))];
+const MIGRATIONS: &[(&str, &str)] = &[
+	("0001_initial", include_str!("../migrations/0001_initial.sql")),
+	("0002_feedback", include_str!("../migrations/0002_feedback.sql")),
+	("0003_test_stderr", include_str!("../migrations/0003_test_stderr.sql")),
+	("0004_telemetry", include_str!("../migrations/0004_telemetry.sql")),
+];
 
 pub struct CacheDb {
 	conn: parking_lot::Mutex<Connection>,
@@ -36,12 +41,113 @@ impl CacheDb {
 		);
 	}
 
-	pub fn record_test(&self, cache_key: &str, component: &str, verdict: &str, duration_ms: u128) {
-		let _ = self.conn.lock().execute(
-			"INSERT OR REPLACE INTO test_results(cache_key, component, verdict, duration_ms, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-			rusqlite::params![cache_key, component, verdict, duration_ms as i64, now_secs()],
+	pub fn record_test(&self, cache_key: &str, component: &str, verdict: &str, duration_ms: u128, stderr_tail: &str) {
+		let now = now_secs();
+		let flipped = self.has_opposite_verdict(component, verdict);
+		let conn = self.conn.lock();
+		let _ = conn.execute(
+			"INSERT INTO test_results(cache_key, component, verdict, duration_ms, created_at, flake_count, run_count)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, 1)
+             ON CONFLICT(cache_key) DO UPDATE SET
+                verdict = ?3,
+                duration_ms = ?4,
+                stderr = ?7,
+                run_count = run_count + 1,
+                flake_count = flake_count + ?6",
+			rusqlite::params![
+				cache_key,
+				component,
+				verdict,
+				duration_ms as i64,
+				now,
+				i64::from(flipped),
+				stderr_tail
+			],
 		);
+		let _ = conn.execute(
+			"INSERT INTO test_history(component, cache_key, verdict, created_at) VALUES (?1, ?2, ?3, ?4)",
+			rusqlite::params![component, cache_key, verdict, now],
+		);
+	}
+
+	pub fn latest_test_rows(&self) -> Vec<(String, String, i64, String)> {
+		let conn = self.conn.lock();
+		let mut statement = match conn.prepare(
+			"SELECT component, verdict, duration_ms, stderr FROM test_results
+             WHERE rowid IN (SELECT MAX(rowid) FROM test_results GROUP BY component)
+             ORDER BY component",
+		) {
+			Ok(s) => s,
+			Err(_) => return Vec::new(),
+		};
+		statement
+			.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+			.map(|rows| rows.flatten().collect())
+			.unwrap_or_default()
+	}
+
+	fn has_opposite_verdict(&self, component: &str, verdict: &str) -> bool {
+		self.conn
+			.lock()
+			.query_row(
+				"SELECT EXISTS(SELECT 1 FROM test_history WHERE component = ?1 AND verdict != ?2)",
+				[component, verdict],
+				|row| row.get::<_, i64>(0),
+			)
+			.map(|exists| exists == 1)
+			.unwrap_or(false)
+	}
+
+	pub fn flake_report(&self) -> Vec<(String, i64, i64)> {
+		let conn = self.conn.lock();
+		let mut statement = match conn.prepare(
+			"SELECT component,
+                    SUM(verdict = 'PASSED'),
+                    COUNT(*)
+             FROM test_history GROUP BY component ORDER BY component",
+		) {
+			Ok(s) => s,
+			Err(_) => return Vec::new(),
+		};
+		statement
+			.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+			.map(|rows| rows.flatten().collect())
+			.unwrap_or_default()
+	}
+
+	pub fn record_action_inputs(&self, cache_key: &str, inputs: &[(String, String)]) {
+		let conn = self.conn.lock();
+		let _ = conn.execute("DELETE FROM action_inputs WHERE cache_key = ?1", [cache_key]);
+		for (path, hash) in inputs {
+			let _ = conn.execute(
+				"INSERT INTO action_inputs(cache_key, path, hash) VALUES (?1, ?2, ?3)",
+				rusqlite::params![cache_key, path, hash],
+			);
+		}
+	}
+
+	pub fn stored_inputs(&self, cache_key: &str) -> Vec<(String, String)> {
+		let conn = self.conn.lock();
+		let mut statement = match conn.prepare("SELECT path, hash FROM action_inputs WHERE cache_key = ?1") {
+			Ok(s) => s,
+			Err(_) => return Vec::new(),
+		};
+		statement
+			.query_map([cache_key], |row| Ok((row.get(0)?, row.get(1)?)))
+			.map(|rows| rows.flatten().collect())
+			.unwrap_or_default()
+	}
+
+	pub fn latest_action_key(&self, component: &str, name: &str) -> Option<String> {
+		self.conn
+			.lock()
+			.query_row(
+				"SELECT cache_key FROM actions WHERE component = ?1 AND name = ?2
+                 ORDER BY last_accessed DESC LIMIT 1",
+				[component, name],
+				|row| row.get(0),
+			)
+			.ok()
 	}
 
 	pub fn prior_test_verdict(&self, cache_key: &str) -> Option<String> {
@@ -51,6 +157,68 @@ impl CacheDb {
 				row.get(0)
 			})
 			.ok()
+	}
+
+	pub fn mark_cache_hit(&self, cache_key: &str) {
+		let _ = self
+			.conn
+			.lock()
+			.execute("UPDATE actions SET was_hit = 1 WHERE cache_key = ?1", [cache_key]);
+	}
+
+	pub fn record_duration(&self, cache_key: &str, duration_ms: u128) {
+		let _ = self.conn.lock().execute(
+			"UPDATE actions SET was_hit = 0, duration_ms = ?2 WHERE cache_key = ?1",
+			rusqlite::params![cache_key, duration_ms as i64],
+		);
+	}
+
+	pub fn replace_graph(&self, nodes: &[(String, String)], edges: &[(String, String)]) {
+		let conn = self.conn.lock();
+		let _ = conn.execute_batch("DELETE FROM component_edges; DELETE FROM components;");
+		for (label, kind) in nodes {
+			let _ = conn.execute(
+				"INSERT INTO components(label, kind) VALUES (?1, ?2)",
+				rusqlite::params![label, kind],
+			);
+		}
+		for (dependent, dependency) in edges {
+			let _ = conn.execute(
+				"INSERT INTO component_edges(dependent, dependency) VALUES (?1, ?2)",
+				rusqlite::params![dependent, dependency],
+			);
+		}
+	}
+
+	pub fn slowest_actions(&self, limit: usize) -> Vec<(String, String, i64, f64, i64)> {
+		self.conn
+			.lock()
+			.prepare(
+				"SELECT component, name, COUNT(*), AVG(duration_ms), MAX(duration_ms)
+                 FROM actions WHERE duration_ms > 0
+                 GROUP BY component, name ORDER BY MAX(duration_ms) DESC LIMIT ?1",
+			)
+			.and_then(|mut s| {
+				s.query_map([limit as i64], |row| {
+					Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+				})
+				.map(|rows| rows.flatten().collect())
+			})
+			.unwrap_or_default()
+	}
+
+	pub fn hit_rates(&self) -> Vec<(String, String, i64, i64)> {
+		self.conn
+			.lock()
+			.prepare(
+				"SELECT component, name, SUM(was_hit), COUNT(*)
+                 FROM actions GROUP BY component, name ORDER BY component",
+			)
+			.and_then(|mut s| {
+				s.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+					.map(|rows| rows.flatten().collect())
+			})
+			.unwrap_or_default()
 	}
 
 	pub fn wipe_test_results(&self) {

@@ -204,6 +204,28 @@ impl BuildGraph {
 		component.label.name() == pattern.trim_start_matches(':')
 	}
 
+	pub fn node_rows(&self) -> Vec<(String, String)> {
+		self.inner
+			.node_indices()
+			.map(|id| {
+				let c = &self.inner[id];
+				(c.label.to_string(), c.kind.name().to_string())
+			})
+			.collect()
+	}
+
+	pub fn edge_rows(&self) -> Vec<(String, String)> {
+		self.inner
+			.edge_references()
+			.map(|e| {
+				(
+					self.inner[e.source()].label.to_string(),
+					self.inner[e.target()].label.to_string(),
+				)
+			})
+			.collect()
+	}
+
 	pub fn components_containing_source(&self, needle: &str) -> Vec<ComponentId> {
 		self.inner
 			.node_indices()

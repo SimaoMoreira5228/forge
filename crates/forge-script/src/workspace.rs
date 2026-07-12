@@ -14,6 +14,7 @@ pub struct WorkspaceConfig {
 	pub platforms: BTreeMap<String, forge_core::Platform>,
 	pub std_patches: BTreeMap<String, PathBuf>,
 	pub catalog_files: Vec<PathBuf>,
+	pub max_cache_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +55,13 @@ impl WorkspaceConfig {
 			patch: Option<RawPatch>,
 			#[serde(default)]
 			catalog: Option<RawCatalogSection>,
+			#[serde(default)]
+			build: Option<RawBuild>,
+		}
+
+		#[derive(Deserialize)]
+		struct RawBuild {
+			max_cache_bytes: Option<u64>,
 		}
 
 		#[derive(Deserialize)]
@@ -232,6 +240,7 @@ impl WorkspaceConfig {
 		Ok(Self {
 			std_patches,
 			catalog_files,
+			max_cache_bytes: raw.build.and_then(|b| b.max_cache_bytes).filter(|n| *n > 0),
 			name: raw.project.name.unwrap_or_else(|| "unnamed".into()),
 			discovery: Discovery {
 				include: raw

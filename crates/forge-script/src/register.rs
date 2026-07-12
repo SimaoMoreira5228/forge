@@ -134,33 +134,60 @@ pub fn load_workspace(
 	packages: &[PackageSource],
 	platform: &forge_core::Platform,
 	declared_platforms: &std::collections::BTreeMap<String, forge_core::Platform>,
-) -> Result<(BuildGraph, DeclMap), ForgeDiagnostic> {
+) -> (BuildGraph, DeclMap, Vec<ForgeDiagnostic>) {
 	let mut graph = BuildGraph::new();
 	let mut pending_wires: Vec<(String, Vec<TargetDecl>)> = Vec::new();
+	let mut sink = Vec::new();
+
 	for pkg in packages {
 		let package_dir = workspace.join(&pkg.package);
-		let text = std::fs::read_to_string(&pkg.file)
-			.map_err(|e| ForgeDiagnostic::error(codes::inputs::MISSING_INPUT, format!("{}: {e}", pkg.file.display())))?;
-		let file_decls = if pkg.file.extension().is_some_and(|e| e == "rhai") {
-			crate::rhai_rt::run_forge_rhai(&text, &package_dir, platform)?
-		} else {
-			crate::parser::parse_forge_toml(&text)?
+		let text = match std::fs::read_to_string(&pkg.file) {
+			Ok(text) => text,
+			Err(e) => {
+				sink.push(ForgeDiagnostic::error(
+					codes::inputs::MISSING_INPUT,
+					format!("{}: {e}", pkg.file.display()),
+				));
+				continue;
+			}
 		};
-		let mut file_decls = file_decls;
-		for decl in &mut file_decls {
+		let parsed = if pkg.file.extension().is_some_and(|e| e == "rhai") {
+			crate::rhai_rt::run_forge_rhai(&text, &package_dir, platform)
+		} else {
+			crate::parser::parse_forge_toml(&text)
+		};
+		let file_decls = match parsed {
+			Ok(decls) => decls,
+			Err(e) => {
+				sink.push(e);
+				continue;
+			}
+		};
+
+		let mut usable = Vec::new();
+		for mut decl in file_decls {
 			decl.apply_platform_overrides(platform, declared_platforms);
-			decl.resolved_inputs = resolve_sources(&decl.inputs, &package_dir)?;
+			match resolve_sources(&decl.inputs, &package_dir) {
+				Ok(resolved) => {
+					decl.resolved_inputs = resolved;
+					usable.push(decl);
+				}
+				Err(e) => sink.push(e),
+			}
 		}
-		register_components(&mut graph, file_decls.clone(), &pkg.package, &package_dir)?;
-		pending_wires.push((pkg.package.clone(), file_decls));
+
+		match register_components(&mut graph, usable.clone(), &pkg.package, &package_dir) {
+			Ok(_) => pending_wires.push((pkg.package.clone(), usable)),
+			Err(e) => sink.push(e),
+		}
 	}
 
 	let mut decls: DeclMap = BTreeMap::new();
 	for (package, package_decls) in pending_wires {
-		wire_dependencies(&mut graph, package_decls.clone(), &package)?;
+		wire_dependencies(&mut graph, package_decls.clone(), &package).unwrap_or_else(|e| sink.push(e));
 		for decl in package_decls {
 			decls.insert(Label::new(&package, decl.name.clone()).to_string(), decl);
 		}
 	}
-	Ok((graph, decls))
+	(graph, decls, sink)
 }

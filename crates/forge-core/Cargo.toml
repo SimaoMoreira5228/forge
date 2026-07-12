@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 blake3.workspace = true
 petgraph.workspace = true
+regex.workspace = true
 serde.workspace = true
 toml.workspace = true
 forge-diagnostics.workspace = true

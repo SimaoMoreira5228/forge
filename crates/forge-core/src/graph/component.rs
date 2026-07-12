@@ -17,6 +17,17 @@ pub struct Component {
 	pub headers: Vec<PathBuf>,
 }
 
+impl ComponentKind {
+	pub fn name(&self) -> &'static str {
+		match self {
+			ComponentKind::Library { .. } => "library",
+			ComponentKind::Binary => "binary",
+			ComponentKind::Test => "test",
+			ComponentKind::Generic { .. } => "rule",
+		}
+	}
+}
+
 impl Component {
 	pub fn is_compatible_with(&self, platform: &Platform) -> bool {
 		self.compatible_with.iter().all(|p| platform.matches(p))

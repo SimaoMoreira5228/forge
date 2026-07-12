@@ -13,6 +13,7 @@ pub use parser::parse_forge_toml;
 pub use register::{DeclMap, load_workspace, register_package};
 pub use workspace::{ToolchainSelection, WorkspaceConfig};
 
+pub mod fmt;
 #[cfg(test)]
 mod parser_tests;
 #[cfg(test)]

@@ -59,6 +59,7 @@ impl Cas {
 		let bytes = serde_json::to_vec(&manifest)
 			.map_err(|e| ForgeDiagnostic::error(codes::hermetic::HERMETIC_VIOLATION, format!("manifest encode: {e}")))?;
 		std::fs::write(dir.join("manifest.json"), bytes).map_err(|e| io(e, &dir.join("manifest.json")))?;
+		touch_last_accessed(&dir);
 		Ok(())
 	}
 

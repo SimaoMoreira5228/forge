@@ -16,8 +16,13 @@ forge-engine.workspace = true
 forge-script.workspace = true
 
 clap.workspace = true
+notify.workspace = true
+ignore.workspace = true
 miette.workspace = true
 serde_json.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+rusqlite.workspace = true
