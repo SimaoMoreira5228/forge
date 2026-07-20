@@ -285,7 +285,7 @@ fn flaky_tests_are_detected_and_reported() {
 fn fmt_normalizes_and_is_idempotent() {
 	let dir = std::env::temp_dir().join(format!("forge-ifmt-{}", std::process::id()));
 	let _ = std::fs::remove_dir_all(&dir);
-	std::fs::create_dir_all(&dir).unwrap();
+	std::fs::create_dir_all(dir.join("src")).unwrap();
 
 	std::fs::write(
 		dir.join("FORGE_ROOT"),
@@ -520,6 +520,65 @@ fn stats_surface_telemetry_and_graph() {
 		})
 		.unwrap_or(0);
 	assert!(max_ms > 0, "hit path must preserve measured durations");
+
+	let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn have_rustc() -> bool {
+	Command::new("rustc").arg("--version").output().is_ok()
+}
+
+#[test]
+fn rust_cell_builds_and_caches() {
+	if !have_rustc() {
+		eprintln!("skipping: no rustc");
+		return;
+	}
+	let dir = std::env::temp_dir().join(format!("forge-irust-{}", std::process::id()));
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(dir.join("src")).unwrap();
+
+	let ws_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+	let ws_toolchain = ws_root.join(".forge/toolchains/rust/1.98.0");
+	let forge_dir = dir.join(".forge/toolchains/rust/1.98.0");
+	if ws_toolchain.exists() {
+		std::fs::create_dir_all(forge_dir.parent().unwrap()).unwrap();
+		#[cfg(unix)]
+		std::os::unix::fs::symlink(&ws_toolchain, &forge_dir).unwrap();
+		#[cfg(not(unix))]
+		panic!("Rust integration test requires a workspace toolchain symlink");
+	}
+
+	std::fs::write(
+		dir.join("FORGE_ROOT"),
+		"[project]\nname = \"rust_itest\"\n\n[discovery]\ninclude = [\".\"]\n\n[toolchains.rust]\nfrom = \"version\"\nversion = \"1.98.0\"\n",
+	)
+	.unwrap();
+	std::fs::write(
+		dir.join("FORGE.toml"),
+		"[library.greet]\nvisibility = \"public\"\nsrcs = [\"src/lib.rs\"]\n\n[binary.app]\ndeps = [\"greet\"]\nsrcs = [\"src/main.rs\"]\n",
+	)
+	.unwrap();
+	std::fs::write(
+		dir.join("src/lib.rs"),
+		"pub fn greet() -> &'static str { \"hello from forge\" }\n",
+	)
+	.unwrap();
+	std::fs::write(dir.join("src/main.rs"), "fn main() { println!(\"{}\", greet::greet()); }\n").unwrap();
+
+	let (ok, log) = run_forge(&dir, &["build"]);
+	if !ok {
+		eprintln!("build log: {log}");
+	}
+	assert!(ok, "rust build failed: {log}");
+
+	let binary = dir.join("forge-out/bin/debug/app");
+	assert!(binary.exists(), "rust binary not produced");
+	let output = Command::new(&binary).output().expect("run rust binary");
+	assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hello from forge");
+
+	let (_, log2) = run_forge(&dir, &["build"]);
+	assert!(log2.contains("cache hit"), "rust build should hit cache, got: {log2}");
 
 	let _ = std::fs::remove_dir_all(&dir);
 }

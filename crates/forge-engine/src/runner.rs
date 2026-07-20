@@ -1,3 +1,5 @@
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
@@ -44,14 +46,151 @@ impl SandboxRunner {
 			copy_in(&src, &dst)?;
 		}
 		for output in &spec.outputs {
-			if let Some(parent) = output.path.parent() {
-				std::fs::create_dir_all(dir.join(parent)).map_err(|e| io_err("prepare outputs", &dir.join(parent), e))?;
-			}
+			let path = if output.kind == forge_core::OutputKind::Directory {
+				dir.join(&output.path)
+			} else {
+				dir.join(output.path.parent().unwrap_or_else(|| Path::new("")))
+			};
+			std::fs::create_dir_all(&path).map_err(|e| io_err("prepare outputs", &path, e))?;
 		}
 		Ok(dir)
 	}
 
 	pub fn execute(&self, spec: &ActionSpec, sandbox: &Path, toolchain_bins: &[&Path]) -> ExecReport {
+		if should_use_namespaces() {
+			self.execute_namespaced(spec, sandbox, toolchain_bins)
+		} else {
+			self.execute_plain(spec, sandbox, toolchain_bins)
+		}
+	}
+
+	fn execute_namespaced(&self, spec: &ActionSpec, sandbox: &Path, toolchain_bins: &[&Path]) -> ExecReport {
+		let runfiles = sandbox.join("runfiles");
+		let output = sandbox.join("output");
+
+		let mut cmd = Command::new(&spec.command);
+		cmd.args(&spec.args);
+		cmd.stdout(Stdio::piped());
+		cmd.stderr(Stdio::piped());
+
+		cmd.env_clear();
+		for (k, v) in RUNNER_LANG_ENV {
+			cmd.env(k, v);
+		}
+		if !toolchain_bins.is_empty() {
+			let mut joined = toolchain_bins
+				.iter()
+				.map(|p| p.to_string_lossy().into_owned())
+				.collect::<Vec<_>>()
+				.join(":");
+			joined.push(':');
+			joined.push_str(&fallback_path());
+			cmd.env("PATH", joined);
+		} else {
+			cmd.env("PATH", fallback_path());
+		}
+		for (k, v) in &spec.env {
+			cmd.env(k, v);
+		}
+		if !spec.env.contains_key("HOME") {
+			cmd.env("HOME", &self.workspace);
+		}
+
+		let runfiles = runfiles.clone();
+		let output = output.clone();
+		let command = spec.command.clone();
+		let args = spec.args.clone();
+		let output_paths: Vec<PathBuf> = spec.outputs.iter().map(|o| o.path.clone()).collect();
+
+		unsafe {
+			let _ = cmd.pre_exec(move || {
+				if libc::unshare(libc::CLONE_NEWNS) != 0 {
+					return Err(std::io::Error::last_os_error());
+				}
+				if libc::mount(
+					std::ptr::null(),
+					"/".as_ptr() as *const libc::c_char,
+					std::ptr::null(),
+					libc::MS_REC | libc::MS_PRIVATE,
+					std::ptr::null(),
+				) != 0
+				{
+					return Err(std::io::Error::last_os_error());
+				}
+				if libc::mount(
+					"tmpfs".as_ptr() as *const libc::c_char,
+					"/".as_ptr() as *const libc::c_char,
+					"tmpfs".as_ptr() as *const libc::c_char,
+					libc::MS_NOEXEC | libc::MS_NOSUID | libc::MS_NODEV,
+					"size=64m".as_ptr() as *const libc::c_void,
+				) != 0
+				{
+					return Err(std::io::Error::last_os_error());
+				}
+				if libc::mount(
+					runfiles.as_os_str().as_bytes().as_ptr() as *const libc::c_char,
+					"/work".as_ptr() as *const libc::c_char,
+					std::ptr::null(),
+					libc::MS_BIND,
+					std::ptr::null(),
+				) != 0
+				{
+					return Err(std::io::Error::last_os_error());
+				}
+				if libc::mount(
+					output.as_os_str().as_bytes().as_ptr() as *const libc::c_char,
+					"/work".as_ptr() as *const libc::c_char,
+					std::ptr::null(),
+					libc::MS_BIND | libc::MS_REC,
+					std::ptr::null(),
+				) != 0
+				{
+					return Err(std::io::Error::last_os_error());
+				}
+				if libc::mount(
+					"tmpfs".as_ptr() as *const libc::c_char,
+					"/tmp".as_ptr() as *const libc::c_char,
+					"tmpfs".as_ptr() as *const libc::c_char,
+					libc::MS_NOEXEC | libc::MS_NOSUID | libc::MS_NODEV,
+					"size=0".as_ptr() as *const libc::c_void,
+				) != 0
+				{
+					return Err(std::io::Error::last_os_error());
+				}
+				for path in &output_paths {
+					let full = std::path::PathBuf::from("/work").join(path);
+					if let Some(parent) = full.parent() {
+						let _ = std::fs::create_dir_all(parent);
+					}
+				}
+				let _ = std::fs::write("/command", std::fs::read(runfiles.join(&command)).unwrap_or_default());
+				let mut exec_cmd = Command::new("/command");
+				exec_cmd.args(&args);
+				exec_cmd.current_dir("/work");
+				Err(exec_cmd.exec())
+			});
+		}
+
+		let started = Instant::now();
+		let output_result = cmd.output();
+		let duration = started.elapsed();
+		match output_result {
+			Ok(out) => ExecReport {
+				success: out.status.success(),
+				stdout_tail: tail(&out.stdout),
+				stderr_tail: tail(&out.stderr),
+				duration,
+			},
+			Err(e) => ExecReport {
+				success: false,
+				stdout_tail: String::new(),
+				stderr_tail: format!("failed to launch `{}`: {e}", spec.command),
+				duration,
+			},
+		}
+	}
+
+	fn execute_plain(&self, spec: &ActionSpec, sandbox: &Path, toolchain_bins: &[&Path]) -> ExecReport {
 		let mut command = Command::new(&spec.command);
 		command
 			.args(&spec.args)
@@ -64,17 +203,22 @@ impl SandboxRunner {
 			command.env(k, v);
 		}
 		if !toolchain_bins.is_empty() {
-			let joined = toolchain_bins
+			let mut joined = toolchain_bins
 				.iter()
 				.map(|p| p.to_string_lossy().into_owned())
 				.collect::<Vec<_>>()
 				.join(":");
+			joined.push(':');
+			joined.push_str(&fallback_path());
 			command.env("PATH", joined);
 		} else {
 			command.env("PATH", fallback_path());
 		}
 		for (k, v) in &spec.env {
 			command.env(k, v);
+		}
+		if !spec.env.contains_key("HOME") {
+			command.env("HOME", &self.workspace);
 		}
 
 		let started = Instant::now();
@@ -146,6 +290,31 @@ impl SandboxRunner {
 	}
 }
 
+#[cfg(target_os = "linux")]
+fn should_use_namespaces() -> bool {
+	if std::env::var("FORGE_NO_NS").is_ok() {
+		return false;
+	}
+	let uid = unsafe { libc::getuid() };
+	let euid = unsafe { libc::geteuid() };
+	if uid != euid {
+		return false;
+	}
+	let unshare_result = unsafe { libc::unshare(libc::CLONE_NEWNS) };
+	if unshare_result == 0 {
+		unsafe {
+			libc::umount2("/".as_ptr() as *const libc::c_char, libc::MNT_DETACH);
+		}
+		return true;
+	}
+	false
+}
+
+#[cfg(not(target_os = "linux"))]
+fn should_use_namespaces() -> bool {
+	false
+}
+
 fn short_key(cache_key: &str) -> String {
 	cache_key[..12.min(cache_key.len())].to_string()
 }
@@ -158,7 +327,7 @@ fn copy_in(src: &Path, dst: &Path) -> Result<(), ForgeDiagnostic> {
 }
 
 fn copy_tree(src: &Path, dst: &Path) -> Result<(), ForgeDiagnostic> {
-	std::fs::create_dir_all(dst).map_err(|e| io_err("copy tree", dst, e))?;
+	std::fs::create_dir_all(dst).map_err(|e| io_err("create tree", dst, e))?;
 	for entry in std::fs::read_dir(src).map_err(|e| io_err("read tree", src, e))?.flatten() {
 		let from = entry.path();
 		let to = dst.join(entry.file_name());

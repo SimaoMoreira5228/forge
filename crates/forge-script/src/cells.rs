@@ -21,6 +21,7 @@ pub struct ComponentView {
 	pub label: String,
 	pub name: String,
 	pub kind: String,
+	pub compiler: String,
 	pub srcs: Vec<String>,
 	pub hdrs: Vec<String>,
 	pub includes: Vec<String>,
@@ -32,6 +33,8 @@ pub struct ComponentView {
 	pub data: Vec<String>,
 	pub env: BTreeMap<String, String>,
 	pub dep_archives: Vec<String>,
+	pub dep_artifacts: Vec<(String, String)>,
+	pub workspace: String,
 	pub linker: String,
 	pub link_flags: Vec<String>,
 	pub platform_os: String,
@@ -60,7 +63,10 @@ pub struct CellHooks {
 	pub lib_path: Box<dyn Fn(&str) -> String>,
 	pub bin: Box<dyn Fn(&str) -> String>,
 	pub tool_id: Box<dyn Fn() -> String>,
+	pub read_file: FileReader,
 }
+
+type FileReader = Box<dyn Fn(&str) -> Result<String, String>>;
 
 pub fn lower(script: &str, component: &ComponentView, hooks: CellHooks) -> Result<Vec<ActionDecl>, ForgeDiagnostic> {
 	let actions: std::rc::Rc<std::cell::RefCell<Vec<ActionDecl>>> = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -99,6 +105,7 @@ fn register_helpers(engine: &mut rhai::Engine, component: &ComponentView, hooks:
 		lib_path,
 		bin,
 		tool_id,
+		read_file,
 	} = hooks;
 
 	engine.register_fn("bin", move |_ctx: &mut Map, name: &str| -> String { bin(name) });
@@ -108,6 +115,10 @@ fn register_helpers(engine: &mut rhai::Engine, component: &ComponentView, hooks:
 	engine.register_fn("prior_depfile_headers", move |_ctx: &mut Map, obj: &str| -> rhai::Array {
 		prior_depfile_headers(obj).into_iter().map(Dynamic::from).collect()
 	});
+	engine.register_fn(
+		"read_file",
+		move |_ctx: &mut Map, path: &str| -> Result<String, Box<EvalAltResult>> { read_file(path).map_err(|e| e.into()) },
+	);
 	let _ = component.profile;
 }
 
@@ -116,6 +127,7 @@ fn context_map(component: &ComponentView) -> Map {
 	insert_str(&mut ctx, "label", &component.label);
 	insert_str(&mut ctx, "name", &component.name);
 	insert_str(&mut ctx, "kind", &component.kind);
+	insert_str(&mut ctx, "compiler", &component.compiler);
 	insert_list(&mut ctx, "srcs", &component.srcs);
 	insert_list(&mut ctx, "hdrs", &component.hdrs);
 	insert_list(&mut ctx, "includes", &component.includes);
@@ -126,6 +138,13 @@ fn context_map(component: &ComponentView) -> Map {
 	insert_list(&mut ctx, "run_args", &component.run_args);
 	insert_list(&mut ctx, "data", &component.data);
 	insert_list(&mut ctx, "dep_archives", &component.dep_archives);
+	let artifact_list: rhai::Array = component
+		.dep_artifacts
+		.iter()
+		.map(|(name, path)| Dynamic::from(vec![Dynamic::from(name.clone()), Dynamic::from(path.clone())]))
+		.collect();
+	ctx.insert("dep_artifacts".into(), Dynamic::from(artifact_list));
+	insert_str(&mut ctx, "workspace", &component.workspace);
 	insert_str(&mut ctx, "linker", &component.linker);
 	insert_list(&mut ctx, "link_flags", &component.link_flags);
 	insert_str(&mut ctx, "platform_os", &component.platform_os);
@@ -230,6 +249,7 @@ mod tests {
 			lib_path: Box::new(|name| format!("forge-out/lib/lib{name}.a")),
 			bin: Box::new(|name| format!("/tools/bin/{name}")),
 			tool_id: Box::new(|| "gcc@abc123".into()),
+			read_file: Box::new(|_| Err("not implemented in tests".into())),
 		}
 	}
 
@@ -241,6 +261,7 @@ mod tests {
 			srcs: vec!["lib/math.c".into()],
 			hdrs: vec!["lib/math.h".into()],
 			env: BTreeMap::new(),
+			workspace: "/workspace".into(),
 			profile: ProfileView {
 				name: "debug".into(),
 				opt_level: 0,
@@ -292,5 +313,180 @@ mod tests {
         "#;
 		let err = lower(script, &component(), hooks()).unwrap_err();
 		assert!(format!("{err}").contains("no toolchain"));
+	}
+
+	#[test]
+	fn output_variable_in_action_map() {
+		let script = r#"
+            fn build(ctx) {
+                let out = "forge-out/bin/debug/app";
+                let outputs_arr = [out];
+                ctx.action(#{
+                    name: "test",
+                    command: "echo",
+                    args: ["hello"],
+                    inputs: [],
+                    outputs: outputs_arr,
+                    env: #{},
+                    toolchain_id: "",
+                });
+            }
+        "#;
+		let actions = lower(script, &component(), hooks()).unwrap();
+		assert_eq!(actions.len(), 1);
+		assert_eq!(actions[0].outputs, vec![("forge-out/bin/debug/app".to_string(), false)]);
+	}
+
+	#[test]
+	fn args_variable_in_action_map() {
+		let script = r#"
+            fn build(ctx) {
+                let args_list = ["--edition=2024", "-o", "foo.rlib"];
+                ctx.action(#{
+                    name: "test",
+                    command: "rustc",
+                    args: args_list,
+                    inputs: [],
+                    outputs: ["foo.rlib"],
+                    env: #{},
+                    toolchain_id: "",
+                });
+            }
+        "#;
+		let actions = lower(script, &component(), hooks()).unwrap();
+		assert_eq!(actions.len(), 1);
+		assert_eq!(actions[0].args, vec!["--edition=2024", "-o", "foo.rlib"]);
+	}
+
+	#[test]
+	fn fn_param_as_args_in_action() {
+		let script = r#"
+            fn do_compile(ctx, args_list, out_path) {
+                ctx.action(#{
+                    name: "compile",
+                    command: "rustc",
+                    args: args_list,
+                    inputs: [],
+                    outputs: [out_path],
+                    env: #{},
+                    toolchain_id: "",
+                });
+            }
+            fn build(ctx) {
+                do_compile(ctx, ["--edition=2024"], "foo.rlib");
+            }
+        "#;
+		let actions = lower(script, &component(), hooks()).unwrap();
+		assert_eq!(actions.len(), 1);
+		assert_eq!(actions[0].args, vec!["--edition=2024"]);
+		assert_eq!(actions[0].outputs, vec![("foo.rlib".to_string(), false)]);
+	}
+
+	#[test]
+	fn rust_cell_pattern() {
+		let script = r#"
+            fn build(ctx) {
+                let rustc = "/usr/bin/rustc";
+                let out_path = "forge-out/bin/debug/app";
+                let args_list = ["--crate-type", "bin", "-o", out_path];
+                ctx.action(#{
+                    name: "rustc " + ctx.label,
+                    command: rustc,
+                    args: args_list,
+                    inputs: ctx.srcs,
+                    outputs: [`${out_path}`],
+                    env: #{},
+                    toolchain_id: "",
+                });
+            }
+        "#;
+		let actions = lower(script, &component(), hooks()).unwrap();
+		assert_eq!(actions.len(), 1);
+		assert_eq!(actions[0].args, vec!["--crate-type", "bin", "-o", "forge-out/bin/debug/app"]);
+		assert_eq!(actions[0].outputs, vec![("forge-out/bin/debug/app".to_string(), false)]);
+	}
+
+	#[test]
+	fn rust_cell_full_compile_pattern() {
+		let script = r#"
+            fn profile_args(ctx) {
+                let args = [];
+                if ctx.profile.opt_level == 3 {
+                    args.push("-O");
+                }
+                args;
+            }
+            fn compile_crate(ctx, crate_type, out_path) {
+                let args = profile_args(ctx);
+                args.push("--crate-type");
+                args.push(crate_type);
+                args.push("--crate-name");
+                args.push("foo");
+                args.push("-o");
+                args.push(out_path);
+                args.push("main.rs");
+                let inputs = ctx.srcs;
+                ctx.action(#{
+                    name: "compile",
+                    command: "/usr/bin/rustc",
+                    args: args,
+                    inputs: inputs,
+                    outputs: [out_path],
+                    env: #{},
+                    toolchain_id: "",
+                });
+            }
+            fn build(ctx) {
+                compile_crate(ctx, "bin", "forge-out/bin/debug/app");
+            }
+        "#;
+		let actions = lower(script, &component(), hooks()).unwrap();
+		assert_eq!(actions.len(), 1);
+		assert_eq!(actions[0].outputs, vec![("forge-out/bin/debug/app".to_string(), false)]);
+	}
+
+	#[test]
+	fn prebuilt_map_works() {
+		let script = r#"
+            fn build(ctx) {
+                let args = ["--crate-type", "bin"];
+                let spec = #{
+                    name: "test",
+                    command: "echo",
+                    args: args,
+                    inputs: [],
+                    outputs: ["out.txt"],
+                    env: #{},
+                    toolchain_id: "",
+                };
+                ctx.action(spec);
+            }
+        "#;
+		let actions = lower(script, &component(), hooks()).unwrap();
+		assert_eq!(actions.len(), 1);
+		assert_eq!(actions[0].outputs, vec![("out.txt".to_string(), false)]);
+	}
+
+	#[test]
+	fn replace_in_action() {
+		let script = r#"
+            fn build(ctx) {
+                let s = "hello.a";
+				s.replace(".a", ".rlib");
+				let outputs = [s];
+                ctx.action(#{
+                    name: "test",
+                    command: "echo",
+                    args: ["hello"],
+                    inputs: [],
+                    outputs: outputs,
+                    env: #{},
+                    toolchain_id: "",
+                });
+            }
+        "#;
+		let actions = lower(script, &component(), hooks()).unwrap();
+		assert_eq!(actions.len(), 1);
+		assert_eq!(actions[0].outputs, vec![("hello.rlib".to_string(), false)]);
 	}
 }

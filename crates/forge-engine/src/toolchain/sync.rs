@@ -95,6 +95,38 @@ fn sync_one(
 	})?;
 	let _ = std::fs::remove_file(&archive_path);
 
+	if let Some(top) = find_install_sh(&install_dir) {
+		let prefix = install_dir.clone();
+		let status = std::process::Command::new("sh")
+			.arg(top.join("install.sh"))
+			.arg(format!("--prefix={}", prefix.display()))
+			.arg("--without=rust-docs")
+			.arg("--without=rust-docs-json-preview")
+			.arg("--without=rust-analysis-x86_64-unknown-linux-gnu")
+			.arg("--without=llvm-tools-preview")
+			.arg("--without=llvm-bitcode-linker-preview")
+			.arg("--without=rust-analyzer-preview")
+			.arg("--without=clippy-preview")
+			.arg("--without=rustfmt-preview")
+			.current_dir(top.parent().unwrap_or(&install_dir))
+			.status()
+			.map_err(|e| io_err("install rust", &prefix, e))?;
+		if !status.success() {
+			let _ = std::fs::remove_dir_all(&install_dir);
+			return Err(ForgeDiagnostic::error(
+				codes::hermetic::TOOLCHAIN_MISMATCH,
+				format!("`{config_name}` rust install failed (exit {})", status.code().unwrap_or(-1)),
+			));
+		}
+		let _ = std::fs::remove_dir_all(&top);
+	}
+
+	if catalog_name == "gcc"
+		&& let Some(bin) = installed_bin_dir(&install_dir)
+	{
+		let _ = ensure_gcc_prefix_links(&bin);
+	}
+
 	if installed_bin_dir(&install_dir).is_none() {
 		let _ = std::fs::remove_dir_all(&install_dir);
 		return Err(ForgeDiagnostic::error(
@@ -107,7 +139,7 @@ fn sync_one(
 	Ok(SyncOutcome::Downloaded { url: target.url.clone() })
 }
 
-fn download(url: &str, destination: &Path) -> Result<(), ForgeDiagnostic> {
+pub(crate) fn download(url: &str, destination: &Path) -> Result<(), ForgeDiagnostic> {
 	let response = ureq::get(url)
 		.call()
 		.map_err(|e| ForgeDiagnostic::error(codes::hermetic::TOOLCHAIN_MISMATCH, format!("GET {url}: {e}")))?;
@@ -133,7 +165,7 @@ fn download(url: &str, destination: &Path) -> Result<(), ForgeDiagnostic> {
 	Ok(())
 }
 
-fn file_sha256(path: &Path) -> Result<String, ForgeDiagnostic> {
+pub(crate) fn file_sha256(path: &Path) -> Result<String, ForgeDiagnostic> {
 	let mut file = std::fs::File::open(path).map_err(|e| io_err("open", path, e))?;
 	let mut hasher = sha2::Sha256::new();
 	let mut buffer = [0u8; 64 * 1024];
@@ -237,6 +269,47 @@ fn check_install(
 		Ok(actual) => format!("{config_name}: MISMATCH expected {expected} got {actual}"),
 		Err(e) => format!("{config_name}: verify failed ({e})"),
 	}
+}
+
+fn find_install_sh(install_dir: &Path) -> Option<std::path::PathBuf> {
+	for entry in std::fs::read_dir(install_dir).ok()?.flatten() {
+		let candidate = entry.path().join("install.sh");
+		if candidate.is_file() {
+			return Some(entry.path());
+		}
+	}
+	None
+}
+
+fn ensure_gcc_prefix_links(bin_dir: &Path) -> std::io::Result<()> {
+	let mut prefix: Option<String> = None;
+	for entry in std::fs::read_dir(bin_dir)? {
+		let entry = entry?;
+		let name = entry.file_name().to_string_lossy().into_owned();
+		if name.ends_with("-gcc") {
+			prefix = Some(name[..name.len() - 3].to_string());
+			break;
+		}
+	}
+	let Some(prefix) = prefix else {
+		return Ok(());
+	};
+	for (from, to) in [
+		(format!("{prefix}gcc"), "gcc"),
+		(format!("{prefix}g++"), "g++"),
+		(format!("{prefix}ar"), "ar"),
+		(format!("{prefix}ld"), "ld"),
+	] {
+		let src = bin_dir.join(&from);
+		let dst = bin_dir.join(to);
+		if src.exists() && !dst.exists() {
+			#[cfg(unix)]
+			std::os::unix::fs::symlink(&src, &dst)?;
+			#[cfg(not(unix))]
+			std::fs::copy(&src, &dst)?;
+		}
+	}
+	Ok(())
 }
 
 fn record_marker(install_dir: &Path) -> Result<(), ForgeDiagnostic> {

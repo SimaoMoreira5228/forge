@@ -103,6 +103,37 @@ fn apply_dynamic(builder: &mut FieldsBuilder, key: &str, value: &Dynamic) -> Res
 		return Err(ForgeDiagnostic::error(103, format!("field `{key}` does not accept a map")));
 	}
 	if let Some(list) = value.clone().try_cast::<rhai::Array>() {
+		if key == "deps" {
+			for item in &list {
+				if let Some(dep) = item.clone().try_cast::<Map>() {
+					let label = dep
+						.get("target")
+						.and_then(|value| value.clone().into_string().ok())
+						.ok_or_else(|| ForgeDiagnostic::error(103, "dependency requires string `target`"))?;
+					let edge_name = dep
+						.get("edge")
+						.and_then(|value| value.clone().into_string().ok())
+						.unwrap_or_else(|| "hard".into());
+					let edge = match edge_name.as_str() {
+						"hard" => forge_core::DependencyEdge::Hard,
+						"order_only" => forge_core::DependencyEdge::OrderOnly,
+						"module_import" => forge_core::DependencyEdge::ModuleImport,
+						"proc_macro" => forge_core::DependencyEdge::ProcMacro,
+						"build_script" => forge_core::DependencyEdge::BuildScript,
+						other => return Err(ForgeDiagnostic::error(103, format!("unknown dependency edge `{other}`"))),
+					};
+					builder.dependency(label, edge)?;
+				} else {
+					builder.dependency(
+						item.clone()
+							.into_string()
+							.map_err(|_| ForgeDiagnostic::error(103, "field `deps` expects strings or maps"))?,
+						forge_core::DependencyEdge::Hard,
+					)?;
+				}
+			}
+			return Ok(());
+		}
 		let to_strings = |items: &[Dynamic]| -> Result<Vec<String>, ForgeDiagnostic> {
 			items
 				.iter()

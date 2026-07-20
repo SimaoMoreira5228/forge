@@ -54,6 +54,10 @@ enum Command {
 		#[arg(long, default_value = "10")]
 		limit: usize,
 	},
+	Coverage {
+		#[arg(long)]
+		output: Option<String>,
+	},
 	CompileCommands {
 		#[arg(long, default_value = "debug")]
 		profile: String,
@@ -247,6 +251,8 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 			}
 			Ok(())
 		}
+
+		Command::Coverage { output } => Engine::open(&workspace).coverage(output.as_deref()),
 
 		Command::CompileCommands { profile, output } => {
 			let json = Engine::open(&workspace).compile_commands(&profile)?;

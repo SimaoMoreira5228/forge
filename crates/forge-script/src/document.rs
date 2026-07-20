@@ -80,7 +80,16 @@ impl TargetKind {
 				"link_flags",
 				"env",
 			],
-			TargetKind::Rule => &["visibility", "compatible_with", "command", "args", "inputs", "outputs", "env"],
+			TargetKind::Rule => &[
+				"visibility",
+				"compatible_with",
+				"command",
+				"args",
+				"inputs",
+				"outputs",
+				"deps",
+				"env",
+			],
 		}
 	}
 }
@@ -108,7 +117,7 @@ pub struct TargetDecl {
 	pub compatible_with: Vec<String>,
 	pub sources: Vec<SourceExpr>,
 	pub headers: Vec<SourceExpr>,
-	pub deps: Vec<String>,
+	pub deps: Vec<forge_core::DependencyDecl>,
 	pub includes: Vec<String>,
 	pub defines: Vec<String>,
 	pub flags: Vec<String>,
@@ -285,7 +294,10 @@ impl FieldsBuilder {
 			"srcs" => decl.sources.extend(values.into_iter().map(to_source_expr)),
 			"hdrs" => decl.headers.extend(values.into_iter().map(to_source_expr)),
 			"inputs" => decl.inputs.extend(values.into_iter().map(to_source_expr)),
-			"deps" => decl.deps.extend(values),
+			"deps" => decl.deps.extend(values.into_iter().map(|label| forge_core::DependencyDecl {
+				label,
+				edge: forge_core::DependencyEdge::Hard,
+			})),
 			"includes" => decl.includes.extend(values),
 			"defines" => decl.defines.extend(values),
 			"flags" => decl.flags.extend(values),
@@ -301,6 +313,13 @@ impl FieldsBuilder {
 			}
 			_ => unreachable!("string_list on non-list key"),
 		}
+		Ok(())
+	}
+
+	pub fn dependency(&mut self, label: String, edge: forge_core::DependencyEdge) -> Result<(), ForgeDiagnostic> {
+		self.check("deps")?;
+		self.decl.fields_set.insert("deps".into());
+		self.decl.deps.push(forge_core::DependencyDecl { label, edge });
 		Ok(())
 	}
 

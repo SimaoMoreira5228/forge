@@ -1,0 +1,8 @@
+[rule.build]
+command = "cargo"
+args = ["build", "--release", "--target-dir", "forge-out/cargo"]
+inputs = ["Cargo.toml", "Cargo.lock", "${glob('crates/**/*.rs')}", "${glob('crates/**/*.toml')}", "${glob('crates/**/*.sql')}", "${glob('prelude/**/*')}"]
+outputs = ["forge-out/cargo/release/forge"]
+
+[rule.build.env]
+CARGO_TERM_QUIET = "true"

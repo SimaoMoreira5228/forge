@@ -38,11 +38,13 @@ pub fn execute_dag<T: Send + Sync>(
 					let next = {
 						let mut queue = ready.lock();
 						loop {
+							if failure.lock().is_some() {
+								break None;
+							}
 							if let Some(index) = queue.pop_front() {
 								break Some(index);
 							}
-							let failed = failure.lock().is_some();
-							if failed || pending.load(Ordering::Acquire) == 0 {
+							if pending.load(Ordering::Acquire) == 0 {
 								break None;
 							}
 							progress.wait(&mut queue);
@@ -60,10 +62,12 @@ pub fn execute_dag<T: Send + Sync>(
 						progress.notify_all();
 					}
 
-					for &dependent in &dependents[index] {
-						if indegree[dependent].fetch_sub(1, Ordering::AcqRel) == 1 {
-							ready.lock().push_back(dependent);
-							progress.notify_one();
+					if failure.lock().is_none() {
+						for &dependent in &dependents[index] {
+							if indegree[dependent].fetch_sub(1, Ordering::AcqRel) == 1 {
+								ready.lock().push_back(dependent);
+								progress.notify_one();
+							}
 						}
 					}
 

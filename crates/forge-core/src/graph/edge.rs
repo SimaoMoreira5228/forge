@@ -16,6 +16,12 @@ pub enum DependencyEdge {
 	Transition(ConfigTransition),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependencyDecl {
+	pub label: String,
+	pub edge: DependencyEdge,
+}
+
 impl DependencyEdge {
 	pub fn blocks_execution(&self) -> bool {
 		!matches!(self, DependencyEdge::OrderOnly)

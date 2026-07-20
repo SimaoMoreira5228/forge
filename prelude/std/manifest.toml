@@ -1,0 +1,10 @@
+[cells.c]
+extensions = ["c", "h", "cpp", "cc", "cxx", "C", "hpp", "hh", "hxx"]
+preferred_toolchain = "clang"
+fallback_toolchains = ["gcc", "cc"]
+
+[cells.rust]
+extensions = ["rs"]
+preferred_toolchain = "rust"
+fallback_toolchains = ["rustc"]
+standard = "2024"

@@ -86,6 +86,7 @@ impl Engine {
 			platform: &platform,
 			toolchains: &toolchains,
 			cells: &cells,
+			workspace: Some(&self.workspace),
 		};
 		let dag = build_action_dag(&ctx)?;
 		Ok((prepared, dag))
@@ -113,6 +114,62 @@ impl Engine {
 			.collect();
 
 		serde_json::to_string_pretty(&entries).map_err(|e| ForgeDiagnostic::error(8, format!("json: {e}")))
+	}
+
+	pub fn coverage(&self, output: Option<&str>) -> Result<(), ForgeDiagnostic> {
+		eprintln!("coverage: building with coverage flags...");
+		let build_outcome = self.execute("coverage", true)?;
+		eprintln!(
+			"coverage: tests ok ({} executed, {} cached)",
+			build_outcome.executed, build_outcome.test_cache_hits
+		);
+
+		let out_dir = self.out_dir();
+		let toolchains =
+			ToolchainStore::load(&self.workspace, forge_script::WorkspaceConfig::load(&self.workspace)?)?.resolve_all()?;
+
+		eprintln!("coverage: merging raw profiles...");
+		let profiles = crate::coverage::merge_profiles(&self.workspace, &out_dir, &toolchains, None)?;
+		if profiles.is_empty() {
+			eprintln!("coverage: no profiling data found; did tests run with coverage enabled?");
+			return Ok(());
+		}
+
+		eprintln!("coverage: generating report...");
+		let report = crate::coverage::generate_report(
+			&self.workspace,
+			&out_dir,
+			&profiles,
+			&toolchains,
+			match output {
+				Some(s) if s.ends_with(".info") || s == "lcov" => crate::coverage::CoverageFormat::Lcov,
+				_ => crate::coverage::CoverageFormat::Text,
+			},
+			None,
+		)?;
+
+		if let Some(path) = output {
+			if path.ends_with(".info") || path == "lcov" {
+				let lcov_path = out_dir.join("coverage.info");
+				let target = if path == "lcov" { &lcov_path } else { &PathBuf::from(path) };
+				if target != &lcov_path && lcov_path.exists() {
+					std::fs::copy(&lcov_path, target)
+						.map_err(|e| ForgeDiagnostic::error(8, format!("failed to copy {}: {e}", target.display())))?;
+					eprintln!("coverage: wrote {}", target.display());
+				} else {
+					eprintln!("coverage: {}", report.summary);
+				}
+			} else {
+				eprintln!(
+					"coverage: {} (report format `{}` not implemented yet, wrote text instead)",
+					report.summary, path
+				);
+			}
+		} else {
+			println!("{}", report.summary);
+		}
+
+		Ok(())
 	}
 
 	fn execute(&self, profile_name: &str, run_tests: bool) -> Result<BuildOutcome, ForgeDiagnostic> {
@@ -225,7 +282,13 @@ impl ExecContext<'_> {
 		}
 
 		let sandbox = self.runner.prepare(&key, spec)?;
-		let bins: Vec<&Path> = self.toolchains.values().map(|t| t.bin_dir.as_path()).collect();
+		let mut bins: Vec<&Path> = self
+			.toolchains
+			.values()
+			.flat_map(|t| t.path_dirs.iter().map(|p| p.as_path()))
+			.collect();
+		bins.sort();
+		bins.dedup();
 		let report = self.runner.execute(spec, &sandbox, &bins);
 
 		if !report.success {
@@ -252,7 +315,16 @@ impl ExecContext<'_> {
 			)));
 		}
 
-		self.runner.collect(spec, &sandbox)?;
+		if let Err(e) = self.runner.collect(spec, &sandbox) {
+			return Err(e.with_help(format!(
+				"action stderr:\n{}",
+				if report.stderr_tail.trim().is_empty() {
+					"(empty)"
+				} else {
+					report.stderr_tail.trim()
+				}
+			)));
+		}
 		let out_tuples: Vec<(PathBuf, forge_core::OutputKind)> =
 			spec.outputs.iter().map(|o| (o.path.clone(), o.kind)).collect();
 		self.cas.store(&key, &out_tuples, &sandbox)?;

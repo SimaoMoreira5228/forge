@@ -39,6 +39,7 @@ impl Engine {
 			platform: &platform,
 			toolchains: &toolchains,
 			cells: &cells,
+			workspace: Some(&self.workspace),
 		};
 		let dag = build_action_dag(&ctx)?;
 

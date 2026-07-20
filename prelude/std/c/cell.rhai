@@ -3,7 +3,19 @@ fn is_cpp(src) {
 }
 
 fn compiler_for(ctx, src) {
-    let candidates = if is_cpp(src) { ["clang++", "g++", "c++"] } else { ["clang", "gcc", "cc"] };
+    if ctx.compiler != "" {
+        let selected = ctx.bin(ctx.compiler);
+        if selected != "" {
+            return selected;
+        }
+    }
+    let candidates = if ctx.profile.coverage {
+        if is_cpp(src) { ["g++", "clang++", "c++"] } else { ["gcc", "clang", "cc"] }
+    } else if is_cpp(src) {
+        ["clang++", "g++", "c++"]
+    } else {
+        ["clang", "gcc", "cc"]
+    };
     for name in candidates {
         let path = ctx.bin(name);
         if path != "" {
@@ -25,7 +37,18 @@ fn linker_for(ctx) {
     if ctx.linker != "" {
         return ctx.linker;
     }
-    for name in ["clang++", "g++", "c++", "clang", "gcc", "cc"] {
+    if ctx.compiler != "" {
+        let selected = ctx.bin(ctx.compiler);
+        if selected != "" {
+            return selected;
+        }
+    }
+    let candidates = if ctx.profile.coverage {
+        ["g++", "gcc", "clang++", "clang", "c++", "cc"]
+    } else {
+        ["clang++", "g++", "c++", "clang", "gcc", "cc"]
+    };
+    for name in candidates {
         let found = ctx.bin(name);
         if found != "" {
             return found;
@@ -80,6 +103,13 @@ fn compile_one(ctx, src) {
     args.push("-o");
     args.push(obj);
 
+    let outputs = [obj, depfile];
+    if ctx.profile.coverage {
+        let notes = obj;
+        notes.replace(".o", ".gcno");
+        outputs.push(notes);
+    }
+
     let inputs = [src] + ctx.hdrs + ctx.prior_depfile_headers(obj);
 
     ctx.action(#{
@@ -87,7 +117,7 @@ fn compile_one(ctx, src) {
         command: compiler_for(ctx, src),
         args: args,
         inputs: inputs,
-        outputs: [obj, depfile],
+        outputs: outputs,
         env: ctx.env,
         toolchain_id: ctx.tool_id(),
     });
@@ -158,13 +188,18 @@ fn build(ctx) {
     link_one(ctx, objs, exe);
 
     if ctx.kind == "test" {
+        let test_env = ctx.env;
+        let test_outputs = [];
+        if ctx.profile.coverage {
+            test_outputs.push("forge-out/profile/coverage/");
+        }
         ctx.action(#{
             name: `run ${ctx.label}`,
             command: exe,
             args: ctx.run_args,
             inputs: [exe] + ctx.data,
-            outputs: [],
-            env: ctx.env,
+            outputs: test_outputs,
+            env: test_env,
             toolchain_id: "",
         });
     }

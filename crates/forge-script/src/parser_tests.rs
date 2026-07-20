@@ -37,9 +37,27 @@ fn binary_inherits_defaults_and_env_table() {
 	let bin = &decls[1];
 	assert_eq!(bin.kind, TargetKind::Binary);
 	assert_eq!(bin.compiler.as_deref(), Some("clang"));
-	assert_eq!(bin.deps, vec!["math_utils"]);
+	assert_eq!(bin.deps[0].label, "math_utils");
+	assert_eq!(bin.deps[0].edge, forge_core::DependencyEdge::Hard);
 	assert_eq!(bin.env.get("OPT").map(String::as_str), Some("3"));
 	assert_eq!(bin.visibility, forge_core::Visibility::Package);
+}
+
+#[test]
+fn parses_typed_dependency_edges() {
+	let decls = parse_forge_toml(
+		r#"[binary.app]
+deps = [
+  "//lib:base",
+  { target = "//tools:macro", edge = "proc_macro" },
+  { target = "//tools:gen", edge = "build_script" },
+]
+"#,
+	)
+	.unwrap();
+	let deps = &decls[0].deps;
+	assert_eq!(deps[1].edge, forge_core::DependencyEdge::ProcMacro);
+	assert_eq!(deps[2].edge, forge_core::DependencyEdge::BuildScript);
 }
 
 #[test]

@@ -44,6 +44,7 @@ pub struct PlanContext<'a> {
 	pub platform: &'a Platform,
 	pub toolchains: &'a BTreeMap<String, ResolvedToolchain>,
 	pub cells: &'a StdCells,
+	pub workspace: Option<&'a Path>,
 }
 
 pub type DeclMap = BTreeMap<String, TargetDecl>;
@@ -53,9 +54,8 @@ struct Planner<'a> {
 	dag: ActionDag,
 	producer_of: BTreeMap<PathBuf, usize>,
 	archive_of: BTreeMap<String, PathBuf>,
+	last_action_of: BTreeMap<String, usize>,
 }
-
-const CELL_LANGUAGES: &[(&str, &[&str])] = &[("c", &["c", "h", "cpp", "cc", "cxx", "C", "hpp", "hh", "hxx"])];
 
 pub fn build_action_dag(ctx: &PlanContext<'_>) -> Result<ActionDag, ForgeDiagnostic> {
 	let order = ctx.graph.topological_order().map_err(cycle_error)?;
@@ -64,6 +64,7 @@ pub fn build_action_dag(ctx: &PlanContext<'_>) -> Result<ActionDag, ForgeDiagnos
 		dag: ActionDag::default(),
 		producer_of: BTreeMap::new(),
 		archive_of: BTreeMap::new(),
+		last_action_of: BTreeMap::new(),
 	};
 	for id in order {
 		let component = ctx.graph.component(id);
@@ -75,6 +76,7 @@ pub fn build_action_dag(ctx: &PlanContext<'_>) -> Result<ActionDag, ForgeDiagnos
 			ComponentKind::Generic { .. } => planner.plan_rule(id)?,
 		}
 	}
+	planner.link_component_edges()?;
 	Ok(planner.dag)
 }
 
@@ -93,9 +95,35 @@ impl<'a> Planner<'a> {
 		for output in &spec.outputs {
 			self.producer_of.insert(output.path.clone(), index);
 		}
+		self.last_action_of.insert(spec.component.clone(), index);
 		self.dag.specs.push(spec);
 		self.dag.deps.push(deps);
 		index
+	}
+
+	fn link_component_edges(&mut self) -> Result<(), ForgeDiagnostic> {
+		let mut additions: Vec<(usize, usize)> = Vec::new();
+		for (index, spec) in self.dag.specs.iter().enumerate() {
+			let Some(node) = self.ctx.graph.get(
+				&forge_core::Label::parse(&spec.component, "")
+					.unwrap_or_else(|_| forge_core::Label::new("", &spec.component)),
+			) else {
+				continue;
+			};
+			for dep in self.ctx.graph.dependencies_of(node) {
+				let dep_label = self.ctx.graph.component(dep).label.to_string();
+				if let Some(&last) = self.last_action_of.get(&dep_label) {
+					additions.push((index, last));
+				}
+			}
+		}
+		for (index, predecessor) in additions {
+			let slot = &mut self.dag.deps[index];
+			if !slot.contains(&predecessor) {
+				slot.push(predecessor);
+			}
+		}
+		Ok(())
 	}
 
 	fn decl_for(&self, id: ComponentId) -> Result<&TargetDecl, ForgeDiagnostic> {
@@ -112,15 +140,20 @@ impl<'a> Planner<'a> {
 		self.ctx.graph.component(id).label.package().replace('/', "_")
 	}
 
-	fn tool_for(&self, decl: &TargetDecl) -> Result<&ResolvedToolchain, ForgeDiagnostic> {
-		let mut candidates: Vec<&str> = vec!["clang", "gcc", "cc"];
-		if let Some(name) = &decl.compiler {
-			candidates.insert(0, name.as_str());
+	fn tool_for(&self, decl: &TargetDecl, language: &str) -> Result<&ResolvedToolchain, ForgeDiagnostic> {
+		if let Some(name) = &decl.compiler
+			&& let Some(tool) = self.ctx.toolchains.get(name.as_str())
+		{
+			return Ok(tool);
 		}
+		let candidates = self.ctx.cells.toolchain_candidates(language);
 		for name in candidates {
-			if let Some(tool) = self.ctx.toolchains.get(name) {
+			if let Some(tool) = self.ctx.toolchains.get(name.as_str()) {
 				return Ok(tool);
 			}
+		}
+		if let Some(tool) = self.ctx.toolchains.values().next() {
+			return Ok(tool);
 		}
 		Err(ForgeDiagnostic::error(
 			codes::hermetic::TOOLCHAIN_MISMATCH,
@@ -144,13 +177,20 @@ impl<'a> Planner<'a> {
 			));
 		}
 		let command = decl.command.expect("checked above");
+		let command = if command.contains('/') {
+			command
+		} else {
+			crate::toolchain::resolve_tool_path(self.ctx.toolchains, &command)?
+				.to_string_lossy()
+				.into_owned()
+		};
 		let toolchain_id = decl
 			.compiler
 			.as_deref()
 			.and_then(|name| self.ctx.toolchains.get(name))
 			.map(tool_id);
 		self.emit(ActionSpec {
-			name: format!("run rule {label}"),
+			name: format!("rule {label}"),
 			component: label,
 			command,
 			args: decl.args.clone(),
@@ -178,7 +218,7 @@ impl<'a> Planner<'a> {
 				format!("`{label}` declares no sources"),
 			));
 		}
-		let language = cell_language(&component.sources[0]).ok_or_else(|| {
+		let language = cell_language(self.ctx.cells, &component.sources[0]).ok_or_else(|| {
 			ForgeDiagnostic::error(
 				codes::script::WRONG_TYPE,
 				format!(
@@ -186,9 +226,12 @@ impl<'a> Planner<'a> {
 					component.sources[0].display()
 				),
 			)
-			.with_help(format!("supported source types: {}", render_supported_languages()))
+			.with_help(format!(
+				"supported source types: {}",
+				render_supported_languages(self.ctx.cells)
+			))
 		})?;
-		let script = self.ctx.cells.get(language)?;
+		let script = self.ctx.cells.get(&language)?;
 
 		let decl = self.decl_for(id)?.clone();
 		let mut hdrs: Vec<String> = component.headers.iter().map(|p| path_string(p)).collect();
@@ -208,9 +251,9 @@ impl<'a> Planner<'a> {
 		let profile = self.ctx.profile.clone();
 		let pkg_slug = self.package_slug(id);
 		let name = component.label.name().to_string();
-		let bin_dir = self.tool_for(&decl)?.bin_dir.clone();
-		let digest_tool = self.tool_for(&decl)?;
-		let tool_digest = tool_id(digest_tool);
+		let tool = self.tool_for(&decl, &language)?.clone();
+		let tool_for_bin = tool.clone();
+		let tool_digest = tool_id(&tool);
 
 		let hooks = CellHooks {
 			obj_path: Box::new(move |src| object_path(Path::new(src), &profile).to_string_lossy().into_owned()),
@@ -226,31 +269,52 @@ impl<'a> Planner<'a> {
 					.into_owned()
 			}),
 			bin: Box::new(move |binary_name| {
-				let candidate = bin_dir.join(binary_name);
-				if candidate.is_file() {
-					candidate.to_string_lossy().into_owned()
-				} else {
-					String::new()
-				}
+				tool_for_bin
+					.binary(binary_name)
+					.map(|p| p.to_string_lossy().into_owned())
+					.unwrap_or_default()
 			}),
 			tool_id: Box::new(move || tool_digest.clone()),
+			read_file: {
+				let ws = self.ctx.workspace.map(|p| p.to_path_buf()).unwrap_or_default();
+				Box::new(move |path: &str| -> Result<String, String> {
+					let full = if Path::new(path).is_absolute() {
+						PathBuf::from(path)
+					} else {
+						ws.join(path)
+					};
+					std::fs::read_to_string(&full).map_err(|e| format!("cannot read {}: {e}", full.display()))
+				})
+			},
 		};
+
+		let dep_artifacts = self.collect_dep_artifacts(id);
 
 		let view = ComponentView {
 			label,
 			name,
 			kind: kind.to_string(),
+			compiler: decl.compiler.clone().unwrap_or_default(),
 			srcs: component.sources.iter().map(|p| path_string(p)).collect(),
 			hdrs,
 			includes,
 			defines: decl.defines.clone(),
 			flags: decl.flags.clone(),
-			standard: decl.standard.clone(),
+			standard: decl
+				.standard
+				.clone()
+				.or_else(|| self.ctx.cells.standard_for(&language).map(|s| s.to_string())),
 			system_libs: decl.system_libs.clone(),
 			run_args: decl.args.clone(),
 			data: decl.data.iter().map(|p| path_string(p)).collect(),
 			env: decl.env.clone(),
 			dep_archives: dep_archives.iter().map(|p: &PathBuf| path_string(p)).collect(),
+			dep_artifacts,
+			workspace: self
+				.ctx
+				.workspace
+				.map(|p| p.to_string_lossy().into_owned())
+				.unwrap_or_default(),
 			linker: match &decl.linker {
 				Some(spec) => crate::toolchain::resolve_tool_path(self.ctx.toolchains, spec)?
 					.to_string_lossy()
@@ -284,20 +348,23 @@ impl<'a> Planner<'a> {
 		kind: &'static str,
 	) -> Result<(), ForgeDiagnostic> {
 		let label = self.ctx.graph.component(id).label.to_string();
-		let name = self.ctx.graph.component(id).label.name().to_string();
-		let pkg_slug = self.package_slug(id);
-		let expected_archive = PathBuf::from(format!("forge-out/lib/{pkg_slug}/lib{name}.a"));
-		let mut archive_declared = false;
+		let mut archive_path: Option<PathBuf> = None;
 
 		for action in actions {
-			if kind == "library" && action.outputs.first().map(|(p, _)| PathBuf::from(p)) == Some(expected_archive.clone()) {
-				archive_declared = true;
+			if kind == "library" && archive_path.is_none() {
+				for (out, _) in &action.outputs {
+					let p = PathBuf::from(out);
+					if p.starts_with("forge-out/lib") {
+						archive_path = Some(p);
+						break;
+					}
+				}
 			}
 			let spec = ActionSpec {
-				name: action.name,
+				name: action.name.clone(),
 				component: label.clone(),
-				command: action.command,
-				args: action.args,
+				command: action.command.clone(),
+				args: action.args.clone(),
 				inputs: action.inputs.iter().map(PathBuf::from).collect(),
 				outputs: action
 					.outputs
@@ -314,18 +381,27 @@ impl<'a> Planner<'a> {
 		}
 
 		if kind == "library" {
-			if !archive_declared {
+			let Some(archive) = archive_path else {
 				return Err(ForgeDiagnostic::error(
 					codes::script::WRONG_TYPE,
-					format!(
-						"cell did not declare the archive output `{}` for `{label}`",
-						expected_archive.display()
-					),
+					format!("cell for `{label}` did not declare any output under `forge-out/lib`"),
 				));
-			}
-			self.archive_of.insert(label, expected_archive);
+			};
+			self.archive_of.insert(label, archive);
 		}
 		Ok(())
+	}
+
+	fn collect_dep_artifacts(&self, id: ComponentId) -> Vec<(String, String)> {
+		let mut artifacts = Vec::new();
+		for dep in self.ctx.graph.transitive_dependencies(id) {
+			let dep_label = self.ctx.graph.component(dep).label.clone();
+			let label = dep_label.to_string();
+			if let Some(path) = self.archive_of.get(&label) {
+				artifacts.push((dep_label.name().to_string(), path.to_string_lossy().into_owned()));
+			}
+		}
+		artifacts
 	}
 
 	fn transitive_archives(&self, id: ComponentId) -> Vec<PathBuf> {
@@ -341,20 +417,13 @@ impl<'a> Planner<'a> {
 	}
 }
 
-fn cell_language(source: &Path) -> Option<&'static str> {
+fn cell_language(cells: &StdCells, source: &Path) -> Option<String> {
 	let extension = source.extension()?.to_str()?;
-	CELL_LANGUAGES
-		.iter()
-		.find(|(_, extensions)| extensions.contains(&extension))
-		.map(|(language, _)| *language)
+	cells.cell_for_extension(extension).map(|s| s.to_string())
 }
 
-fn render_supported_languages() -> String {
-	CELL_LANGUAGES
-		.iter()
-		.map(|(lang, extensions)| format!("{} ({})", lang, extensions.join(", ")))
-		.collect::<Vec<_>>()
-		.join(", ")
+fn render_supported_languages(cells: &StdCells) -> String {
+	cells.supported_languages()
 }
 
 fn path_string(path: &Path) -> String {
@@ -394,7 +463,8 @@ fn tool_id(tool: &ResolvedToolchain) -> String {
 fn object_path(source: &Path, profile: &Profile) -> PathBuf {
 	let stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("src");
 	let suffix = hasher::hex(blake3::hash(source.to_string_lossy().as_bytes()).as_bytes())[..8].to_string();
-	PathBuf::from(format!("forge-out/obj/{}/{}_{suffix}.o", profile.name, stem))
+	let directory = if profile.coverage { "profile" } else { "obj" };
+	PathBuf::from(format!("forge-out/{directory}/{}/{}_{suffix}.o", profile.name, stem))
 }
 
 fn previous_depfile_headers(depfile: &Path) -> Vec<PathBuf> {

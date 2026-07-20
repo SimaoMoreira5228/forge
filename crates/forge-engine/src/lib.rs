@@ -1,5 +1,6 @@
 pub mod builder;
 pub mod cas;
+pub mod coverage;
 pub mod db;
 pub mod explain;
 pub mod hasher;

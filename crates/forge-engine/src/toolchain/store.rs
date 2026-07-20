@@ -21,17 +21,37 @@ pub enum CatalogOrigin {
 pub struct ResolvedToolchain {
 	pub name: String,
 	pub bin_dir: PathBuf,
+	pub path_dirs: Vec<PathBuf>,
 	pub digest: String,
 }
 
 impl ResolvedToolchain {
 	pub fn binary(&self, name: &str) -> Option<PathBuf> {
 		let suffix = std::env::consts::EXE_SUFFIX;
-		let mut candidates = vec![self.bin_dir.join(name)];
-		if !suffix.is_empty() {
-			candidates.push(self.bin_dir.join(format!("{name}{suffix}")));
+		let direct = self.bin_dir.join(name);
+		if direct.is_file() {
+			return Some(direct);
 		}
-		candidates.into_iter().find(|c| c.is_file())
+		if !suffix.is_empty() {
+			let shelled = self.bin_dir.join(format!("{name}{suffix}"));
+			if shelled.is_file() {
+				return Some(shelled);
+			}
+		}
+		self.nested_binary(name)
+	}
+
+	fn nested_binary(&self, name: &str) -> Option<PathBuf> {
+		walkdir::WalkDir::new(&self.bin_dir)
+			.into_iter()
+			.flatten()
+			.filter(|e| {
+				e.file_type().is_file()
+					&& e.file_name().to_string_lossy() == name
+					&& e.path().parent().is_some_and(|p| p.file_name().is_some_and(|n| n == "bin"))
+			})
+			.map(|e| e.path().to_path_buf())
+			.next()
 	}
 }
 
@@ -139,31 +159,50 @@ impl ToolchainStore {
 			ToolchainSelection::Version { version } => {
 				let resolved = self.catalog.resolve(name, Some(version))?;
 				let dir = self.install_dir(&resolved.name, &resolved.version);
-				let bin_dir = installed_bin_dir(&dir).ok_or_else(|| {
-					toolchain_error(name, format!("version {version} is not synced"))
-						.with_help("run `forge toolchain sync` to download it")
-				})?;
-				Ok(Self::finish(name, bin_dir))
+				self.synced_root(name, version, &dir)
 			}
 			ToolchainSelection::Url { url, .. } => {
 				let dir = self.install_dir(name, &Self::url_version(url));
-				let bin_dir = installed_bin_dir(&dir).ok_or_else(|| {
-					toolchain_error(name, "the pinned URL artifact is not synced".to_string())
-						.with_help("run `forge toolchain sync` to download it")
-				})?;
-				Ok(Self::finish(name, bin_dir))
+				self.synced_root(name, &format!("url:{}", Self::url_version(url)), &dir)
 			}
 		}
 	}
 
+	fn synced_root(&self, name: &str, version_display: &str, dir: &Path) -> Result<ResolvedToolchain, ForgeDiagnostic> {
+		if !dir.join(INSTALL_MARKER).exists() {
+			return Err(toolchain_error(name, format!("version {version_display} is not synced"))
+				.with_help("run `forge toolchain sync` to download it"));
+		}
+		if find_bin_dir(dir).is_none() && !any_file_under(dir) {
+			return Err(toolchain_error(name, format!("install at {} is empty", dir.display())));
+		}
+		Ok(Self::finish(name, dir.to_path_buf()))
+	}
+
 	fn finish(name: &str, bin_dir: PathBuf) -> ResolvedToolchain {
 		let digest = directory_digest(&bin_dir);
+		let mut path_dirs = vec![bin_dir.clone()];
+		path_dirs.extend(nested_bin_dirs(&bin_dir));
+		path_dirs.sort();
+		path_dirs.dedup();
 		ResolvedToolchain {
 			name: name.to_string(),
 			bin_dir,
+			path_dirs,
 			digest,
 		}
 	}
+}
+
+pub fn nested_bin_dirs(root: &Path) -> Vec<PathBuf> {
+	let mut dirs: Vec<PathBuf> = walkdir::WalkDir::new(root)
+		.into_iter()
+		.flatten()
+		.filter(|e| e.file_type().is_dir() && e.file_name() != "bin" && e.path().join("bin").is_dir())
+		.map(|e| e.path().join("bin"))
+		.collect();
+	dirs.sort_by_key(|p| p.components().count());
+	dirs
 }
 
 fn pick_bin_dir(path: &Path) -> PathBuf {
@@ -198,6 +237,13 @@ fn find_bin_dir(root: &Path) -> Option<PathBuf> {
 }
 
 pub const INSTALL_MARKER: &str = ".forge-install.txt";
+
+fn any_file_under(root: &Path) -> bool {
+	walkdir::WalkDir::new(root)
+		.into_iter()
+		.flatten()
+		.any(|e| e.file_type().is_file())
+}
 
 fn toolchain_error(name: &str, detail: String) -> ForgeDiagnostic {
 	ForgeDiagnostic::error(codes::hermetic::TOOLCHAIN_MISMATCH, format!("toolchain `{name}`: {detail}"))

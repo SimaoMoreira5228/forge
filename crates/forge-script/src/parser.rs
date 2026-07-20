@@ -110,6 +110,24 @@ fn apply_field(
 		if !LIST_KEYS.contains(&key) {
 			return builder.string_list(key, Vec::new());
 		}
+		if key == "deps" {
+			for element in array.iter() {
+				if let Some(inline) = element.as_inline_table() {
+					builder.dependency(
+						expect_string(
+							inline
+								.get("target")
+								.ok_or_else(|| ForgeDiagnostic::error(103, "dependency requires `target`"))?,
+							"target",
+						)?,
+						dependency_edge(inline.get("edge").and_then(Value::as_str))?,
+					)?;
+				} else {
+					builder.dependency(expect_string(element, key)?, forge_core::DependencyEdge::Hard)?;
+				}
+			}
+			return Ok(());
+		}
 		let mut values = Vec::new();
 		for element in array.iter() {
 			let text = expect_string(element, key)?;
@@ -140,6 +158,17 @@ fn apply_field(
 		Err(ForgeDiagnostic::error(103, format!("field `{key}` does not accept a table")))
 	} else {
 		Err(ForgeDiagnostic::error(103, format!("field `{key}` has an unsupported type")))
+	}
+}
+
+fn dependency_edge(name: Option<&str>) -> Result<forge_core::DependencyEdge, ForgeDiagnostic> {
+	match name.unwrap_or("hard") {
+		"hard" => Ok(forge_core::DependencyEdge::Hard),
+		"order_only" => Ok(forge_core::DependencyEdge::OrderOnly),
+		"module_import" => Ok(forge_core::DependencyEdge::ModuleImport),
+		"proc_macro" => Ok(forge_core::DependencyEdge::ProcMacro),
+		"build_script" => Ok(forge_core::DependencyEdge::BuildScript),
+		other => Err(ForgeDiagnostic::error(103, format!("unknown dependency edge `{other}`"))),
 	}
 }
 
@@ -205,6 +234,7 @@ const LIST_KEYS: &[&str] = &[
 	"system_libs",
 	"link_flags",
 	"data",
+	"args",
 ];
 
 fn expect_string(value: &Value, key: &str) -> Result<String, ForgeDiagnostic> {

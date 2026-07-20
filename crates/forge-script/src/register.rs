@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
+use forge_core::BuildGraph;
 use forge_core::graph::component::{Component, ComponentKind, LinkType};
 use forge_core::label::Label;
-use forge_core::{BuildGraph, DependencyEdge};
 use forge_diagnostics::{ForgeDiagnostic, codes};
 
 use crate::document::{SourceExpr, TargetDecl};
@@ -56,23 +56,27 @@ pub fn wire_dependencies(graph: &mut BuildGraph, decls: Vec<TargetDecl>, package
 	Ok(())
 }
 
-fn wire_dependency(graph: &mut BuildGraph, from: forge_core::ComponentId, dep: &str) -> Result<(), ForgeDiagnostic> {
-	if let Err(first_err) = graph.add_dependency(from, dep, DependencyEdge::Hard) {
+fn wire_dependency(
+	graph: &mut BuildGraph,
+	from: forge_core::ComponentId,
+	dep: &forge_core::DependencyDecl,
+) -> Result<(), ForgeDiagnostic> {
+	if let Err(first_err) = graph.add_dependency(from, &dep.label, dep.edge.clone()) {
 		let matches: Vec<String> = graph
 			.labels()
-			.filter(|l| l.name() == dep.trim_start_matches(':'))
+			.filter(|l| l.name() == dep.label.trim_start_matches(':'))
 			.map(|l| l.to_string())
 			.collect();
 		match matches.len() {
 			1 => {
 				graph
-					.add_dependency(from, &matches[0], DependencyEdge::Hard)
+					.add_dependency(from, &matches[0], dep.edge.clone())
 					.map_err(|_| first_err)?;
 				return Ok(());
 			}
-			0 => return Err(unknown_dep(dep, graph)),
+			0 => return Err(unknown_dep(&dep.label, graph)),
 			_ => {
-				return Err(ForgeDiagnostic::error(2, format!("ambiguous dependency `{dep}`"))
+				return Err(ForgeDiagnostic::error(2, format!("ambiguous dependency `{}`", dep.label))
 					.with_help(format!("matches: {}", matches.join(", "))));
 			}
 		}

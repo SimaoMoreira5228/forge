@@ -211,6 +211,11 @@ impl WorkspaceConfig {
 		if !profiles.contains_key("debug") {
 			profiles.insert("debug".into(), Profile::debug());
 		}
+		profiles.entry("coverage".into()).or_insert_with(|| Profile {
+			name: "coverage".into(),
+			coverage: true,
+			..Profile::debug()
+		});
 
 		let mut platforms = BTreeMap::new();
 		for (name, pl) in raw.platforms {
