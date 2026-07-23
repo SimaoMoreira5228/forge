@@ -9,7 +9,12 @@ pub struct ActionDecl {
 	pub command: String,
 	pub args: Vec<String>,
 	pub inputs: Vec<PathBufArg>,
+	pub execution_deps: Vec<PathBufArg>,
 	pub outputs: Vec<(PathBufArg, bool)>,
+	pub workdir: Option<String>,
+	pub stdout: Option<String>,
+	pub environment_files: Vec<(String, String, Option<String>, Vec<String>)>,
+	pub argument_files: Vec<(String, String, String, Option<String>)>,
 	pub env: BTreeMap<String, String>,
 	pub toolchain_id: Option<String>,
 }
@@ -34,6 +39,8 @@ pub struct ComponentView {
 	pub env: BTreeMap<String, String>,
 	pub dep_archives: Vec<String>,
 	pub dep_artifacts: Vec<(String, String)>,
+	pub fetched_sources: Vec<FetchedSource>,
+	pub fetch_owner: bool,
 	pub workspace: String,
 	pub linker: String,
 	pub link_flags: Vec<String>,
@@ -41,6 +48,14 @@ pub struct ComponentView {
 	pub platform_arch: String,
 	pub platform_abi: String,
 	pub profile: ProfileView,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FetchedSource {
+	pub name: String,
+	pub version: String,
+	pub root: String,
+	pub dependencies: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -64,9 +79,11 @@ pub struct CellHooks {
 	pub bin: Box<dyn Fn(&str) -> String>,
 	pub tool_id: Box<dyn Fn() -> String>,
 	pub read_file: FileReader,
+	pub glob: Globber,
 }
 
 type FileReader = Box<dyn Fn(&str) -> Result<String, String>>;
+type Globber = Box<dyn Fn(&str) -> Result<Vec<String>, String>>;
 
 pub fn lower(script: &str, component: &ComponentView, hooks: CellHooks) -> Result<Vec<ActionDecl>, ForgeDiagnostic> {
 	let actions: std::rc::Rc<std::cell::RefCell<Vec<ActionDecl>>> = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -106,6 +123,7 @@ fn register_helpers(engine: &mut rhai::Engine, component: &ComponentView, hooks:
 		bin,
 		tool_id,
 		read_file,
+		glob,
 	} = hooks;
 
 	engine.register_fn("bin", move |_ctx: &mut Map, name: &str| -> String { bin(name) });
@@ -119,7 +137,71 @@ fn register_helpers(engine: &mut rhai::Engine, component: &ComponentView, hooks:
 		"read_file",
 		move |_ctx: &mut Map, path: &str| -> Result<String, Box<EvalAltResult>> { read_file(path).map_err(|e| e.into()) },
 	);
+	engine.register_fn("toml_decode", |text: &str| -> Result<Map, Box<EvalAltResult>> {
+		crate::rhai_rt::toml_decode(text).map_err(Into::into)
+	});
+	register_graph_ops(engine);
+	register_platform_matches(engine);
+	engine.register_fn(
+		"glob",
+		move |_ctx: &mut Map, pattern: &str| -> Result<rhai::Array, Box<EvalAltResult>> {
+			let files = glob(pattern).map_err(|e| -> Box<EvalAltResult> { e.into() })?;
+			Ok(files.into_iter().map(Dynamic::from).collect())
+		},
+	);
 	let _ = component.profile;
+}
+
+fn register_platform_matches(engine: &mut rhai::Engine) {
+	engine.register_fn("platform_matches", |ctx: &mut Map, expr: &str| -> bool {
+		let field = |key: &str| {
+			ctx.get(key)
+				.and_then(|value| value.clone().into_string().ok())
+				.unwrap_or_default()
+		};
+		let debug = ctx
+			.get("profile")
+			.and_then(|value| value.clone().try_cast::<Map>())
+			.and_then(|profile| profile.get("is_debug").and_then(|value| value.as_bool().ok()))
+			.unwrap_or(false);
+		let os = field("platform_os");
+		let arch = field("platform_arch");
+		let abi = field("platform_abi");
+		crate::cfg::matches(
+			expr,
+			&crate::cfg::PlatformFacts {
+				os: &os,
+				arch: &arch,
+				abi: &abi,
+				debug,
+			},
+		)
+	});
+}
+
+fn register_graph_ops(engine: &mut rhai::Engine) {
+	use crate::dep_graph;
+
+	engine.register_fn("graph_roots", |adjacency: Map| -> rhai::Array {
+		dep_graph::keys_to_rhai(dep_graph::roots(&dep_graph::adjacency_from_rhai(&adjacency)))
+	});
+	engine.register_fn("graph_reachable", |adjacency: Map, roots: rhai::Array| -> rhai::Array {
+		let roots: Vec<String> = roots.into_iter().filter_map(|root| root.into_string().ok()).collect();
+		dep_graph::keys_to_rhai(dep_graph::reachable(&dep_graph::adjacency_from_rhai(&adjacency), &roots))
+	});
+	engine.register_fn("graph_transitive", |adjacency: Map, key: &str| -> rhai::Array {
+		dep_graph::keys_to_rhai(dep_graph::transitive(&dep_graph::adjacency_from_rhai(&adjacency), key))
+	});
+	engine.register_fn("graph_reverse", |adjacency: Map| -> Map {
+		let mut out = Map::new();
+		for (key, list) in dep_graph::reverse(&dep_graph::adjacency_from_rhai(&adjacency)) {
+			out.insert(key.into(), Dynamic::from(dep_graph::keys_to_rhai(list)));
+		}
+		out
+	});
+	engine.register_fn("graph_topo", |adjacency: Map| -> rhai::Array {
+		dep_graph::keys_to_rhai(dep_graph::toposort(&dep_graph::adjacency_from_rhai(&adjacency)))
+	});
 }
 
 fn context_map(component: &ComponentView) -> Map {
@@ -144,6 +226,21 @@ fn context_map(component: &ComponentView) -> Map {
 		.map(|(name, path)| Dynamic::from(vec![Dynamic::from(name.clone()), Dynamic::from(path.clone())]))
 		.collect();
 	ctx.insert("dep_artifacts".into(), Dynamic::from(artifact_list));
+	let fetched_sources: rhai::Array = component
+		.fetched_sources
+		.iter()
+		.map(|package| {
+			let mut value = Map::new();
+			insert_str(&mut value, "name", &package.name);
+			insert_str(&mut value, "version", &package.version);
+			insert_str(&mut value, "root", &package.root);
+			let dependencies: rhai::Array = package.dependencies.iter().map(|name| Dynamic::from(name.clone())).collect();
+			value.insert("dependencies".into(), Dynamic::from(dependencies));
+			Dynamic::from(value)
+		})
+		.collect();
+	ctx.insert("fetched_sources".into(), Dynamic::from(fetched_sources));
+	ctx.insert("fetch_owner".into(), Dynamic::from(component.fetch_owner));
 	insert_str(&mut ctx, "workspace", &component.workspace);
 	insert_str(&mut ctx, "linker", &component.linker);
 	insert_list(&mut ctx, "link_flags", &component.link_flags);
@@ -210,6 +307,7 @@ fn parse_action(spec: Map) -> Result<ActionDecl, Box<EvalAltResult>> {
 			(entry.trim_end_matches('/').to_string(), is_dir)
 		})
 		.collect();
+	let execution_deps = list_field("execution_deps")?;
 
 	let mut env = BTreeMap::new();
 	if let Some(v) = spec.get("env") {
@@ -217,7 +315,9 @@ fn parse_action(spec: Map) -> Result<ActionDecl, Box<EvalAltResult>> {
 		for (k, value) in map {
 			env.insert(
 				k.to_string(),
-				value.into_string().map_err(|_| "`env` values must be strings")?,
+				value
+					.into_string()
+					.map_err(|_| format!("`env` value `{k}` must be a string"))?,
 			);
 		}
 	}
@@ -226,13 +326,87 @@ fn parse_action(spec: Map) -> Result<ActionDecl, Box<EvalAltResult>> {
 		Some(v) if v.is_string() => Some(v.clone().into_string().expect("checked string")),
 		_ => None,
 	};
+	let workdir = match spec.get("workdir") {
+		Some(v) if v.is_string() => Some(v.clone().into_string().expect("checked string")),
+		_ => None,
+	};
+	let stdout = spec.get("stdout").and_then(|v| v.clone().into_string().ok());
+	let mut environment_files = Vec::new();
+	if let Some(value) = spec.get("environment_files") {
+		let map = value.clone().try_cast::<Map>().ok_or("`environment_files` expects a map")?;
+		for (key, value) in map {
+			let value = if value.is_string() {
+				(
+					value.into_string().map_err(|_| "environment file paths must be strings")?,
+					None,
+					Vec::new(),
+				)
+			} else {
+				let map = value
+					.try_cast::<Map>()
+					.ok_or("environment file declarations must be strings or maps")?;
+				let path = map
+					.get("path")
+					.ok_or("environment file declaration needs `path`")?
+					.clone()
+					.into_string()
+					.map_err(|_| "environment file paths must be strings")?;
+				let line_prefix = map.get("line_prefix").and_then(|v| v.clone().into_string().ok());
+				let ignored_keys = map
+					.get("ignored_keys")
+					.map(|v| {
+						v.clone()
+							.try_cast::<rhai::Array>()
+							.ok_or("environment file `ignored_keys` must be a list")
+					})
+					.transpose()?
+					.unwrap_or_default()
+					.into_iter()
+					.map(|v| v.into_string().map_err(|_| "environment file ignored keys must be strings"))
+					.collect::<Result<Vec<_>, _>>()?;
+				(path, line_prefix, ignored_keys)
+			};
+			environment_files.push((key.to_string(), value.0, value.1, value.2));
+		}
+	}
+
+	let mut argument_files = Vec::new();
+	if let Some(value) = spec.get("argument_files") {
+		let entries = value
+			.clone()
+			.try_cast::<rhai::Array>()
+			.ok_or("`argument_files` expects an array")?;
+		for entry in entries {
+			let map = entry.try_cast::<Map>().ok_or("argument file entries must be maps")?;
+			let string = |key: &str| -> Result<String, Box<EvalAltResult>> {
+				let value = map
+					.get(key)
+					.ok_or_else(|| Box::<EvalAltResult>::from(format!("argument file needs `{key}`")))?;
+				value
+					.clone()
+					.into_string()
+					.map_err(|_| Box::<EvalAltResult>::from(format!("argument file `{key}` must be a string")))
+			};
+			argument_files.push((
+				string("path")?,
+				string("prefix")?,
+				string("flag")?,
+				map.get("root_marker").and_then(|value| value.clone().into_string().ok()),
+			));
+		}
+	}
 
 	Ok(ActionDecl {
 		name: string_field("name")?,
 		command: string_field("command")?,
 		args: list_field("args")?,
 		inputs: list_field("inputs")?,
+		execution_deps,
 		outputs,
+		workdir,
+		stdout,
+		environment_files,
+		argument_files,
 		env,
 		toolchain_id,
 	})
@@ -250,6 +424,7 @@ mod tests {
 			bin: Box::new(|name| format!("/tools/bin/{name}")),
 			tool_id: Box::new(|| "gcc@abc123".into()),
 			read_file: Box::new(|_| Err("not implemented in tests".into())),
+			glob: Box::new(|_| Ok(vec![])),
 		}
 	}
 
@@ -283,6 +458,126 @@ mod tests {
             });
         }
     "#;
+
+	#[test]
+	fn platform_matches_binding() {
+		let mut engine = rhai::Engine::new();
+		register_platform_matches(&mut engine);
+		let mut profile = Map::new();
+		profile.insert("is_debug".into(), Dynamic::from(true));
+		let mut ctx = Map::new();
+		ctx.insert("platform_os".into(), Dynamic::from("linux".to_string()));
+		ctx.insert("platform_arch".into(), Dynamic::from("x86_64".to_string()));
+		ctx.insert("platform_abi".into(), Dynamic::from("gnu".to_string()));
+		ctx.insert("profile".into(), Dynamic::from(profile));
+		let mut scope = rhai::Scope::new();
+		scope.push("ctx", ctx);
+		assert!(
+			!engine
+				.eval_with_scope::<bool>(&mut scope, "ctx.platform_matches(\"cfg(windows)\")")
+				.unwrap()
+		);
+		assert!(
+			engine
+				.eval_with_scope::<bool>(&mut scope, "ctx.platform_matches(\"x86_64-unknown-linux-gnu\")")
+				.unwrap()
+		);
+	}
+
+	#[test]
+	fn graph_ops_binding() {
+		let mut engine = rhai::Engine::new();
+		register_graph_ops(&mut engine);
+		let roots: rhai::Array = engine.eval("graph_roots(#{ a: [\"b\"], b: [] })").unwrap();
+		let roots: Vec<String> = roots.into_iter().filter_map(|v| v.into_string().ok()).collect();
+		assert_eq!(roots, vec!["a".to_string()]);
+		let reachable: rhai::Array = engine
+			.eval("graph_reachable(#{ a: [\"b\", \"c\"], b: [\"c\"], c: [] }, [\"a\"])")
+			.unwrap();
+		assert_eq!(reachable.len(), 3);
+	}
+
+	#[test]
+	fn feature_propagation_from_root() {
+		let cell = include_str!("../../../prelude/std/rust/cell.rhai");
+		let mut engine = rhai::Engine::new();
+		engine.set_max_expr_depths(128, 128);
+		let ctx = Map::new();
+		let mut scope = rhai::Scope::new();
+		scope.push("ctx", ctx);
+		let tail = r#"
+let meta = #{
+  "clap@4.6.7": #{
+    src: #{ name: "clap", version: "4.6.7" },
+    manifest: #{
+      features: #{ "default": ["std"], "std": ["clap_builder/std"] },
+      dependencies: #{ clap_builder: #{ "default-features": false } },
+    },
+  },
+  "clap_builder@4.6.7": #{
+    src: #{ name: "clap_builder", version: "4.6.7" },
+    manifest: #{ features: #{ "std": [] }, dependencies: #{} },
+  },
+};
+let adjacency = #{ "clap@4.6.7": ["clap_builder@4.6.7"], "clap_builder@4.6.7": [] };
+let order = ["clap@4.6.7", "clap_builder@4.6.7"];
+let requests = #{ "clap": #{ defaults: true, features: [] } };
+let enabled = feature_sets(ctx, meta, adjacency, order, requests);
+enabled["clap_builder@4.6.7"].contains("std")
+"#;
+		let program = format!("{cell}\n{tail}");
+		let propagated = engine.eval_with_scope::<bool>(&mut scope, &program).unwrap();
+		assert!(propagated, "clap_builder should inherit std via clap");
+	}
+
+	#[test]
+	fn workspace_root_requests_reads_members() {
+		let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+			.parent()
+			.unwrap()
+			.parent()
+			.unwrap()
+			.to_path_buf();
+		let cell = include_str!("../../../prelude/std/rust/cell.rhai");
+		let mut engine = rhai::Engine::new();
+		engine.set_max_expr_depths(128, 128);
+		let glob_root = repo.clone();
+		engine.register_fn(
+			"glob",
+			move |_ctx: &mut Map, pattern: &str| -> Result<rhai::Array, Box<EvalAltResult>> {
+				let hits = crate::glob::expand_glob(&glob_root, pattern)
+					.map_err(|e| -> Box<EvalAltResult> { e.to_string().into() })?;
+				Ok(hits
+					.into_iter()
+					.map(|p| Dynamic::from(p.to_string_lossy().into_owned()))
+					.collect())
+			},
+		);
+		let read_root = repo.clone();
+		engine.register_fn(
+			"read_file",
+			move |_ctx: &mut Map, path: &str| -> Result<String, Box<EvalAltResult>> {
+				std::fs::read_to_string(read_root.join(path)).map_err(|e| -> Box<EvalAltResult> { e.to_string().into() })
+			},
+		);
+		engine.register_fn("toml_decode", |text: &str| -> Result<Map, Box<EvalAltResult>> {
+			crate::rhai_rt::toml_decode(text).map_err(Into::into)
+		});
+		let mut scope = rhai::Scope::new();
+		scope.push("ctx", Map::new());
+		let tail = r#"
+let requests = workspace_root_requests(ctx);
+let has_clap = requests.contains("clap");
+let defaults = if has_clap { requests["clap"]["defaults"] } else { false };
+let has_derive = if has_clap { requests["clap"]["features"].contains("derive") } else { false };
+#{ clap: has_clap, defaults: defaults, derive: has_derive }
+"#;
+		let program = format!("{cell}\n{tail}");
+		let result: Map = engine.eval_with_scope(&mut scope, &program).unwrap();
+		eprintln!("requests: {result:?}");
+		assert_eq!(result.get("clap").and_then(|v| v.as_bool().ok()), Some(true));
+		assert_eq!(result.get("derive").and_then(|v| v.as_bool().ok()), Some(true));
+	}
 
 	#[test]
 	fn cell_emits_actions_with_helpers() {

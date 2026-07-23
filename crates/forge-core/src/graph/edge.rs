@@ -6,14 +6,11 @@ pub enum DependencyEdge {
 	Hard,
 	/// Must exist before this starts; no invalidation on rebuild.
 	OrderOnly,
-	/// C++20 module BMI barrier.
-	ModuleImport,
-	/// Host-compiled proc macro loaded by rustc.
-	ProcMacro,
-	/// Build script executed before its dependent.
-	BuildScript,
 	/// Dependency built under a different configuration.
 	Transition(ConfigTransition),
+	/// Cell-defined edge kind (e.g. `"proc_macro"`, `"module_import"`).
+	/// The core only knows it blocks execution; the meaning belongs to the cell.
+	Tagged(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

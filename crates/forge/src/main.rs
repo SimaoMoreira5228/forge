@@ -84,6 +84,10 @@ enum Command {
 		#[command(subcommand)]
 		action: ToolchainAction,
 	},
+	Deps {
+		#[command(subcommand)]
+		action: DepsAction,
+	},
 }
 
 #[derive(Subcommand)]
@@ -94,6 +98,18 @@ enum ToolchainAction {
 	},
 	Verify {
 		name: Option<String>,
+	},
+}
+
+#[derive(Subcommand)]
+enum DepsAction {
+	Lock {
+		#[arg(long, default_value = "forge.lock")]
+		output: PathBuf,
+	},
+	Sync {
+		#[arg(long, default_value = "forge.lock")]
+		lock: PathBuf,
 	},
 }
 
@@ -340,6 +356,30 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 				Ok(())
 			}
 		},
+
+		Command::Deps {
+			action: DepsAction::Lock { output },
+		} => {
+			let lock = Engine::open(&workspace).dependency_lock()?;
+			let path = workspace.join(output);
+			let text = lock.to_toml().map_err(|e| ForgeDiagnostic::error(101, e))?;
+			std::fs::write(&path, text).map_err(|e| ForgeDiagnostic::error(8, format!("{}: {e}", path.display())))?;
+			println!("wrote {}", path.display());
+			Ok(())
+		}
+		Command::Deps {
+			action: DepsAction::Sync { lock },
+		} => {
+			let lock_path = workspace.join(&lock);
+			let text = std::fs::read_to_string(&lock_path)
+				.map_err(|e| ForgeDiagnostic::error(8, format!("{}: {e}", lock_path.display())))?;
+			let lock = forge_core::resolver::ForgeLock::parse(&text).map_err(|e| ForgeDiagnostic::error(101, e))?;
+			let store = forge_engine::source_store::SourceStore::new(&workspace);
+			for (package, path) in store.fetch_lock(&lock)? {
+				println!("{package}: {}", path.display());
+			}
+			Ok(())
+		}
 	}
 }
 

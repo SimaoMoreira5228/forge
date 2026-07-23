@@ -25,6 +25,7 @@ impl CacheDb {
 			)
 		})?;
 		let conn = Connection::open(dir.join("cache.db")).map_err(|e| db_err("open", e))?;
+		let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;");
 		migrate(&conn)?;
 		Ok(Self {
 			conn: parking_lot::Mutex::new(conn),
@@ -118,12 +119,13 @@ impl CacheDb {
 	pub fn record_action_inputs(&self, cache_key: &str, inputs: &[(String, String)]) {
 		let conn = self.conn.lock();
 		let _ = conn.execute("DELETE FROM action_inputs WHERE cache_key = ?1", [cache_key]);
-		for (path, hash) in inputs {
-			let _ = conn.execute(
-				"INSERT INTO action_inputs(cache_key, path, hash) VALUES (?1, ?2, ?3)",
-				rusqlite::params![cache_key, path, hash],
-			);
+		let _ = conn.execute_batch("BEGIN");
+		if let Ok(mut statement) = conn.prepare("INSERT INTO action_inputs(cache_key, path, hash) VALUES (?1, ?2, ?3)") {
+			for (path, hash) in inputs {
+				let _ = statement.execute(rusqlite::params![cache_key, path, hash]);
+			}
 		}
+		let _ = conn.execute_batch("COMMIT");
 	}
 
 	pub fn stored_inputs(&self, cache_key: &str) -> Vec<(String, String)> {

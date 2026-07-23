@@ -56,8 +56,8 @@ deps = [
 	)
 	.unwrap();
 	let deps = &decls[0].deps;
-	assert_eq!(deps[1].edge, forge_core::DependencyEdge::ProcMacro);
-	assert_eq!(deps[2].edge, forge_core::DependencyEdge::BuildScript);
+	assert_eq!(deps[1].edge, forge_core::DependencyEdge::Tagged("proc_macro".into()));
+	assert_eq!(deps[2].edge, forge_core::DependencyEdge::Tagged("build_script".into()));
 }
 
 #[test]

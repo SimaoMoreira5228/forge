@@ -76,10 +76,22 @@ pub fn list_files(root: &Path) -> std::io::Result<Vec<String>> {
 }
 
 pub fn expand_glob(root: &Path, pattern: &str) -> std::io::Result<Vec<PathBuf>> {
-	Ok(list_files(root)?
+	let segments: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+	let prefix_len = segments
+		.iter()
+		.position(|segment| segment.contains('*') || segment.contains('?'))
+		.unwrap_or(segments.len());
+	if prefix_len == segments.len() {
+		let path = root.join(pattern);
+		return Ok(path.is_file().then_some(PathBuf::from(pattern)).into_iter().collect());
+	}
+	let prefix = segments[..prefix_len].iter().collect::<PathBuf>();
+	let scan_root = root.join(&prefix);
+	let suffix = segments[prefix_len..].join("/");
+	Ok(list_files(&scan_root)?
 		.into_iter()
-		.filter(|rel| glob_match(pattern, rel))
-		.map(PathBuf::from)
+		.filter(|rel| glob_match(&suffix, rel))
+		.map(|rel| prefix.join(rel))
 		.collect())
 }
 

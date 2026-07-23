@@ -95,27 +95,23 @@ fn sync_one(
 	})?;
 	let _ = std::fs::remove_file(&archive_path);
 
-	if let Some(top) = find_install_sh(&install_dir) {
+	let install = store.catalog.get(catalog_name).and_then(|entry| entry.install.clone());
+	if let Some(install) = install
+		&& let Some(top) = find_script_dir(&install_dir, &install.name)
+	{
 		let prefix = install_dir.clone();
-		let status = std::process::Command::new("sh")
-			.arg(top.join("install.sh"))
+		let mut command = std::process::Command::new("sh");
+		command
+			.arg(top.join(&install.name))
 			.arg(format!("--prefix={}", prefix.display()))
-			.arg("--without=rust-docs")
-			.arg("--without=rust-docs-json-preview")
-			.arg("--without=rust-analysis-x86_64-unknown-linux-gnu")
-			.arg("--without=llvm-tools-preview")
-			.arg("--without=llvm-bitcode-linker-preview")
-			.arg("--without=rust-analyzer-preview")
-			.arg("--without=clippy-preview")
-			.arg("--without=rustfmt-preview")
-			.current_dir(top.parent().unwrap_or(&install_dir))
-			.status()
-			.map_err(|e| io_err("install rust", &prefix, e))?;
+			.args(&install.args)
+			.current_dir(top.parent().unwrap_or(&install_dir));
+		let status = command.status().map_err(|e| io_err("install toolchain", &prefix, e))?;
 		if !status.success() {
 			let _ = std::fs::remove_dir_all(&install_dir);
 			return Err(ForgeDiagnostic::error(
 				codes::hermetic::TOOLCHAIN_MISMATCH,
-				format!("`{config_name}` rust install failed (exit {})", status.code().unwrap_or(-1)),
+				format!("`{config_name}` install failed (exit {})", status.code().unwrap_or(-1)),
 			));
 		}
 		let _ = std::fs::remove_dir_all(&top);
@@ -271,9 +267,9 @@ fn check_install(
 	}
 }
 
-fn find_install_sh(install_dir: &Path) -> Option<std::path::PathBuf> {
+fn find_script_dir(install_dir: &Path, script: &str) -> Option<std::path::PathBuf> {
 	for entry in std::fs::read_dir(install_dir).ok()?.flatten() {
-		let candidate = entry.path().join("install.sh");
+		let candidate = entry.path().join(script);
 		if candidate.is_file() {
 			return Some(entry.path());
 		}

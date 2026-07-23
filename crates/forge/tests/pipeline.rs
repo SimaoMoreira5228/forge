@@ -1,6 +1,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use forge_engine::Engine;
+
 fn forge_bin() -> &'static str {
 	env!("CARGO_BIN_EXE_forge")
 }
@@ -49,6 +51,102 @@ fn run_forge(dir: &Path, args: &[&str]) -> (bool, String) {
 			String::from_utf8_lossy(&out.stderr)
 		),
 	)
+}
+
+#[test]
+fn dependency_lock_resolves_rhai_candidates_through_engine() {
+	let dir = std::env::temp_dir().join(format!("forge-ideps-{}", std::process::id()));
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(&dir).unwrap();
+	std::fs::write(
+		dir.join("FORGE_ROOT"),
+		"[project]\nname = \"deps_itest\"\n\n[discovery]\ninclude = [\".\"]\n",
+	)
+	.unwrap();
+	std::fs::write(
+		dir.join("FORGE.rhai"),
+		"dependency_require(\"top\", \"1.0.0\", \"2.0.0\");\n\
+		 dependency_candidate(\"top\", \"1.0.0\", \"https://example.invalid/top.tar\", \"top-sha\", [#{ name: \"leaf\", min: \"1.0.0\", max: \"2.0.0\" }]);\n\
+		 dependency_candidate(\"leaf\", \"1.0.0\", \"https://example.invalid/leaf.tar\", \"leaf-sha\", []);\n",
+	)
+	.unwrap();
+
+	let lock = Engine::open(&dir).dependency_lock().unwrap();
+	assert_eq!(lock.get("top").unwrap().dependencies, vec!["leaf 1.0.0"]);
+	assert_eq!(
+		lock.get("top").unwrap().source.as_deref(),
+		Some("https://example.invalid/top.tar")
+	);
+	assert_eq!(lock.get("leaf").unwrap().checksum.as_deref(), Some("leaf-sha"));
+	assert_eq!(
+		lock.dependency_order()
+			.unwrap()
+			.into_iter()
+			.map(|package| package.name.as_str())
+			.collect::<Vec<_>>(),
+		vec!["leaf", "top"]
+	);
+
+	let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rust_build_compiles_resolved_source_dependencies_with_rustc() {
+	if !have_rustc() {
+		eprintln!("skipping: no rustc");
+		return;
+	}
+	let dir = std::env::temp_dir().join(format!("forge-ideps-rust-{}", std::process::id()));
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(dir.join("src")).unwrap();
+	std::fs::create_dir_all(dir.join(".forge/deps/dep/1.0.0/src")).unwrap();
+	std::fs::write(
+		dir.join("FORGE_ROOT"),
+		"[project]\nname = \"deps_rust_itest\"\n\n[discovery]\ninclude = [\".\"]\n\n[toolchains.rust]\nfrom = \"version\"\nversion = \"1.98.0\"\n",
+	)
+	.unwrap();
+	std::fs::write(dir.join(".forge/deps/dep/1.0.0/.forge-source"), b"1").unwrap();
+	std::fs::write(
+		dir.join(".forge/deps/dep/1.0.0/src/lib.rs"),
+		"pub fn hello() -> &'static str { \"hello from dependency\" }\n",
+	)
+	.unwrap();
+	std::fs::write(
+		dir.join("FORGE.rhai"),
+		"dependency_require(\"dep\", \"1.0.0\", \"2.0.0\");\n\
+		 dependency_candidate(\"other\", \"1.0.0\", \"https://example.invalid/other.tar\", \"other-sha\", []);\n\
+		 binary(\"app\", #{ srcs: [\"src/main.rs\"] });\n",
+	)
+	.unwrap();
+	std::fs::write(
+		dir.join("forge.lock"),
+		"version = 1\n\n[[packages]]\nname = \"dep\"\nversion = \"1.0.0\"\nsource = \"https://example.invalid/dep.tar\"\nchecksum = \"dep-sha\"\n",
+	)
+	.unwrap();
+	std::fs::write(dir.join("src/main.rs"), "fn main() { println!(\"{}\", dep::hello()); }\n").unwrap();
+
+	let ws_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+	let ws_toolchain = ws_root.join(".forge/toolchains/rust/1.98.0");
+	let forge_dir = dir.join(".forge/toolchains/rust/1.98.0");
+	if ws_toolchain.exists() {
+		std::fs::create_dir_all(forge_dir.parent().unwrap()).unwrap();
+		#[cfg(unix)]
+		std::os::unix::fs::symlink(&ws_toolchain, &forge_dir).unwrap();
+		#[cfg(not(unix))]
+		panic!("Rust integration test requires a workspace toolchain symlink");
+	} else {
+		eprintln!("skipping: Rust 1.98.0 toolchain is not installed");
+		return;
+	}
+
+	let (ok, log) = run_forge(&dir, &["build"]);
+	assert!(ok, "rust dependency build failed: {log}");
+	assert!(log.contains("2 executed"), "dependency and app must compile: {log}");
+	let binary = dir.join("forge-out/bin/debug/app");
+	let output = Command::new(&binary).output().expect("run built binary");
+	assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hello from dependency");
+
+	let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -465,7 +563,7 @@ fn clean_cache_and_test_flags_work() {
 	assert!(run_forge(&dir, &["clean", "--test"]).0);
 	let second_test = run_forge(&dir, &["test"]);
 	assert!(
-		second_test.1.contains("1 executed, 0 served"),
+		second_test.1.contains("0 served from cache"),
 		"verdict cleared: test re-ran; compilation stayed cached: {}",
 		second_test.1
 	);
@@ -529,7 +627,7 @@ fn have_rustc() -> bool {
 }
 
 #[test]
-fn rust_cell_builds_and_caches() {
+fn rust_cell_builds_transitive_dependencies_and_caches() {
 	if !have_rustc() {
 		eprintln!("skipping: no rustc");
 		return;
@@ -556,15 +654,24 @@ fn rust_cell_builds_and_caches() {
 	.unwrap();
 	std::fs::write(
 		dir.join("FORGE.toml"),
-		"[library.greet]\nvisibility = \"public\"\nsrcs = [\"src/lib.rs\"]\n\n[binary.app]\ndeps = [\"greet\"]\nsrcs = [\"src/main.rs\"]\n",
+		"[library.greet]\nvisibility = \"public\"\nsrcs = [\"src/greet.rs\"]\n\n[library.message]\ndeps = [\"greet\"]\nvisibility = \"public\"\nsrcs = [\"src/message.rs\"]\n\n[binary.app]\ndeps = [\"message\"]\nsrcs = [\"src/main.rs\"]\n",
 	)
 	.unwrap();
 	std::fs::write(
-		dir.join("src/lib.rs"),
+		dir.join("src/greet.rs"),
 		"pub fn greet() -> &'static str { \"hello from forge\" }\n",
 	)
 	.unwrap();
-	std::fs::write(dir.join("src/main.rs"), "fn main() { println!(\"{}\", greet::greet()); }\n").unwrap();
+	std::fs::write(
+		dir.join("src/message.rs"),
+		"pub fn message() -> &'static str { greet::greet() }\n",
+	)
+	.unwrap();
+	std::fs::write(
+		dir.join("src/main.rs"),
+		"fn main() { println!(\"{}\", message::message()); }\n",
+	)
+	.unwrap();
 
 	let (ok, log) = run_forge(&dir, &["build"]);
 	if !ok {

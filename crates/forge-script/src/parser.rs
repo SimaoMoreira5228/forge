@@ -120,7 +120,7 @@ fn apply_field(
 								.ok_or_else(|| ForgeDiagnostic::error(103, "dependency requires `target`"))?,
 							"target",
 						)?,
-						dependency_edge(inline.get("edge").and_then(Value::as_str))?,
+						dependency_edge(inline.get("edge").and_then(Value::as_str)),
 					)?;
 				} else {
 					builder.dependency(expect_string(element, key)?, forge_core::DependencyEdge::Hard)?;
@@ -161,14 +161,11 @@ fn apply_field(
 	}
 }
 
-fn dependency_edge(name: Option<&str>) -> Result<forge_core::DependencyEdge, ForgeDiagnostic> {
+fn dependency_edge(name: Option<&str>) -> forge_core::DependencyEdge {
 	match name.unwrap_or("hard") {
-		"hard" => Ok(forge_core::DependencyEdge::Hard),
-		"order_only" => Ok(forge_core::DependencyEdge::OrderOnly),
-		"module_import" => Ok(forge_core::DependencyEdge::ModuleImport),
-		"proc_macro" => Ok(forge_core::DependencyEdge::ProcMacro),
-		"build_script" => Ok(forge_core::DependencyEdge::BuildScript),
-		other => Err(ForgeDiagnostic::error(103, format!("unknown dependency edge `{other}`"))),
+		"hard" | "" => forge_core::DependencyEdge::Hard,
+		"order_only" => forge_core::DependencyEdge::OrderOnly,
+		other => forge_core::DependencyEdge::Tagged(other.to_string()),
 	}
 }
 

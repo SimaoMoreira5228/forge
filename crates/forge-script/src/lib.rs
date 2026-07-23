@@ -1,4 +1,6 @@
 pub mod cells;
+pub mod cfg;
+pub mod dep_graph;
 pub mod discover;
 pub mod document;
 pub mod glob;

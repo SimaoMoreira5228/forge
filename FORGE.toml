@@ -1,8 +1,19 @@
-[rule.build]
-command = "cargo"
-args = ["build", "--release", "--target-dir", "forge-out/cargo"]
-inputs = ["Cargo.toml", "Cargo.lock", "${glob('crates/**/*.rs')}", "${glob('crates/**/*.toml')}", "${glob('crates/**/*.sql')}", "${glob('prelude/**/*')}"]
-outputs = ["forge-out/cargo/release/forge"]
+[library.forge_core]
+srcs = ["${glob('crates/forge-core/src/**/*.rs')}"]
+deps = ["forge_diagnostics"]
 
-[rule.build.env]
-CARGO_TERM_QUIET = "true"
+[library.forge_diagnostics]
+srcs = ["${glob('crates/forge-diagnostics/src/**/*.rs')}"]
+
+[library.forge_engine]
+srcs = ["${glob('crates/forge-engine/src/**/*.rs')}"]
+hdrs = ["${glob('prelude/**/*')}", "${glob('crates/forge-engine/migrations/**/*')}"]
+deps = ["forge_core", "forge_diagnostics", "forge_script"]
+
+[library.forge_script]
+srcs = ["${glob('crates/forge-script/src/**/*.rs')}"]
+deps = ["forge_core", "forge_diagnostics"]
+
+[binary.forge]
+srcs = ["${glob('crates/forge/src/**/*.rs')}"]
+deps = ["forge_core", "forge_diagnostics", "forge_engine", "forge_script"]

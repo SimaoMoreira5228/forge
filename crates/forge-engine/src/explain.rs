@@ -31,6 +31,7 @@ impl Engine {
 		let platform = forge_core::Platform::host();
 		let toolchains = crate::toolchain::ToolchainStore::load(&self.workspace, prepared.config.clone())?.resolve_all()?;
 		let cells = crate::std_cells::StdCells::load(&self.workspace, &prepared.config.std_patches)?;
+		let fetched_sources = self.fetch_sources(&prepared)?;
 
 		let ctx = PlanContext {
 			graph: &prepared.graph,
@@ -40,6 +41,8 @@ impl Engine {
 			toolchains: &toolchains,
 			cells: &cells,
 			workspace: Some(&self.workspace),
+			fetched_sources: &fetched_sources,
+			progress: None,
 		};
 		let dag = build_action_dag(&ctx)?;
 
@@ -47,9 +50,11 @@ impl Engine {
 		let component_label = prepared.graph.component(label).label.to_string();
 
 		let db = crate::db::CacheDb::open(&self.out_dir())?;
+		let hash_cache = hasher::HashCache::new();
 		let mut explanations = Vec::new();
 		for spec in dag.specs.iter().filter(|s| s.component == component_label) {
-			let input_hashes = hasher::hash_inputs(&self.workspace, &spec.inputs)
+			let hash_inputs = spec.inputs.iter().chain(&spec.execution_deps).cloned().collect::<Vec<_>>();
+			let input_hashes = hasher::hash_inputs(&self.workspace, &hash_inputs, &hash_cache)
 				.map_err(|e| ForgeDiagnostic::error(codes::inputs::MISSING_INPUT, e.to_string()))?;
 			let current_key = super::builder::compose_key(spec, &input_hashes, &profile.fingerprint(), &toolchains);
 

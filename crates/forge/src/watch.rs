@@ -2,9 +2,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use forge_diagnostics::ForgeDiagnostic;
-use notify::Watcher;
-
 use forge_engine::Engine;
+use notify::Watcher;
 
 const DEBOUNCE: Duration = Duration::from_millis(150);
 

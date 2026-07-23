@@ -1,11 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use forge_core::Catalog;
 use forge_diagnostics::{ForgeDiagnostic, codes};
 use forge_script::{ToolchainSelection, WorkspaceConfig};
-
-use std::collections::BTreeSet;
 
 use crate::hasher;
 
@@ -28,30 +26,19 @@ pub struct ResolvedToolchain {
 impl ResolvedToolchain {
 	pub fn binary(&self, name: &str) -> Option<PathBuf> {
 		let suffix = std::env::consts::EXE_SUFFIX;
-		let direct = self.bin_dir.join(name);
-		if direct.is_file() {
-			return Some(direct);
-		}
-		if !suffix.is_empty() {
-			let shelled = self.bin_dir.join(format!("{name}{suffix}"));
-			if shelled.is_file() {
-				return Some(shelled);
+		for dir in &self.path_dirs {
+			let direct = dir.join(name);
+			if direct.is_file() {
+				return Some(direct);
+			}
+			if !suffix.is_empty() {
+				let shelled = dir.join(format!("{name}{suffix}"));
+				if shelled.is_file() {
+					return Some(shelled);
+				}
 			}
 		}
-		self.nested_binary(name)
-	}
-
-	fn nested_binary(&self, name: &str) -> Option<PathBuf> {
-		walkdir::WalkDir::new(&self.bin_dir)
-			.into_iter()
-			.flatten()
-			.filter(|e| {
-				e.file_type().is_file()
-					&& e.file_name().to_string_lossy() == name
-					&& e.path().parent().is_some_and(|p| p.file_name().is_some_and(|n| n == "bin"))
-			})
-			.map(|e| e.path().to_path_buf())
-			.next()
+		None
 	}
 }
 
@@ -154,7 +141,7 @@ impl ToolchainStore {
 				if !bin_dir.exists() {
 					return Err(toolchain_error(name, format!("path `{}` does not exist", bin_dir.display())));
 				}
-				Ok(Self::finish(name, bin_dir))
+				Ok(Self::finish(name, path, bin_dir))
 			}
 			ToolchainSelection::Version { version } => {
 				let resolved = self.catalog.resolve(name, Some(version))?;
@@ -176,15 +163,16 @@ impl ToolchainStore {
 		if find_bin_dir(dir).is_none() && !any_file_under(dir) {
 			return Err(toolchain_error(name, format!("install at {} is empty", dir.display())));
 		}
-		Ok(Self::finish(name, dir.to_path_buf()))
+		let bin_dir = installed_bin_dir(dir).unwrap_or_else(|| dir.to_path_buf());
+		Ok(Self::finish(name, dir, bin_dir))
 	}
 
-	fn finish(name: &str, bin_dir: PathBuf) -> ResolvedToolchain {
-		let digest = directory_digest(&bin_dir);
+	fn finish(name: &str, root: &Path, bin_dir: PathBuf) -> ResolvedToolchain {
 		let mut path_dirs = vec![bin_dir.clone()];
-		path_dirs.extend(nested_bin_dirs(&bin_dir));
+		path_dirs.extend(nested_bin_dirs(root));
 		path_dirs.sort();
 		path_dirs.dedup();
+		let digest = directory_digest(root, &path_dirs);
 		ResolvedToolchain {
 			name: name.to_string(),
 			bin_dir,
@@ -249,17 +237,18 @@ fn toolchain_error(name: &str, detail: String) -> ForgeDiagnostic {
 	ForgeDiagnostic::error(codes::hermetic::TOOLCHAIN_MISMATCH, format!("toolchain `{name}`: {detail}"))
 }
 
-fn directory_digest(bin_dir: &Path) -> String {
+fn directory_digest(root: &Path, bin_dirs: &[PathBuf]) -> String {
 	let mut hasher = blake3::Hasher::new();
-	let mut files: Vec<PathBuf> = walkdir::WalkDir::new(bin_dir)
-		.into_iter()
-		.flatten()
+	let mut files: Vec<PathBuf> = bin_dirs
+		.iter()
+		.flat_map(|dir| walkdir::WalkDir::new(dir).into_iter().flatten())
 		.filter(|e| e.file_type().is_file())
 		.map(|e| e.path().to_path_buf())
 		.collect();
 	files.sort();
+	files.dedup();
 	for file in files {
-		let rel = file.strip_prefix(bin_dir).unwrap_or(&file);
+		let rel = file.strip_prefix(root).unwrap_or(&file);
 		hasher.update(rel.to_string_lossy().as_bytes());
 		hasher.update(&[0]);
 		if let Ok(bytes) = hasher_digest_file(&file) {

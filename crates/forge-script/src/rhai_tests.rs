@@ -1,5 +1,6 @@
-use crate::rhai_rt::run_forge_rhai;
 use std::path::Path;
+
+use crate::rhai_rt::run_forge_rhai;
 
 #[test]
 fn rhai_registers_components() {
@@ -25,14 +26,17 @@ fn rhai_registers_components() {
         for extra in ["a", "b"] {
             test(`check_${extra}`, #{ args: [`--flag-${extra}`], timeout_secs: 30 });
         }
+
+        dependency("demo", "1.0.0", "https://example.invalid/demo.tar.gz", "abc");
     "#;
 
-	let decls = run_forge_rhai(script, Path::new(&tmp), &forge_core::Platform::host()).unwrap();
-	assert_eq!(decls.len(), 4);
-	assert_eq!(decls[0].name, "math");
-	assert_eq!(decls[1].sources.len(), 1);
-	assert_eq!(decls[2].args, vec!["--flag-a"]);
-	assert_eq!(decls[3].timeout_secs, 30);
+	let output = run_forge_rhai(script, Path::new(&tmp), &forge_core::Platform::host()).unwrap();
+	assert_eq!(output.targets.len(), 4);
+	assert_eq!(output.targets[0].name, "math");
+	assert_eq!(output.targets[1].sources.len(), 1);
+	assert_eq!(output.targets[2].args, vec!["--flag-a"]);
+	assert_eq!(output.targets[3].timeout_secs, 30);
+	assert_eq!(output.dependencies[0].name, "demo");
 
 	let _ = std::fs::remove_dir_all(&tmp);
 }
@@ -46,6 +50,66 @@ fn rhai_unknown_field_errors_like_toml() {
 	)
 	.unwrap_err();
 	assert!(format!("{err}").contains("unknown key"));
+}
+
+#[test]
+fn rhai_collects_generic_dependency_candidates() {
+	let script = r#"
+        dependency_require("top", "1.0.0", "2.0.0");
+        dependency_candidate(
+            "top", "1.0.0", "https://example.invalid/top.tar", "top-sha",
+            [#{ name: "leaf", min: "1.0.0", max: "2.0.0" }]
+        );
+        dependency_candidate("leaf", "1.0.0", "https://example.invalid/leaf.tar", "leaf-sha", []);
+    "#;
+	let output = run_forge_rhai(script, Path::new("."), &forge_core::Platform::host()).unwrap();
+	assert_eq!(output.requirements.len(), 1);
+	assert_eq!(output.candidates.len(), 2);
+	assert_eq!(output.candidates[0].dependencies[0].name, "leaf");
+}
+
+#[test]
+fn rhai_dependency_with_deps_and_toml_decode() {
+	let tmp = std::env::temp_dir().join(format!("forge-rhai-deps-{}", std::process::id()));
+	std::fs::create_dir_all(&tmp).unwrap();
+	let lock = r#"
+version = 4
+
+[[package]]
+name = "a"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abc123"
+dependencies = ["b 1.0.0"]
+
+[[package]]
+name = "b"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "def456"
+"#;
+	std::fs::write(tmp.join("Cargo.lock"), lock).unwrap();
+	let script = r#"
+        let text = read_file("Cargo.lock");
+        let lock = toml_decode(text);
+        for pkg in lock["package"] {
+            if pkg["checksum"] != () && pkg["checksum"] != "" {
+                let deps = [];
+                if pkg["dependencies"] != () {
+                    for d in pkg["dependencies"] {
+                        deps.push(d.split(" ")[0]);
+                    }
+                }
+                let url = `https://crates.io/api/v1/crates/${pkg["name"]}/${pkg["version"]}/download`;
+                dependency(pkg["name"], pkg["version"], url, pkg["checksum"], deps);
+            }
+        }
+    "#;
+	let output = run_forge_rhai(script, &tmp, &forge_core::Platform::host()).unwrap();
+	assert_eq!(output.dependencies.len(), 2);
+	assert_eq!(output.dependencies[0].name, "a");
+	assert_eq!(output.dependencies[0].dependencies, vec!["b"]);
+	std::fs::remove_dir_all(&tmp).unwrap();
 }
 
 #[test]

@@ -117,6 +117,7 @@ fn compile_one(ctx, src) {
         command: compiler_for(ctx, src),
         args: args,
         inputs: inputs,
+        execution_deps: [],
         outputs: outputs,
         env: ctx.env,
         toolchain_id: ctx.tool_id(),
@@ -132,7 +133,8 @@ fn archive_one(ctx, objs) {
         name: `archive ${ctx.label}`,
         command: ar_for(ctx),
         args: ["rcs", out] + objs,
-        inputs: objs + ctx.hdrs,
+        inputs: ctx.hdrs,
+        execution_deps: objs,
         outputs: [out],
         env: #{},
         toolchain_id: ctx.tool_id(),
@@ -154,13 +156,14 @@ fn link_one(ctx, objs, exe_path) {
     args.push("-o");
     args.push(exe_path);
 
-    let inputs = objs + ctx.dep_archives;
+    let inputs = [];
 
     ctx.action(#{
         name: `link ${ctx.label}`,
         command: linker_for(ctx),
         args: args,
         inputs: inputs,
+        execution_deps: objs + ctx.dep_archives,
         outputs: [exe_path],
         env: #{},
         toolchain_id: ctx.tool_id(),
@@ -197,7 +200,8 @@ fn build(ctx) {
             name: `run ${ctx.label}`,
             command: exe,
             args: ctx.run_args,
-            inputs: [exe] + ctx.data,
+            inputs: ctx.data,
+            execution_deps: [exe],
             outputs: test_outputs,
             env: test_env,
             toolchain_id: "",

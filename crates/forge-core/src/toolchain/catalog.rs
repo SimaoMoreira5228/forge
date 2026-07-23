@@ -14,6 +14,13 @@ pub struct ToolchainEntry {
 	pub aliases: Vec<String>,
 	pub version_aliases: BTreeMap<String, String>,
 	pub targets: BTreeMap<String, TargetUrl>,
+	pub install: Option<InstallScript>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InstallScript {
+	pub name: String,
+	pub args: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +58,9 @@ impl ToolchainEntry {
 		for (platform, url) in &override_entry.targets {
 			self.targets.insert(platform.clone(), url.clone());
 		}
+		if override_entry.install.is_some() {
+			self.install = override_entry.install.clone();
+		}
 	}
 }
 
@@ -71,6 +81,9 @@ impl Catalog {
 			version_aliases: BTreeMap<String, String>,
 			#[serde(default)]
 			targets: BTreeMap<String, RawTarget>,
+			install_script: Option<String>,
+			#[serde(default)]
+			install_args: Vec<String>,
 		}
 
 		#[derive(Deserialize)]
@@ -106,6 +119,10 @@ impl Catalog {
 								)
 							})
 							.collect(),
+						install: e.install_script.map(|name| InstallScript {
+							name,
+							args: e.install_args,
+						}),
 					},
 				)
 			})

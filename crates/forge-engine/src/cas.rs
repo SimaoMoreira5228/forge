@@ -33,10 +33,13 @@ impl Cas {
 		workspace: &Path,
 	) -> Result<(), ForgeDiagnostic> {
 		let dir = self.action_dir(cache_key);
-		for (rel, _kind) in outputs {
+		for (rel, kind) in outputs {
 			let src = dir.join(rel);
 			let dst = workspace.join(rel);
-			copy_file(&src, &dst)?;
+			match kind {
+				OutputKind::File => crate::publish::publish_file(&src, &dst).map_err(|e| io(e, &dst))?,
+				OutputKind::Directory => crate::publish::publish_tree(&src, &dst).map_err(|e| io(e, &dst))?,
+			}
 		}
 		touch_last_accessed(&dir);
 		Ok(())

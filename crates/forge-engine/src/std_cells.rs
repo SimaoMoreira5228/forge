@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 
 use forge_diagnostics::{ForgeDiagnostic, codes};
 
-const C_CELL: &str = include_str!("../../../prelude/std/c/cell.rhai");
-const RUST_CELL: &str = include_str!("../../../prelude/std/rust/cell.rhai");
 const MANIFEST_TOML: &str = include_str!("../../../prelude/std/manifest.toml");
+
+include!(concat!(env!("OUT_DIR"), "/embedded_cells.rs"));
 
 #[derive(serde::Deserialize, Default)]
 struct Manifest {
@@ -25,6 +25,7 @@ struct CellEntry {
 
 pub struct StdCells {
 	scripts: BTreeMap<String, String>,
+	workspace_scripts: Vec<String>,
 	ext_to_cell: BTreeMap<String, String>,
 	toolchain_map: BTreeMap<String, Vec<String>>,
 	standard_map: BTreeMap<String, String>,
@@ -32,10 +33,10 @@ pub struct StdCells {
 
 impl StdCells {
 	pub fn load(workspace: &Path, patches: &BTreeMap<String, PathBuf>) -> Result<Self, ForgeDiagnostic> {
-		let mut scripts = BTreeMap::from([
-			("c".to_string(), C_CELL.to_string()),
-			("rust".to_string(), RUST_CELL.to_string()),
-		]);
+		let mut scripts: BTreeMap<String, String> = EMBEDDED_CELLS
+			.iter()
+			.map(|(name, script)| (name.to_string(), script.to_string()))
+			.collect();
 		for (cell, relative) in patches {
 			let absolute = workspace.join(relative);
 			let text = std::fs::read_to_string(&absolute).map_err(|e| {
@@ -69,10 +70,18 @@ impl StdCells {
 		}
 		Ok(Self {
 			scripts,
+			workspace_scripts: EMBEDDED_WORKSPACE_SCRIPTS
+				.iter()
+				.map(|(_, script)| script.to_string())
+				.collect(),
 			ext_to_cell,
 			toolchain_map,
 			standard_map,
 		})
+	}
+
+	pub fn workspace_scripts(&self) -> &[String] {
+		&self.workspace_scripts
 	}
 
 	pub fn get(&self, cell: &str) -> Result<&String, ForgeDiagnostic> {

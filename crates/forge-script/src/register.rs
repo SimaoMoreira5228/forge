@@ -138,10 +138,32 @@ pub fn load_workspace(
 	packages: &[PackageSource],
 	platform: &forge_core::Platform,
 	declared_platforms: &std::collections::BTreeMap<String, forge_core::Platform>,
-) -> (BuildGraph, DeclMap, Vec<ForgeDiagnostic>) {
+	bootstrap: &[String],
+) -> (
+	BuildGraph,
+	DeclMap,
+	Vec<forge_core::DependencyRequest>,
+	Vec<forge_core::DependencyRequirement>,
+	Vec<forge_core::PackageCandidate>,
+	Vec<ForgeDiagnostic>,
+) {
 	let mut graph = BuildGraph::new();
 	let mut pending_wires: Vec<(String, Vec<TargetDecl>)> = Vec::new();
+	let mut dependencies = Vec::new();
+	let mut requirements = Vec::new();
+	let mut candidates = Vec::new();
 	let mut sink = Vec::new();
+
+	for script in bootstrap {
+		match crate::rhai_rt::run_forge_rhai(script, workspace, platform) {
+			Ok(output) => {
+				dependencies.extend(output.dependencies);
+				requirements.extend(output.requirements);
+				candidates.extend(output.candidates);
+			}
+			Err(d) => sink.push(d),
+		}
+	}
 
 	for pkg in packages {
 		let package_dir = workspace.join(&pkg.package);
@@ -156,7 +178,12 @@ pub fn load_workspace(
 			}
 		};
 		let parsed = if pkg.file.extension().is_some_and(|e| e == "rhai") {
-			crate::rhai_rt::run_forge_rhai(&text, &package_dir, platform)
+			crate::rhai_rt::run_forge_rhai(&text, &package_dir, platform).map(|output| {
+				dependencies.extend(output.dependencies);
+				requirements.extend(output.requirements);
+				candidates.extend(output.candidates);
+				output.targets
+			})
 		} else {
 			crate::parser::parse_forge_toml(&text)
 		};
@@ -193,5 +220,5 @@ pub fn load_workspace(
 			decls.insert(Label::new(&package, decl.name.clone()).to_string(), decl);
 		}
 	}
-	(graph, decls, sink)
+	(graph, decls, dependencies, requirements, candidates, sink)
 }

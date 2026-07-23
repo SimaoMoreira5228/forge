@@ -8,24 +8,41 @@ use rhai::{Dynamic, EvalAltResult, Map};
 use crate::document::{FieldsBuilder, TargetDecl, TargetKind};
 use crate::glob;
 
+#[derive(Debug, Clone)]
+pub struct ScriptOutput {
+	pub targets: Vec<TargetDecl>,
+	pub dependencies: Vec<forge_core::DependencyRequest>,
+	pub requirements: Vec<forge_core::DependencyRequirement>,
+	pub candidates: Vec<forge_core::PackageCandidate>,
+}
+
 pub fn run_forge_rhai(
 	script: &str,
 	package_dir: &Path,
 	platform: &forge_core::Platform,
-) -> Result<Vec<TargetDecl>, ForgeDiagnostic> {
+) -> Result<ScriptOutput, ForgeDiagnostic> {
 	let decls: Rc<RefCell<Vec<TargetDecl>>> = Rc::new(RefCell::new(Vec::new()));
+	let dependencies = Rc::new(RefCell::new(Vec::new()));
+	let requirements = Rc::new(RefCell::new(Vec::new()));
+	let candidates = Rc::new(RefCell::new(Vec::new()));
 	let mut engine = rhai::Engine::new();
 	engine.set_max_expr_depths(128, 128);
 
-	register_collectors(&mut engine, &decls);
+	register_collectors(&mut engine, &decls, &dependencies, &requirements, &candidates);
 	register_glob(&mut engine, package_dir);
 	register_platform(&mut engine, platform);
+	register_io(&mut engine, package_dir);
 
 	engine
 		.eval::<()>(script)
 		.map_err(|e| ForgeDiagnostic::error(101, format!("rhai error: {e}")).with_source("FORGE.rhai", script))?;
 
-	Ok(decls.borrow().clone())
+	Ok(ScriptOutput {
+		targets: decls.borrow().clone(),
+		dependencies: dependencies.borrow().clone(),
+		requirements: requirements.borrow().clone(),
+		candidates: candidates.borrow().clone(),
+	})
 }
 
 fn register_platform(engine: &mut rhai::Engine, platform: &forge_core::Platform) {
@@ -60,7 +77,67 @@ fn expand(pattern: &str, root: &Path) -> Result<rhai::Array, Box<EvalAltResult>>
 		.collect())
 }
 
-fn register_collectors(engine: &mut rhai::Engine, decls: &Rc<RefCell<Vec<TargetDecl>>>) {
+fn register_io(engine: &mut rhai::Engine, package_dir: &Path) {
+	let root = package_dir.to_path_buf();
+	engine.register_fn("read_file", move |path: &str| -> Result<String, Box<EvalAltResult>> {
+		let full = if Path::new(path).is_absolute() {
+			PathBuf::from(path)
+		} else {
+			root.join(path)
+		};
+		std::fs::read_to_string(&full).map_err(|e| format!("read_file `{}`: {e}", full.display()).into())
+	});
+	let root = package_dir.to_path_buf();
+	engine.register_fn("path_exists", move |path: &str| -> bool {
+		if Path::new(path).is_absolute() {
+			Path::new(path).exists()
+		} else {
+			root.join(path).exists()
+		}
+	});
+	engine.register_fn("toml_decode", |text: &str| -> Result<Map, Box<EvalAltResult>> {
+		toml_decode(text).map_err(Into::into)
+	});
+}
+
+pub(crate) fn toml_decode(text: &str) -> Result<Map, String> {
+	let value: toml::Value = toml::from_str(text).map_err(|e| format!("toml_decode: {e}"))?;
+	let table = value.as_table().ok_or("toml top level must be a table")?;
+	let mut map = Map::new();
+	for (key, val) in table.clone() {
+		map.insert(key.clone().into(), toml_value_to_dynamic(val)?);
+	}
+	Ok(map)
+}
+
+fn toml_value_to_dynamic(value: toml::Value) -> Result<Dynamic, String> {
+	Ok(match value {
+		toml::Value::String(s) => Dynamic::from(s),
+		toml::Value::Integer(i) => Dynamic::from(i),
+		toml::Value::Float(f) => Dynamic::from(f),
+		toml::Value::Boolean(b) => Dynamic::from(b),
+		toml::Value::Datetime(d) => Dynamic::from(d.to_string()),
+		toml::Value::Array(arr) => {
+			let items: Result<rhai::Array, String> = arr.into_iter().map(toml_value_to_dynamic).collect();
+			Dynamic::from(items?)
+		}
+		toml::Value::Table(table) => {
+			let mut map = Map::new();
+			for (k, v) in table {
+				map.insert(k.into(), toml_value_to_dynamic(v)?);
+			}
+			Dynamic::from(map)
+		}
+	})
+}
+
+fn register_collectors(
+	engine: &mut rhai::Engine,
+	decls: &Rc<RefCell<Vec<TargetDecl>>>,
+	dependencies: &Rc<RefCell<Vec<forge_core::DependencyRequest>>>,
+	requirements: &Rc<RefCell<Vec<forge_core::DependencyRequirement>>>,
+	candidates: &Rc<RefCell<Vec<forge_core::PackageCandidate>>>,
+) {
 	macro_rules! collector {
 		($fn_name:literal, $kind:expr) => {
 			let sink = Rc::clone(decls);
@@ -79,6 +156,109 @@ fn register_collectors(engine: &mut rhai::Engine, decls: &Rc<RefCell<Vec<TargetD
 	collector!("binary", TargetKind::Binary);
 	collector!("test", TargetKind::Test);
 	collector!("rule", TargetKind::Rule);
+
+	let sink = Rc::clone(dependencies);
+	engine.register_fn(
+		"dependency",
+		move |name: &str, version: &str, source: &str, checksum: &str| -> Result<(), Box<EvalAltResult>> {
+			if name.is_empty() || version.is_empty() || source.is_empty() || checksum.is_empty() {
+				return Err("dependency requires non-empty name, version, source, and checksum".into());
+			}
+			sink.borrow_mut()
+				.push(forge_core::DependencyRequest::new(name, version, source, checksum));
+			Ok(())
+		},
+	);
+
+	let sink = Rc::clone(dependencies);
+	engine.register_fn(
+		"dependency",
+		move |name: &str,
+		      version: &str,
+		      source: &str,
+		      checksum: &str,
+		      deps: rhai::Array|
+		      -> Result<(), Box<EvalAltResult>> {
+			if name.is_empty() || version.is_empty() || source.is_empty() || checksum.is_empty() {
+				return Err("dependency requires non-empty name, version, source, and checksum".into());
+			}
+			let dependencies = deps
+				.into_iter()
+				.map(|v| v.into_string().map_err(|_| "dependency deps must be strings".to_string()))
+				.collect::<Result<Vec<_>, _>>()?;
+			sink.borrow_mut()
+				.push(forge_core::DependencyRequest::new(name, version, source, checksum).with_dependencies(dependencies));
+			Ok(())
+		},
+	);
+
+	let sink = Rc::clone(requirements);
+	engine.register_fn(
+		"dependency_require",
+		move |name: &str, minimum: &str, maximum: &str| -> Result<(), Box<EvalAltResult>> {
+			let range = parse_range(minimum, maximum)?;
+			sink.borrow_mut().push(forge_core::DependencyRequirement::new(name, range));
+			Ok(())
+		},
+	);
+
+	let sink = Rc::clone(candidates);
+	engine.register_fn(
+		"dependency_candidate",
+		move |name: &str,
+		      version: &str,
+		      source: &str,
+		      checksum: &str,
+		      deps: rhai::Array|
+		      -> Result<(), Box<EvalAltResult>> {
+			if name.is_empty() || version.is_empty() || source.is_empty() || checksum.is_empty() {
+				return Err("dependency_candidate requires non-empty name, version, source, and checksum".into());
+			}
+			let dependencies = deps.iter().map(parse_requirement).collect::<Result<Vec<_>, _>>()?;
+			sink.borrow_mut().push(
+				forge_core::PackageCandidate::new(name, parse_version(version)?)
+					.from_source(source, checksum)
+					.with_dependencies(dependencies),
+			);
+			Ok(())
+		},
+	);
+}
+
+fn parse_range(minimum: &str, maximum: &str) -> Result<forge_core::VersionRange, Box<EvalAltResult>> {
+	match (minimum.is_empty(), maximum.is_empty()) {
+		(true, true) => Ok(forge_core::VersionRange::full()),
+		(false, true) => Ok(forge_core::VersionRange::higher_than(parse_version(minimum)?)),
+		(true, false) => Ok(forge_core::VersionRange::strictly_lower_than(parse_version(maximum)?)),
+		(false, false) => Ok(forge_core::VersionRange::between(
+			parse_version(minimum)?,
+			parse_version(maximum)?,
+		)),
+	}
+}
+
+fn parse_version(input: &str) -> Result<forge_core::Version, Box<EvalAltResult>> {
+	forge_core::Version::parse(input).map_err(|error| -> Box<EvalAltResult> { error.into() })
+}
+
+fn parse_requirement(value: &Dynamic) -> Result<forge_core::DependencyRequirement, Box<EvalAltResult>> {
+	let map = value
+		.clone()
+		.try_cast::<Map>()
+		.ok_or_else(|| "candidate dependencies must be maps".to_string())?;
+	let name = map
+		.get("name")
+		.and_then(|value| value.clone().into_string().ok())
+		.ok_or_else(|| "candidate dependency requires string `name`".to_string())?;
+	let minimum = map
+		.get("min")
+		.and_then(|value| value.clone().into_string().ok())
+		.unwrap_or_default();
+	let maximum = map
+		.get("max")
+		.and_then(|value| value.clone().into_string().ok())
+		.unwrap_or_default();
+	Ok(forge_core::DependencyRequirement::new(name, parse_range(&minimum, &maximum)?))
 }
 
 fn build_decl(kind: TargetKind, name: &str, fields: Map) -> Result<TargetDecl, ForgeDiagnostic> {
@@ -115,12 +295,9 @@ fn apply_dynamic(builder: &mut FieldsBuilder, key: &str, value: &Dynamic) -> Res
 						.and_then(|value| value.clone().into_string().ok())
 						.unwrap_or_else(|| "hard".into());
 					let edge = match edge_name.as_str() {
-						"hard" => forge_core::DependencyEdge::Hard,
+						"hard" | "" => forge_core::DependencyEdge::Hard,
 						"order_only" => forge_core::DependencyEdge::OrderOnly,
-						"module_import" => forge_core::DependencyEdge::ModuleImport,
-						"proc_macro" => forge_core::DependencyEdge::ProcMacro,
-						"build_script" => forge_core::DependencyEdge::BuildScript,
-						other => return Err(ForgeDiagnostic::error(103, format!("unknown dependency edge `{other}`"))),
+						other => forge_core::DependencyEdge::Tagged(other.to_string()),
 					};
 					builder.dependency(label, edge)?;
 				} else {

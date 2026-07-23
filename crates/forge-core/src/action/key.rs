@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use blake3::Hasher;
 

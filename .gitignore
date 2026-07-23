@@ -4,3 +4,5 @@
 .vscode/
 local/
 .zed/
+.cargo/
+.opencode/

@@ -17,13 +17,35 @@ pub enum OutputKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EnvironmentFile {
+	pub path: PathBuf,
+	pub line_prefix: Option<String>,
+	pub key_prefix: String,
+	pub ignored_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ArgumentFile {
+	pub path: PathBuf,
+	pub line_prefix: String,
+	pub flag: String,
+	pub root_marker: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ActionSpec {
 	pub name: String,
 	pub component: String,
 	pub command: String,
 	pub args: Vec<String>,
 	pub inputs: Vec<PathBuf>,
+	pub execution_deps: Vec<PathBuf>,
 	pub outputs: Vec<OutputDeclaration>,
+	pub workdir: Option<PathBuf>,
+	pub is_test: bool,
+	pub stdout: Option<PathBuf>,
+	pub environment_files: Vec<EnvironmentFile>,
+	pub argument_files: Vec<ArgumentFile>,
 	pub env: BTreeMap<String, String>,
 	pub toolchain_id: Option<String>,
 }
@@ -40,6 +62,9 @@ impl ActionSpec {
 		for i in &self.inputs {
 			put_path(&mut h, i);
 		}
+		for dep in &self.execution_deps {
+			put_path(&mut h, dep);
+		}
 		for o in &self.outputs {
 			put(&mut h, &o.path.to_string_lossy());
 			put(
@@ -49,6 +74,27 @@ impl ActionSpec {
 					OutputKind::Directory => "dir",
 				},
 			);
+		}
+		if let Some(workdir) = &self.workdir {
+			put_path(&mut h, workdir);
+		}
+		put(&mut h, if self.is_test { "test" } else { "build" });
+		if let Some(stdout) = &self.stdout {
+			put_path(&mut h, stdout);
+		}
+		for file in &self.environment_files {
+			put_path(&mut h, &file.path);
+			put_opt(&mut h, file.line_prefix.as_deref());
+			put(&mut h, &file.key_prefix);
+			for key in &file.ignored_keys {
+				put(&mut h, key);
+			}
+		}
+		for file in &self.argument_files {
+			put_path(&mut h, &file.path);
+			put(&mut h, &file.line_prefix);
+			put(&mut h, &file.flag);
+			put_opt(&mut h, file.root_marker.as_deref());
 		}
 		for (k, v) in &self.env {
 			put(&mut h, k);
@@ -92,10 +138,16 @@ mod tests {
 			command: "/toolchains/clang/bin/clang".into(),
 			args: vec!["-c".into(), "math.c".into()],
 			inputs: vec![PathBuf::from("math.c")],
+			execution_deps: Vec::new(),
 			outputs: vec![OutputDeclaration {
 				path: "math.o".into(),
 				kind: OutputKind::File,
 			}],
+			workdir: None,
+			is_test: false,
+			stdout: None,
+			environment_files: Vec::new(),
+			argument_files: Vec::new(),
 			env: BTreeMap::from([("CFLAGS".into(), "-O2".into())]),
 			toolchain_id: Some("clang@19.1.7".into()),
 		}

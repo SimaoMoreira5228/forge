@@ -1,10 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use forge_core::{ActionSpec, BuildGraph, ComponentId, ComponentKind, OutputDeclaration, OutputKind, Platform, Profile};
+use forge_core::{
+	ActionSpec, ArgumentFile, BuildGraph, ComponentId, ComponentKind, EnvironmentFile, OutputDeclaration, OutputKind,
+	Platform, Profile,
+};
 use forge_diagnostics::{ForgeDiagnostic, codes};
 use forge_script::TargetDecl;
-use forge_script::cells::{ActionDecl, CellHooks, ComponentView, lower};
+use forge_script::cells::{ActionDecl, CellHooks, ComponentView, FetchedSource, lower};
 
 use crate::hasher;
 use crate::std_cells::StdCells;
@@ -31,7 +34,7 @@ impl ActionDag {
 		self.specs
 			.iter()
 			.enumerate()
-			.filter(|(_, s)| s.name.starts_with("run "))
+			.filter(|(_, s)| s.is_test)
 			.map(|(i, _)| i)
 			.collect()
 	}
@@ -45,6 +48,8 @@ pub struct PlanContext<'a> {
 	pub toolchains: &'a BTreeMap<String, ResolvedToolchain>,
 	pub cells: &'a StdCells,
 	pub workspace: Option<&'a Path>,
+	pub fetched_sources: &'a [FetchedSource],
+	pub progress: Option<&'a crate::progress::Progress>,
 }
 
 pub type DeclMap = BTreeMap<String, TargetDecl>;
@@ -55,6 +60,7 @@ struct Planner<'a> {
 	producer_of: BTreeMap<PathBuf, usize>,
 	archive_of: BTreeMap<String, PathBuf>,
 	last_action_of: BTreeMap<String, usize>,
+	fetched_emitted: bool,
 }
 
 pub fn build_action_dag(ctx: &PlanContext<'_>) -> Result<ActionDag, ForgeDiagnostic> {
@@ -65,6 +71,7 @@ pub fn build_action_dag(ctx: &PlanContext<'_>) -> Result<ActionDag, ForgeDiagnos
 		producer_of: BTreeMap::new(),
 		archive_of: BTreeMap::new(),
 		last_action_of: BTreeMap::new(),
+		fetched_emitted: false,
 	};
 	for id in order {
 		let component = ctx.graph.component(id);
@@ -77,6 +84,8 @@ pub fn build_action_dag(ctx: &PlanContext<'_>) -> Result<ActionDag, ForgeDiagnos
 		}
 	}
 	planner.link_component_edges()?;
+	planner.link_execution_edges()?;
+	planner.validate_action_dag()?;
 	Ok(planner.dag)
 }
 
@@ -84,14 +93,11 @@ impl<'a> Planner<'a> {
 	fn emit(&mut self, mut spec: ActionSpec) -> usize {
 		let unique: BTreeSet<PathBuf> = spec.inputs.iter().cloned().collect();
 		spec.inputs = unique.into_iter().collect();
+		let unique: BTreeSet<PathBuf> = spec.execution_deps.iter().cloned().collect();
+		spec.execution_deps = unique.into_iter().collect();
 
 		let index = self.dag.specs.len();
-		let mut deps = Vec::new();
-		for input in &spec.inputs {
-			if let Some(&producer) = self.producer_of.get(input) {
-				deps.push(producer);
-			}
-		}
+		let deps = Vec::new();
 		for output in &spec.outputs {
 			self.producer_of.insert(output.path.clone(), index);
 		}
@@ -124,6 +130,61 @@ impl<'a> Planner<'a> {
 			}
 		}
 		Ok(())
+	}
+
+	fn link_execution_edges(&mut self) -> Result<(), ForgeDiagnostic> {
+		for (index, spec) in self.dag.specs.clone().iter().enumerate() {
+			for dependency in &spec.execution_deps {
+				let Some(&producer) = self.producer_of.get(dependency) else {
+					return Err(ForgeDiagnostic::error(
+						codes::inputs::MISSING_INPUT,
+						format!(
+							"action `{}` depends on unknown produced path `{}`",
+							spec.name,
+							dependency.display()
+						),
+					));
+				};
+				if producer == index {
+					return Err(ForgeDiagnostic::error(
+						codes::graph::CYCLE_DETECTED,
+						format!("action `{}` depends on its own output `{}`", spec.name, dependency.display()),
+					));
+				}
+				if !self.dag.deps[index].contains(&producer) {
+					self.dag.deps[index].push(producer);
+				}
+			}
+		}
+		Ok(())
+	}
+
+	fn validate_action_dag(&self) -> Result<(), ForgeDiagnostic> {
+		let mut indegree: Vec<usize> = self.dag.deps.iter().map(Vec::len).collect();
+		let mut ready: Vec<usize> = indegree
+			.iter()
+			.enumerate()
+			.filter_map(|(index, degree)| (*degree == 0).then_some(index))
+			.collect();
+		let dependents = self.dag.dependents();
+		let mut visited = 0;
+		while let Some(index) = ready.pop() {
+			visited += 1;
+			for &dependent in &dependents[index] {
+				indegree[dependent] -= 1;
+				if indegree[dependent] == 0 {
+					ready.push(dependent);
+				}
+			}
+		}
+		if visited == self.dag.specs.len() {
+			Ok(())
+		} else {
+			Err(ForgeDiagnostic::error(
+				codes::graph::CYCLE_DETECTED,
+				"action dependency cycle detected",
+			))
+		}
 	}
 
 	fn decl_for(&self, id: ComponentId) -> Result<&TargetDecl, ForgeDiagnostic> {
@@ -195,6 +256,7 @@ impl<'a> Planner<'a> {
 			command,
 			args: decl.args.clone(),
 			inputs: decl.resolved_inputs.clone(),
+			execution_deps: Vec::new(),
 			outputs: decl
 				.outputs
 				.iter()
@@ -203,6 +265,11 @@ impl<'a> Planner<'a> {
 					kind: if *is_dir { OutputKind::Directory } else { OutputKind::File },
 				})
 				.collect(),
+			workdir: None,
+			is_test: false,
+			stdout: None,
+			environment_files: Vec::new(),
+			argument_files: Vec::new(),
 			env: decl.env.clone(),
 			toolchain_id,
 		});
@@ -212,6 +279,10 @@ impl<'a> Planner<'a> {
 	fn plan_component(&mut self, id: ComponentId, kind: &'static str) -> Result<(), ForgeDiagnostic> {
 		let component = self.ctx.graph.component(id);
 		let label = component.label.to_string();
+		let object_namespace = label.replace(['/', ':'], "_");
+		if let Some(progress) = self.ctx.progress {
+			progress.phase(&format!("Lowering {label}..."));
+		}
 		if component.sources.is_empty() {
 			return Err(ForgeDiagnostic::error(
 				codes::inputs::MISSING_INPUT,
@@ -256,7 +327,11 @@ impl<'a> Planner<'a> {
 		let tool_digest = tool_id(&tool);
 
 		let hooks = CellHooks {
-			obj_path: Box::new(move |src| object_path(Path::new(src), &profile).to_string_lossy().into_owned()),
+			obj_path: Box::new(move |src| {
+				object_path(Path::new(src), &profile, &object_namespace)
+					.to_string_lossy()
+					.into_owned()
+			}),
 			prior_depfile_headers: Box::new(|obj| {
 				previous_depfile_headers(&PathBuf::from(format!("{obj}.d")))
 					.into_iter()
@@ -286,9 +361,20 @@ impl<'a> Planner<'a> {
 					std::fs::read_to_string(&full).map_err(|e| format!("cannot read {}: {e}", full.display()))
 				})
 			},
+			glob: {
+				let ws = self.ctx.workspace.map(|p| p.to_path_buf()).unwrap_or_default();
+				Box::new(move |pattern: &str| -> Result<Vec<String>, String> {
+					let hits = forge_script::glob::expand_glob(&ws, pattern).map_err(|e| e.to_string())?;
+					Ok(hits.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
+				})
+			},
 		};
 
 		let dep_artifacts = self.collect_dep_artifacts(id);
+		let fetch_owner = !self.fetched_emitted && !self.ctx.fetched_sources.is_empty();
+		if fetch_owner {
+			self.fetched_emitted = true;
+		}
 
 		let view = ComponentView {
 			label,
@@ -310,6 +396,8 @@ impl<'a> Planner<'a> {
 			env: decl.env.clone(),
 			dep_archives: dep_archives.iter().map(|p: &PathBuf| path_string(p)).collect(),
 			dep_artifacts,
+			fetched_sources: self.ctx.fetched_sources.to_vec(),
+			fetch_owner,
 			workspace: self
 				.ctx
 				.workspace
@@ -351,7 +439,7 @@ impl<'a> Planner<'a> {
 		let mut archive_path: Option<PathBuf> = None;
 
 		for action in actions {
-			if kind == "library" && archive_path.is_none() {
+			if kind == "library" && archive_path.is_none() && action.name.starts_with(&format!("rustc {label}")) {
 				for (out, _) in &action.outputs {
 					let p = PathBuf::from(out);
 					if p.starts_with("forge-out/lib") {
@@ -366,12 +454,36 @@ impl<'a> Planner<'a> {
 				command: action.command.clone(),
 				args: action.args.clone(),
 				inputs: action.inputs.iter().map(PathBuf::from).collect(),
+				execution_deps: action.execution_deps.iter().map(PathBuf::from).collect(),
 				outputs: action
 					.outputs
 					.iter()
 					.map(|(path, is_dir)| OutputDeclaration {
 						path: PathBuf::from(path),
 						kind: if *is_dir { OutputKind::Directory } else { OutputKind::File },
+					})
+					.collect(),
+				workdir: action.workdir.map(PathBuf::from),
+				is_test: kind == "test" && action.name.starts_with("run "),
+				stdout: action.stdout.map(PathBuf::from),
+				environment_files: action
+					.environment_files
+					.into_iter()
+					.map(|(key_prefix, path, line_prefix, ignored_keys)| EnvironmentFile {
+						path: PathBuf::from(path),
+						line_prefix,
+						key_prefix,
+						ignored_keys,
+					})
+					.collect(),
+				argument_files: action
+					.argument_files
+					.into_iter()
+					.map(|(path, line_prefix, flag, root_marker)| ArgumentFile {
+						path: PathBuf::from(path),
+						line_prefix,
+						flag,
+						root_marker,
 					})
 					.collect(),
 				env: action.env.clone(),
@@ -460,11 +572,14 @@ fn tool_id(tool: &ResolvedToolchain) -> String {
 	format!("{}@{}", tool.name, &tool.digest[..12.min(tool.digest.len())])
 }
 
-fn object_path(source: &Path, profile: &Profile) -> PathBuf {
+fn object_path(source: &Path, profile: &Profile, namespace: &str) -> PathBuf {
 	let stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("src");
 	let suffix = hasher::hex(blake3::hash(source.to_string_lossy().as_bytes()).as_bytes())[..8].to_string();
 	let directory = if profile.coverage { "profile" } else { "obj" };
-	PathBuf::from(format!("forge-out/{directory}/{}/{}_{suffix}.o", profile.name, stem))
+	PathBuf::from(format!(
+		"forge-out/{directory}/{}/{}_{}_{suffix}.o",
+		profile.name, namespace, stem
+	))
 }
 
 fn previous_depfile_headers(depfile: &Path) -> Vec<PathBuf> {
