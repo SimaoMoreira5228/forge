@@ -439,10 +439,10 @@ impl<'a> Planner<'a> {
 		let mut archive_path: Option<PathBuf> = None;
 
 		for action in actions {
-			if kind == "library" && archive_path.is_none() && action.name.starts_with(&format!("rustc {label}")) {
+			if kind == "library" && archive_path.is_none() {
 				for (out, _) in &action.outputs {
 					let p = PathBuf::from(out);
-					if p.starts_with("forge-out/lib") {
+					if p.starts_with("forge-out/lib") && !p.starts_with("forge-out/lib/deps") {
 						archive_path = Some(p);
 						break;
 					}

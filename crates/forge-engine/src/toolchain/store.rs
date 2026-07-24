@@ -71,7 +71,7 @@ pub fn resolve_tool_path(toolchains: &BTreeMap<String, ResolvedToolchain>, spec:
 }
 
 pub struct ToolchainStore {
-	pub root: PathBuf,
+	pub store: crate::store::Store,
 	pub catalog: Catalog,
 	pub config: WorkspaceConfig,
 	pub workspace_touched: BTreeSet<String>,
@@ -99,7 +99,7 @@ impl ToolchainStore {
 			}
 		}
 		Ok(Self {
-			root: workspace.join(".forge").join("toolchains"),
+			store: crate::store::Store::open(),
 			catalog,
 			config,
 			workspace_touched,
@@ -115,7 +115,7 @@ impl ToolchainStore {
 	}
 
 	pub fn install_dir(&self, name: &str, version: &str) -> PathBuf {
-		self.root.join(name).join(version)
+		self.store.toolchains().join(name).join(version)
 	}
 
 	pub fn url_version(url: &str) -> String {

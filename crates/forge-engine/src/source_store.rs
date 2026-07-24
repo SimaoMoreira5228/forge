@@ -3,7 +3,10 @@ use std::path::{Path, PathBuf};
 use forge_core::resolver::ForgeLock;
 use forge_diagnostics::{ForgeDiagnostic, codes};
 
-use crate::toolchain::sync::{extract, file_sha256};
+use crate::store::Store;
+use crate::toolchain::sync::{extract, fetch_blob};
+
+const MARKER: &str = ".forge-source";
 
 #[derive(Debug, Clone)]
 pub struct SourcePackage {
@@ -14,21 +17,26 @@ pub struct SourcePackage {
 }
 
 pub struct SourceStore {
-	root: PathBuf,
+	store: Store,
+	workspace: PathBuf,
 }
 
 impl SourceStore {
-	pub fn new(workspace: &Path) -> Self {
+	pub fn open(workspace: &Path) -> Self {
+		Self::with_store(workspace, Store::open())
+	}
+
+	pub fn with_store(workspace: &Path, store: Store) -> Self {
 		Self {
-			root: workspace.join(".forge/deps"),
+			store,
+			workspace: workspace.to_path_buf(),
 		}
 	}
 
-	pub fn fetch(&self, package: &SourcePackage) -> Result<PathBuf, ForgeDiagnostic> {
-		let destination = self.root.join(&package.name).join(&package.version);
-		let marker = destination.join(".forge-source");
-		if marker.is_file() {
-			return Ok(destination);
+	fn canonical(&self, package: &SourcePackage) -> Result<PathBuf, ForgeDiagnostic> {
+		let dir = self.store.sources().join(&package.name).join(&package.version);
+		if dir.join(MARKER).is_file() {
+			return Ok(dir);
 		}
 		if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
 			eprintln!(
@@ -36,28 +44,48 @@ impl SourceStore {
 				package.name, package.version, package.url
 			);
 		}
+		let archive = fetch_blob(&self.store, &package.url, Some(&package.sha256))?;
+		let staging = self.store.staging(&format!("src-{}", package.name));
+		std::fs::create_dir_all(&staging).map_err(|e| io_error("create", &staging, e))?;
+		extract(&archive, &staging).inspect_err(|_e| {
+			let _ = std::fs::remove_dir_all(&staging);
+		})?;
+		normalize_root(&staging)?;
+		std::fs::write(staging.join(MARKER), b"1").map_err(|e| io_error("mark", &staging, e))?;
+		{
+			let _publish = self.store.lock("store")?;
+			self.store.publish_dir(&staging, &dir)?;
+		}
+		Ok(dir)
+	}
 
-		std::fs::create_dir_all(&destination).map_err(|e| io_error("create", &destination, e))?;
-		let archive = destination.join("artifact.download");
-		if !archive.is_file() {
-			crate::toolchain::sync::download(&package.url, &archive)?;
+	pub fn fetch(&self, package: &SourcePackage) -> Result<PathBuf, ForgeDiagnostic> {
+		let canonical = self.canonical(package)?;
+		let view = self
+			.workspace
+			.join("forge-out/deps")
+			.join(&package.name)
+			.join(&package.version);
+		if view.join(MARKER).is_file() {
+			return Ok(view);
 		}
-		let actual = file_sha256(&archive)?;
-		if actual != package.sha256.to_ascii_lowercase() {
-			let _ = std::fs::remove_dir_all(&destination);
-			return Err(ForgeDiagnostic::error(
-				codes::hermetic::TOOLCHAIN_MISMATCH,
-				format!(
-					"{}@{} checksum mismatch: expected {}, got {actual}",
-					package.name, package.version, package.sha256
-				),
-			));
-		}
-		extract(&archive, &destination)?;
-		normalize_root(&destination)?;
-		std::fs::remove_file(&archive).map_err(|e| io_error("remove", &archive, e))?;
-		std::fs::write(&marker, b"1").map_err(|e| io_error("mark", &marker, e))?;
-		Ok(destination)
+		let parent = self.workspace.join("forge-out/deps");
+		std::fs::create_dir_all(&parent).map_err(|e| io_error("create", &parent, e))?;
+		let staging = parent.join(format!(
+			".tmp-src-{}-{}-{}",
+			package.name,
+			std::process::id(),
+			std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.map(|d| d.as_nanos())
+				.unwrap_or(0)
+		));
+		hardlink_tree(&canonical, &staging).inspect_err(|_e| {
+			let _ = std::fs::remove_dir_all(&staging);
+		})?;
+		std::fs::write(staging.join(MARKER), b"1").map_err(|e| io_error("mark", &staging, e))?;
+		self.store.publish_dir(&staging, &view)?;
+		Ok(view)
 	}
 
 	pub fn fetch_lock(&self, lock: &ForgeLock) -> Result<Vec<(String, PathBuf)>, ForgeDiagnostic> {
@@ -78,11 +106,29 @@ impl SourceStore {
 	}
 }
 
+fn hardlink_tree(from: &Path, to: &Path) -> Result<(), ForgeDiagnostic> {
+	std::fs::create_dir_all(to).map_err(|e| io_error("create", to, e))?;
+	for entry in walkdir::WalkDir::new(from).min_depth(1) {
+		let entry = entry.map_err(|e| {
+			ForgeDiagnostic::error(codes::hermetic::HERMETIC_VIOLATION, format!("walk `{}`: {e}", from.display()))
+		})?;
+		let relative = entry.path().strip_prefix(from).expect("prefix walked");
+		let destination = to.join(relative);
+		if entry.file_type().is_dir() {
+			std::fs::create_dir_all(&destination).map_err(|e| io_error("create", &destination, e))?;
+		} else if std::fs::hard_link(entry.path(), &destination).is_err() {
+			std::fs::copy(entry.path(), &destination)
+				.map(|_| ())
+				.map_err(|e| io_error("copy", entry.path(), e))?;
+		}
+	}
+	Ok(())
+}
+
 fn normalize_root(destination: &Path) -> Result<(), ForgeDiagnostic> {
 	let mut children = std::fs::read_dir(destination)
 		.map_err(|e| io_error("read", destination, e))?
 		.flatten()
-		.filter(|entry| entry.file_name() != "artifact.download")
 		.collect::<Vec<_>>();
 	if children.len() != 1 || !children[0].path().is_dir() {
 		return Ok(());
@@ -108,72 +154,81 @@ mod tests {
 	use tar::Builder;
 
 	use super::*;
+	use crate::toolchain::sync::file_sha256;
 
-	fn archive(path: &Path) {
+	fn archive(path: &Path, contents: &[u8]) {
 		let file = std::fs::File::create(path).unwrap();
 		let encoder = GzEncoder::new(file, flate2::Compression::fast());
 		let mut builder = Builder::new(encoder);
-		let contents = b"pub fn hello() {}";
 		let mut header = tar::Header::new_gnu();
 		header.set_size(contents.len() as u64);
 		header.set_cksum();
-		builder
-			.append_data(&mut header, "demo-1.0.0/src/lib.rs", contents.as_slice())
-			.unwrap();
+		builder.append_data(&mut header, "demo-1.0.0/src/lib.rs", contents).unwrap();
 		builder.into_inner().unwrap().finish().unwrap();
 	}
 
+	fn fixture(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+		let base = std::env::temp_dir().join(format!("forge-source-{name}-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&base);
+		std::fs::create_dir_all(&base).unwrap();
+		(base.join("store"), base.join("ws"), base.join("fixture.tar.gz"))
+	}
+
 	#[test]
-	fn fetches_verified_archive_and_reuses_marker() {
-		let root = std::env::temp_dir().join(format!("forge-source-ok-{}", std::process::id()));
-		let _ = std::fs::remove_dir_all(&root);
-		let archive_path = root.join("fixture.tar.gz");
-		std::fs::create_dir_all(&root).unwrap();
-		archive(&archive_path);
+	fn extracts_verified_archive_then_materializes_into_workspace() {
+		let (store_root, ws, archive_path) = fixture("ok");
+		archive(&archive_path, b"pub fn hello() {}");
 		let digest = file_sha256(&archive_path).unwrap();
-		let destination = root.join(".forge/deps/demo/1.0.0");
-		std::fs::create_dir_all(&destination).unwrap();
-		std::fs::copy(&archive_path, destination.join("artifact.download")).unwrap();
-		let store = SourceStore::new(&root);
+		std::fs::create_dir_all(store_root.join("blobs")).unwrap();
+		std::fs::copy(&archive_path, store_root.join("blobs").join(&digest)).unwrap();
+
+		let store = SourceStore::with_store(&ws, Store::at(&store_root));
 		let package = SourcePackage {
 			name: "demo".into(),
 			version: "1.0.0".into(),
-			url: "file://unused".into(),
-			sha256: digest,
+			url: "https://example.invalid/demo.tar.gz".into(),
+			sha256: digest.clone(),
 		};
 		let path = store.fetch(&package).unwrap();
+		assert!(
+			path.starts_with(&ws),
+			"materialized view must live in the workspace: {}",
+			path.display()
+		);
 		assert!(path.join("src/lib.rs").is_file());
 		assert!(path.join(".forge-source").is_file());
+		assert!(store_root.join("sources/demo/1.0.0/.forge-source").is_file());
 		assert_eq!(store.fetch(&package).unwrap(), path);
+
 		let lock = ForgeLock {
 			version: 1,
 			packages: vec![forge_core::resolver::LockedPackage {
 				name: "demo".into(),
 				version: "1.0.0".into(),
-				source: Some("file://unused".into()),
-				checksum: Some(package.sha256),
+				source: Some("https://example.invalid/demo.tar.gz".into()),
+				checksum: Some(digest),
 				dependencies: Vec::new(),
 			}],
 		};
 		assert_eq!(store.fetch_lock(&lock).unwrap().len(), 1);
-		let _ = std::fs::remove_dir_all(root);
 	}
 
 	#[test]
-	fn rejects_wrong_checksum_before_marking_source() {
-		let root = std::env::temp_dir().join(format!("forge-source-{}", std::process::id()));
-		let _ = std::fs::remove_dir_all(&root);
-		let store = SourceStore::new(&root);
+	fn corrupt_blob_is_rejected_without_marking_source() {
+		let (store_root, ws, _archive_path) = fixture("bad");
+		let digest = "0".repeat(64);
+		std::fs::create_dir_all(store_root.join("blobs")).unwrap();
+		std::fs::write(store_root.join("blobs").join(&digest), b"not an archive").unwrap();
+
+		let store = SourceStore::with_store(&ws, Store::at(&store_root));
 		let package = SourcePackage {
 			name: "demo".into(),
 			version: "1.0.0".into(),
-			url: "file://unused".into(),
-			sha256: "deadbeef".into(),
+			url: "https://example.invalid/demo.tar.gz".into(),
+			sha256: digest,
 		};
-		let _ = std::fs::create_dir_all(root.join(".forge/deps/demo/1.0.0"));
-		std::fs::write(root.join(".forge/deps/demo/1.0.0/artifact.download"), b"bad").unwrap();
 		assert!(store.fetch(&package).is_err());
-		assert!(!root.join(".forge/deps/demo/1.0.0/.forge-source").exists());
-		let _ = std::fs::remove_dir_all(root);
+		assert!(!store_root.join("sources/demo/1.0.0/.forge-source").exists());
+		assert!(!ws.join("forge-out/deps/demo/1.0.0").exists());
 	}
 }

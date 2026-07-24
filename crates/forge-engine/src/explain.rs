@@ -26,7 +26,8 @@ pub enum ActionState {
 
 impl Engine {
 	pub fn explain(&self, target: &str, profile_name: &str) -> Result<Vec<Explanation>, ForgeDiagnostic> {
-		let (prepared, _dag) = self.plan_dag(profile_name)?;
+		let _lock = self.shared_lock()?;
+		let (prepared, _dag) = self.plan_dag_locked(profile_name, None)?;
 		let profile = prepared.config.resolve_profile(profile_name)?;
 		let platform = forge_core::Platform::host();
 		let toolchains = crate::toolchain::ToolchainStore::load(&self.workspace, prepared.config.clone())?.resolve_all()?;

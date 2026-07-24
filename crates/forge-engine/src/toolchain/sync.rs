@@ -65,7 +65,7 @@ fn sync_one(
 	target: &TargetUrl,
 ) -> Result<SyncOutcome, ForgeDiagnostic> {
 	let install_dir = store.install_dir(catalog_name, version);
-	if installed_bin_dir(&install_dir).is_some() {
+	if install_dir.join(INSTALL_MARKER).is_file() {
 		return Ok(SyncOutcome::AlreadyInstalled);
 	}
 
@@ -73,27 +73,17 @@ fn sync_one(
 		eprintln!("warning: `{config_name}` has no sha256 pin; downloads cannot be verified (reproducibility at risk)");
 	}
 
-	std::fs::create_dir_all(&install_dir).map_err(|e| io_err("create", &install_dir, e))?;
+	let archive = fetch_blob(&store.store, &target.url, target.sha256.as_deref())?;
 
-	let archive_path = install_dir.join("artifact.download");
-	download(&target.url, &archive_path)?;
-
-	let actual = file_sha256(&archive_path)?;
-	if let Some(expected) = &target.sha256 {
-		let expected = expected.to_ascii_lowercase();
-		if actual != expected {
-			let _ = std::fs::remove_dir_all(&install_dir);
-			return Err(ForgeDiagnostic::error(
-				codes::hermetic::TOOLCHAIN_MISMATCH,
-				format!("`{config_name}` download failed verification: expected sha256 {expected}, got {actual}"),
-			));
-		}
-	}
-
-	extract(&archive_path, &install_dir).inspect_err(|_e| {
-		let _ = std::fs::remove_dir_all(&install_dir);
+	let staging = store.store.staging(catalog_name);
+	std::fs::create_dir_all(&staging).map_err(|e| io_err("create", &staging, e))?;
+	extract(&archive, &staging).inspect_err(|_e| {
+		let _ = std::fs::remove_dir_all(&staging);
 	})?;
-	let _ = std::fs::remove_file(&archive_path);
+	{
+		let _publish = store.store.lock("store")?;
+		store.store.publish_dir(&staging, &install_dir)?;
+	}
 
 	let install = store.catalog.get(catalog_name).and_then(|entry| entry.install.clone());
 	if let Some(install) = install
@@ -133,6 +123,46 @@ fn sync_one(
 
 	record_marker(&install_dir)?;
 	Ok(SyncOutcome::Downloaded { url: target.url.clone() })
+}
+
+pub(crate) fn fetch_blob(
+	store: &crate::store::Store,
+	url: &str,
+	sha256: Option<&str>,
+) -> Result<std::path::PathBuf, ForgeDiagnostic> {
+	let key = match sha256 {
+		Some(expected) => expected.to_ascii_lowercase(),
+		None => url_digest(url),
+	};
+	let blob = store.blob(&key);
+	if blob.is_file() {
+		return Ok(blob);
+	}
+	std::fs::create_dir_all(store.blobs()).map_err(|e| io_err("create", &store.blobs(), e))?;
+	let staged = store.staging("blob");
+	if let Err(e) = download(url, &staged) {
+		let _ = std::fs::remove_file(&staged);
+		return Err(e);
+	}
+	let actual = file_sha256(&staged)?;
+	if let Some(expected) = sha256
+		&& actual != expected.to_ascii_lowercase()
+	{
+		let _ = std::fs::remove_file(&staged);
+		return Err(ForgeDiagnostic::error(
+			codes::hermetic::TOOLCHAIN_MISMATCH,
+			format!("download failed verification: expected sha256 {expected}, got {actual}"),
+		));
+	}
+	{
+		let _publish = store.lock("store")?;
+		std::fs::rename(&staged, &blob).map_err(|e| io_err("publish blob", &blob, e))?;
+	}
+	Ok(blob)
+}
+
+pub(crate) fn url_digest(url: &str) -> String {
+	blake3::hash(url.as_bytes()).to_hex().to_string()
 }
 
 pub(crate) fn download(url: &str, destination: &Path) -> Result<(), ForgeDiagnostic> {
@@ -250,17 +280,17 @@ fn check_install(
 	target: &TargetUrl,
 ) -> String {
 	let install_dir = store.install_dir(catalog_name, version);
-	let Some(_bin) = installed_bin_dir(&install_dir) else {
+	if !install_dir.join(INSTALL_MARKER).is_file() {
 		return format!("{config_name}: not synced");
-	};
+	}
 	let Some(expected) = &target.sha256 else {
 		return format!("{config_name}: installed (no sha256 declared — unverifiable)");
 	};
-	let artifact = install_dir.join("artifact.download");
-	if !artifact.exists() {
+	let blob = store.store.blob(&expected.to_ascii_lowercase());
+	if !blob.is_file() {
 		return format!("{config_name}: installed (original artifact not retained; cannot re-verify)");
 	}
-	match file_sha256(&artifact) {
+	match file_sha256(&blob) {
 		Ok(actual) if actual == expected.to_ascii_lowercase() => format!("{config_name}: verified"),
 		Ok(actual) => format!("{config_name}: MISMATCH expected {expected} got {actual}"),
 		Err(e) => format!("{config_name}: verify failed ({e})"),
@@ -396,5 +426,53 @@ mod tests {
 		let good = file_sha256(&artifact).unwrap();
 		assert_ne!(good, "deadbeef");
 		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	fn serve_once(bytes: Vec<u8>) -> String {
+		let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+		let address = listener.local_addr().unwrap();
+		std::thread::spawn(move || {
+			if let Ok((mut stream, _)) = listener.accept() {
+				let mut request = [0u8; 1024];
+				let _ = std::io::Read::read(&mut stream, &mut request);
+				let header = format!(
+					"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+					bytes.len()
+				);
+				let _ = std::io::Write::write_all(&mut stream, header.as_bytes());
+				let _ = std::io::Write::write_all(&mut stream, &bytes);
+			}
+		});
+		format!("http://{address}/artifact")
+	}
+
+	#[test]
+	fn fetch_blob_verifies_before_publishing() {
+		let root = std::env::temp_dir().join(format!("forge-sync-blob-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&root);
+		let store = crate::store::Store::at(&root);
+
+		let payload = b"verified payload".to_vec();
+		let url = serve_once(payload.clone());
+		let wrong = "0".repeat(64);
+		assert!(
+			fetch_blob(&store, &url, Some(&wrong)).is_err(),
+			"a mismatched digest must not be published"
+		);
+		assert!(!store.blobs().exists() || std::fs::read_dir(store.blobs()).unwrap().flatten().count() == 0);
+		let _ = std::fs::remove_dir_all(&root);
+	}
+
+	#[test]
+	fn fetch_blob_reuses_published_blob_without_network() {
+		let root = std::env::temp_dir().join(format!("forge-sync-reuse-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&root);
+		let store = crate::store::Store::at(&root);
+		let digest = "a".repeat(64);
+		std::fs::create_dir_all(store.blobs()).unwrap();
+		std::fs::write(store.blob(&digest), b"cached").unwrap();
+		let path = fetch_blob(&store, "https://example.invalid/never", Some(&digest)).unwrap();
+		assert_eq!(path, store.blob(&digest));
+		let _ = std::fs::remove_dir_all(&root);
 	}
 }

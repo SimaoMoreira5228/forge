@@ -15,4 +15,4 @@ from = "version"
 version = "14"
 
 [build]
-max_cache_bytes = 536870912
+max_cache_size = "1GB"

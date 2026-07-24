@@ -41,6 +41,7 @@ fn run_forge(dir: &Path, args: &[&str]) -> (bool, String) {
 	let out = Command::new(forge_bin())
 		.args(args)
 		.current_dir(dir)
+		.env("FORGE_STORE_DIR", dir.join(".forge"))
 		.output()
 		.expect("launch forge");
 	(
@@ -51,6 +52,20 @@ fn run_forge(dir: &Path, args: &[&str]) -> (bool, String) {
 			String::from_utf8_lossy(&out.stderr)
 		),
 	)
+}
+
+fn link_rust_toolchain(dir: &Path) -> bool {
+	let source = forge_engine::store::store_root().join("toolchains/rust/1.98.0");
+	if !source.exists() {
+		return false;
+	}
+	let link = dir.join(".forge/toolchains/rust/1.98.0");
+	std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+	#[cfg(unix)]
+	std::os::unix::fs::symlink(&source, &link).unwrap();
+	#[cfg(not(unix))]
+	std::fs::copy(&source, &link).unwrap();
+	true
 }
 
 #[test]
@@ -99,15 +114,15 @@ fn rust_build_compiles_resolved_source_dependencies_with_rustc() {
 	let dir = std::env::temp_dir().join(format!("forge-ideps-rust-{}", std::process::id()));
 	let _ = std::fs::remove_dir_all(&dir);
 	std::fs::create_dir_all(dir.join("src")).unwrap();
-	std::fs::create_dir_all(dir.join(".forge/deps/dep/1.0.0/src")).unwrap();
+	std::fs::create_dir_all(dir.join(".forge/sources/dep/1.0.0/src")).unwrap();
 	std::fs::write(
 		dir.join("FORGE_ROOT"),
 		"[project]\nname = \"deps_rust_itest\"\n\n[discovery]\ninclude = [\".\"]\n\n[toolchains.rust]\nfrom = \"version\"\nversion = \"1.98.0\"\n",
 	)
 	.unwrap();
-	std::fs::write(dir.join(".forge/deps/dep/1.0.0/.forge-source"), b"1").unwrap();
+	std::fs::write(dir.join(".forge/sources/dep/1.0.0/.forge-source"), b"1").unwrap();
 	std::fs::write(
-		dir.join(".forge/deps/dep/1.0.0/src/lib.rs"),
+		dir.join(".forge/sources/dep/1.0.0/src/lib.rs"),
 		"pub fn hello() -> &'static str { \"hello from dependency\" }\n",
 	)
 	.unwrap();
@@ -134,7 +149,7 @@ fn rust_build_compiles_resolved_source_dependencies_with_rustc() {
 		std::os::unix::fs::symlink(&ws_toolchain, &forge_dir).unwrap();
 		#[cfg(not(unix))]
 		panic!("Rust integration test requires a workspace toolchain symlink");
-	} else {
+	} else if !link_rust_toolchain(&dir) {
 		eprintln!("skipping: Rust 1.98.0 toolchain is not installed");
 		return;
 	}
@@ -465,7 +480,7 @@ fn gc_evicts_actions_and_forces_rebuild() {
 
 	std::fs::write(
         dir.join("FORGE_ROOT"),
-        "[project]\nname = \"gc\"\n\n[discovery]\ninclude = [\".\"]\n\n[toolchains.gcc]\nfrom = \"path\"\npath = \"/usr\"\n\n[build]\nmax_cache_bytes = 1\n",
+        "[project]\nname = \"gc\"\n\n[discovery]\ninclude = [\".\"]\n\n[toolchains.gcc]\nfrom = \"path\"\npath = \"/usr\"\n\n[build]\nmax_cache_size = \"1B\"\n",
     )
     .unwrap();
 
@@ -645,6 +660,9 @@ fn rust_cell_builds_transitive_dependencies_and_caches() {
 		std::os::unix::fs::symlink(&ws_toolchain, &forge_dir).unwrap();
 		#[cfg(not(unix))]
 		panic!("Rust integration test requires a workspace toolchain symlink");
+	} else if !link_rust_toolchain(&dir) {
+		eprintln!("skipping: Rust 1.98.0 toolchain is not installed");
+		return;
 	}
 
 	std::fs::write(

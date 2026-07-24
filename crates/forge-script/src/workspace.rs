@@ -61,7 +61,8 @@ impl WorkspaceConfig {
 
 		#[derive(Deserialize)]
 		struct RawBuild {
-			max_cache_bytes: Option<u64>,
+			#[serde(default)]
+			max_cache_size: Option<String>,
 		}
 
 		#[derive(Deserialize)]
@@ -245,7 +246,10 @@ impl WorkspaceConfig {
 		Ok(Self {
 			std_patches,
 			catalog_files,
-			max_cache_bytes: raw.build.and_then(|b| b.max_cache_bytes).filter(|n| *n > 0),
+			max_cache_bytes: match raw.build.and_then(|b| b.max_cache_size) {
+				Some(size) => Some(parse_size(&size)?).filter(|n| *n > 0),
+				None => None,
+			},
 			name: raw.project.name.unwrap_or_else(|| "unnamed".into()),
 			discovery: Discovery {
 				include: raw
@@ -276,5 +280,49 @@ impl WorkspaceConfig {
 				self.profiles.keys().cloned().collect::<Vec<_>>().join(", ")
 			))
 		})
+	}
+}
+
+fn parse_size(text: &str) -> Result<u64, ForgeDiagnostic> {
+	let trimmed = text.trim();
+	let split = trimmed
+		.find(|c: char| !c.is_ascii_digit() && c != '.')
+		.unwrap_or(trimmed.len());
+	let (number, unit) = trimmed.split_at(split);
+	let value: f64 = number
+		.parse()
+		.map_err(|_| ForgeDiagnostic::error(codes::script::WRONG_TYPE, format!("invalid max_cache_size `{text}`")))?;
+	let multiplier: f64 = match unit.trim().to_ascii_lowercase().as_str() {
+		"" | "b" => 1.0,
+		"k" | "kb" => 1e3,
+		"ki" | "kib" => 1024.0,
+		"m" | "mb" => 1e6,
+		"mi" | "mib" => 1024.0 * 1024.0,
+		"g" | "gb" => 1e9,
+		"gi" | "gib" => 1024.0 * 1024.0 * 1024.0,
+		other => {
+			return Err(
+				ForgeDiagnostic::error(codes::script::WRONG_TYPE, format!("invalid max_cache_size unit `{other}`"))
+					.with_help("use b, kb, mb, gb (or kib, mib, gib)"),
+			);
+		}
+	};
+	Ok((value * multiplier) as u64)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::parse_size;
+
+	#[test]
+	fn parses_human_cache_sizes() {
+		assert_eq!(parse_size("1024").unwrap(), 1024);
+		assert_eq!(parse_size("1KB").unwrap(), 1000);
+		assert_eq!(parse_size("1KiB").unwrap(), 1024);
+		assert_eq!(parse_size("1GB").unwrap(), 1_000_000_000);
+		assert_eq!(parse_size("2 GiB").unwrap(), 2 * 1024 * 1024 * 1024);
+		assert_eq!(parse_size("500mb").unwrap(), 500_000_000);
+		assert!(parse_size("1PB").is_err());
+		assert!(parse_size("lots").is_err());
 	}
 }

@@ -5,6 +5,7 @@ pub mod db;
 pub mod explain;
 pub mod hasher;
 pub mod junit;
+pub mod lock;
 pub mod planner;
 pub mod progress;
 pub mod publish;
@@ -12,6 +13,7 @@ pub mod runner;
 pub mod schedule;
 pub mod source_store;
 pub mod std_cells;
+pub mod store;
 pub mod toolchain;
 
 pub use builder::{BuildOutcome, Engine};

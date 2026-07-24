@@ -10,6 +10,7 @@ use forge_script::register::load_workspace;
 use crate::cas::Cas;
 use crate::db::CacheDb;
 use crate::hasher;
+use crate::lock::FileLock;
 use crate::planner::{ActionDag, PlanContext, build_action_dag};
 use crate::runner::SandboxRunner;
 use crate::schedule::execute_dag;
@@ -57,6 +58,18 @@ impl Engine {
 		self.workspace.join("forge-out")
 	}
 
+	pub(crate) fn lock_path(&self) -> PathBuf {
+		self.workspace.join(".forge-lock")
+	}
+
+	pub(crate) fn exclusive_lock(&self) -> Result<FileLock, ForgeDiagnostic> {
+		FileLock::exclusive(&self.lock_path(), "workspace build")
+	}
+
+	pub(crate) fn shared_lock(&self) -> Result<FileLock, ForgeDiagnostic> {
+		FileLock::shared(&self.lock_path(), "workspace build")
+	}
+
 	pub(crate) fn prepare(&self) -> Result<Prepared, ForgeDiagnostic> {
 		let config = forge_script::WorkspaceConfig::load(&self.workspace)?;
 		let packages = discover_packages(&self.workspace, &config.discovery)?;
@@ -91,10 +104,11 @@ impl Engine {
 	}
 
 	pub fn plan_dag(&self, profile_name: &str) -> Result<(Prepared, ActionDag), ForgeDiagnostic> {
-		self.plan_dag_with_progress(profile_name, None)
+		let _lock = self.shared_lock()?;
+		self.plan_dag_locked(profile_name, None)
 	}
 
-	fn plan_dag_with_progress(
+	pub(crate) fn plan_dag_locked(
 		&self,
 		profile_name: &str,
 		mut progress: Option<&crate::progress::Progress>,
@@ -137,6 +151,7 @@ impl Engine {
 	}
 
 	pub fn dependency_lock(&self) -> Result<forge_core::resolver::ForgeLock, ForgeDiagnostic> {
+		let _lock = self.shared_lock()?;
 		let prepared = self.prepare()?;
 		self.dependency_lock_for(&prepared, false)
 	}
@@ -177,7 +192,7 @@ impl Engine {
 		if lock.packages.is_empty() {
 			return Ok(Vec::new());
 		}
-		let store = crate::source_store::SourceStore::new(&self.workspace);
+		let store = crate::source_store::SourceStore::open(&self.workspace);
 		let fetched = store.fetch_lock(&lock)?;
 		let mut roots = BTreeMap::new();
 		for (package, root) in fetched {
@@ -203,15 +218,18 @@ impl Engine {
 	}
 
 	pub fn build(&self, profile_name: &str) -> Result<BuildOutcome, ForgeDiagnostic> {
-		self.execute(profile_name, false)
+		let _lock = self.exclusive_lock()?;
+		self.execute_locked(profile_name, false)
 	}
 
 	pub fn test(&self, profile_name: &str) -> Result<BuildOutcome, ForgeDiagnostic> {
-		self.execute(profile_name, true)
+		let _lock = self.exclusive_lock()?;
+		self.execute_locked(profile_name, true)
 	}
 
 	pub fn compile_commands(&self, profile_name: &str) -> Result<String, ForgeDiagnostic> {
-		let (_prepared, dag) = self.plan_dag(profile_name)?;
+		let _lock = self.shared_lock()?;
+		let (_prepared, dag) = self.plan_dag_locked(profile_name, None)?;
 
 		let workspace_abs =
 			std::fs::canonicalize(&self.workspace).map_err(|e| ForgeDiagnostic::error(8, format!("workspace: {e}")))?;
@@ -227,8 +245,9 @@ impl Engine {
 	}
 
 	pub fn coverage(&self, output: Option<&str>) -> Result<(), ForgeDiagnostic> {
+		let _lock = self.exclusive_lock()?;
 		eprintln!("coverage: building with coverage flags...");
-		let build_outcome = self.execute("coverage", true)?;
+		let build_outcome = self.execute_locked("coverage", true)?;
 		eprintln!(
 			"coverage: tests ok ({} executed, {} cached)",
 			build_outcome.executed, build_outcome.test_cache_hits
@@ -282,12 +301,12 @@ impl Engine {
 		Ok(())
 	}
 
-	fn execute(&self, profile_name: &str, run_tests: bool) -> Result<BuildOutcome, ForgeDiagnostic> {
+	fn execute_locked(&self, profile_name: &str, run_tests: bool) -> Result<BuildOutcome, ForgeDiagnostic> {
 		let mut progress = crate::progress::Progress::new(0, profile_name);
 		progress.header(env!("CARGO_PKG_VERSION"));
 		progress.phase("Loading workspace...");
 		progress.phase("Resolving graph and dependencies...");
-		let (prepared, dag) = self.plan_dag_with_progress(profile_name, Some(&progress))?;
+		let (prepared, dag) = self.plan_dag_locked(profile_name, Some(&progress))?;
 		let profile = prepared.config.resolve_profile(profile_name)?;
 		let toolchains = ToolchainStore::load(&self.workspace, prepared.config.clone())?.resolve_all()?;
 
@@ -340,19 +359,12 @@ impl Engine {
 		Ok(outcome)
 	}
 
-	pub fn clean(&self, expunge: bool) -> Result<(), ForgeDiagnostic> {
+	pub fn clean(&self) -> Result<(), ForgeDiagnostic> {
+		let _lock = self.exclusive_lock()?;
 		let out = self.out_dir();
 		if out.exists() {
 			std::fs::remove_dir_all(&out)
 				.map_err(|e| ForgeDiagnostic::error(codes::hermetic::HERMETIC_VIOLATION, format!("clean failed: {e}")))?;
-		}
-		if expunge {
-			let tools = self.workspace.join(".forge");
-			if tools.exists() {
-				std::fs::remove_dir_all(&tools).map_err(|e| {
-					ForgeDiagnostic::error(codes::hermetic::HERMETIC_VIOLATION, format!("expunge failed: {e}"))
-				})?;
-			}
 		}
 		Ok(())
 	}

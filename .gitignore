@@ -6,3 +6,4 @@ local/
 .zed/
 .cargo/
 .opencode/
+.forge-lock

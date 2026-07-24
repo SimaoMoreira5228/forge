@@ -74,11 +74,13 @@ enum Command {
 	},
 	Clean {
 		#[arg(long)]
-		expunge: bool,
-		#[arg(long)]
 		cache: bool,
 		#[arg(long)]
 		test: bool,
+	},
+	Cache {
+		#[command(subcommand)]
+		action: CacheAction,
 	},
 	Toolchains {
 		#[command(subcommand)]
@@ -87,6 +89,14 @@ enum Command {
 	Deps {
 		#[command(subcommand)]
 		action: DepsAction,
+	},
+}
+
+#[derive(Subcommand)]
+enum CacheAction {
+	Clean {
+		#[arg(long)]
+		global: bool,
 	},
 }
 
@@ -292,9 +302,9 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 			Ok(())
 		}
 
-		Command::Clean { expunge, cache, test } => {
-			if expunge || !cache && !test {
-				Engine::open(&workspace).clean(expunge)?;
+		Command::Clean { cache, test } => {
+			if !cache && !test {
+				Engine::open(&workspace).clean()?;
 			}
 			if cache {
 				let cas = workspace.join("forge-out/cas");
@@ -309,6 +319,24 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 			}
 			Ok(())
 		}
+
+		Command::Cache { action } => match action {
+			CacheAction::Clean { global } => {
+				let store = forge_engine::store::Store::open();
+				if global {
+					store.clean()?;
+					println!("removed global store at {}", store.root().display());
+				} else {
+					let cas = workspace.join("forge-out/cas");
+					if cas.exists() {
+						std::fs::remove_dir_all(&cas)
+							.map_err(|e| ForgeDiagnostic::error(8, format!("clean failed: {e}")))?;
+					}
+					println!("removed forge-out/cas");
+				}
+				Ok(())
+			}
+		},
 
 		Command::Fmt { check } => {
 			let config = forge_script::WorkspaceConfig::load(&workspace)?;
@@ -374,7 +402,7 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 			let text = std::fs::read_to_string(&lock_path)
 				.map_err(|e| ForgeDiagnostic::error(8, format!("{}: {e}", lock_path.display())))?;
 			let lock = forge_core::resolver::ForgeLock::parse(&text).map_err(|e| ForgeDiagnostic::error(101, e))?;
-			let store = forge_engine::source_store::SourceStore::new(&workspace);
+			let store = forge_engine::source_store::SourceStore::open(&workspace);
 			for (package, path) in store.fetch_lock(&lock)? {
 				println!("{package}: {}", path.display());
 			}
