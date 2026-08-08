@@ -7,11 +7,12 @@ srcs = ["${glob('crates/forge-diagnostics/src/**/*.rs')}"]
 
 [library.forge_engine]
 srcs = ["${glob('crates/forge-engine/src/**/*.rs')}"]
-hdrs = ["${glob('prelude/**/*')}", "${glob('crates/forge-engine/migrations/**/*')}"]
+hdrs = ["${glob('crates/forge-engine/migrations/**/*')}"]
 deps = ["forge_core", "forge_diagnostics", "forge_script"]
 
 [library.forge_script]
 srcs = ["${glob('crates/forge-script/src/**/*.rs')}"]
+hdrs = ["${glob('prelude/**/*')}"]
 deps = ["forge_core", "forge_diagnostics"]
 
 [binary.forge]

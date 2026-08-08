@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use crate::label::Label;
-use crate::platform::Platform;
+use crate::platform::{ConfigTransition, Platform};
 
 pub type ComponentId = petgraph::graph::NodeIndex;
 
@@ -15,6 +15,8 @@ pub struct Component {
 	pub compatible_with: Vec<String>,
 	pub sources: Vec<PathBuf>,
 	pub headers: Vec<PathBuf>,
+	#[serde(default)]
+	pub configuration: ConfigTransition,
 }
 
 impl ComponentKind {
@@ -103,6 +105,7 @@ mod tests {
 			compatible_with: vec!["os=none".into(), "arch=armv7".into()],
 			sources: vec![],
 			headers: vec![],
+			configuration: Default::default(),
 		};
 		let arm = Platform {
 			os: "none".into(),

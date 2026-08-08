@@ -16,15 +16,21 @@ fn main() {
 	let mut generated = String::from("pub const EMBEDDED_CELLS: &[(&str, &str)] = &[\n");
 	let mut workspace = String::from("pub const EMBEDDED_WORKSPACE_SCRIPTS: &[(&str, &str)] = &[\n");
 	for (name, entry) in cells {
-		let script = entry
-			.get("script")
-			.and_then(toml::Value::as_str)
-			.unwrap_or_else(|| panic!("cell `{name}` has no `script` in prelude/std/manifest.toml"));
-		let path = prelude.join(script);
-		println!("cargo:rerun-if-changed={}", path.display());
-		generated.push_str(&format!(
-			"\t({name:?}, include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/../../prelude/std/{script}\"))),\n"
-		));
+		let scripts: Vec<&str> = entry
+			.get("scripts")
+			.and_then(toml::Value::as_array)
+			.map(|list| list.iter().filter_map(toml::Value::as_str).collect())
+			.filter(|list: &Vec<&str>| !list.is_empty())
+			.unwrap_or_else(|| panic!("cell `{name}` has no `scripts` in prelude/std/manifest.toml"));
+		generated.push_str(&format!("\t({name:?}, concat!(\n"));
+		for script in &scripts {
+			let path = prelude.join(script);
+			println!("cargo:rerun-if-changed={}", path.display());
+			generated.push_str(&format!(
+				"\t\tinclude_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/../../prelude/std/{script}\")), \"\\n\",\n"
+			));
+		}
+		generated.push_str("\t)),\n");
 		if let Some(workspace_script) = entry.get("workspace_script").and_then(toml::Value::as_str) {
 			let path = prelude.join(workspace_script);
 			println!("cargo:rerun-if-changed={}", path.display());

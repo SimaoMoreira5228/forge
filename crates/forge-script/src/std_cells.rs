@@ -7,6 +7,13 @@ const MANIFEST_TOML: &str = include_str!("../../../prelude/std/manifest.toml");
 
 include!(concat!(env!("OUT_DIR"), "/embedded_cells.rs"));
 
+pub fn cell_script(cell: &str) -> Option<&'static str> {
+	EMBEDDED_CELLS
+		.iter()
+		.find(|(name, _)| *name == cell)
+		.map(|(_, script)| *script)
+}
+
 #[derive(serde::Deserialize, Default)]
 struct Manifest {
 	cells: BTreeMap<String, CellEntry>,

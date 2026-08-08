@@ -29,7 +29,7 @@ impl Engine {
 		let _lock = self.shared_lock()?;
 		let (prepared, _dag) = self.plan_dag_locked(profile_name, None)?;
 		let profile = prepared.config.resolve_profile(profile_name)?;
-		let platform = forge_core::Platform::host();
+		let platform = prepared.config.resolve_target()?;
 		let toolchains = crate::toolchain::ToolchainStore::load(&self.workspace, prepared.config.clone())?.resolve_all()?;
 		let cells = crate::std_cells::StdCells::load(&self.workspace, &prepared.config.std_patches)?;
 		let fetched_sources = self.fetch_sources(&prepared)?;

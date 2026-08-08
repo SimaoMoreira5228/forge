@@ -75,11 +75,12 @@ pub fn build_action_dag(ctx: &PlanContext<'_>) -> Result<ActionDag, ForgeDiagnos
 	};
 	for id in order {
 		let component = ctx.graph.component(id);
-		check_compatibility(component, ctx.platform)?;
+		let platform = component.configuration.resolve(ctx.platform);
+		check_compatibility(component, &platform)?;
 		match component.kind {
-			ComponentKind::Library { .. } => planner.plan_component(id, "library")?,
-			ComponentKind::Binary => planner.plan_component(id, "binary")?,
-			ComponentKind::Test => planner.plan_component(id, "test")?,
+			ComponentKind::Library { .. } => planner.plan_component(id, "library", &platform)?,
+			ComponentKind::Binary => planner.plan_component(id, "binary", &platform)?,
+			ComponentKind::Test => planner.plan_component(id, "test", &platform)?,
 			ComponentKind::Generic { .. } => planner.plan_rule(id)?,
 		}
 	}
@@ -188,13 +189,21 @@ impl<'a> Planner<'a> {
 	}
 
 	fn decl_for(&self, id: ComponentId) -> Result<&TargetDecl, ForgeDiagnostic> {
-		let key = self.ctx.graph.component(id).label.to_string();
-		self.ctx.decls.get(&key).ok_or_else(|| {
-			ForgeDiagnostic::error(
-				codes::targets::UNKNOWN_TARGET,
-				format!("no declaration found for component `{key}`"),
-			)
-		})
+		let label = &self.ctx.graph.component(id).label;
+		let key = label.to_string();
+		if let Some(decl) = self.ctx.decls.get(&key) {
+			return Ok(decl);
+		}
+		if let Some((base, _)) = label.name().split_once("__") {
+			let base_key = forge_core::Label::new(label.package(), base).to_string();
+			if let Some(decl) = self.ctx.decls.get(&base_key) {
+				return Ok(decl);
+			}
+		}
+		Err(ForgeDiagnostic::error(
+			codes::targets::UNKNOWN_TARGET,
+			format!("no declaration found for component `{key}`"),
+		))
 	}
 
 	fn package_slug(&self, id: ComponentId) -> String {
@@ -250,14 +259,12 @@ impl<'a> Planner<'a> {
 			.as_deref()
 			.and_then(|name| self.ctx.toolchains.get(name))
 			.map(tool_id);
-		self.emit(ActionSpec {
-			name: format!("rule {label}"),
-			component: label,
-			command,
-			args: decl.args.clone(),
-			inputs: decl.resolved_inputs.clone(),
-			execution_deps: Vec::new(),
-			outputs: decl
+		let outputs = match &decl.output_dir {
+			Some(dir) => vec![OutputDeclaration {
+				path: PathBuf::from(dir),
+				kind: OutputKind::Directory,
+			}],
+			None => decl
 				.outputs
 				.iter()
 				.map(|(path, is_dir)| OutputDeclaration {
@@ -265,6 +272,15 @@ impl<'a> Planner<'a> {
 					kind: if *is_dir { OutputKind::Directory } else { OutputKind::File },
 				})
 				.collect(),
+		};
+		self.emit(ActionSpec {
+			name: format!("rule {label}"),
+			component: label,
+			command,
+			args: decl.args.clone(),
+			inputs: decl.resolved_inputs.clone(),
+			execution_deps: Vec::new(),
+			outputs,
 			workdir: None,
 			is_test: false,
 			stdout: None,
@@ -276,7 +292,12 @@ impl<'a> Planner<'a> {
 		Ok(())
 	}
 
-	fn plan_component(&mut self, id: ComponentId, kind: &'static str) -> Result<(), ForgeDiagnostic> {
+	fn plan_component(
+		&mut self,
+		id: ComponentId,
+		kind: &'static str,
+		platform: &forge_core::Platform,
+	) -> Result<(), ForgeDiagnostic> {
 		let component = self.ctx.graph.component(id);
 		let label = component.label.to_string();
 		let object_namespace = label.replace(['/', ':'], "_");
@@ -410,9 +431,9 @@ impl<'a> Planner<'a> {
 				None => String::new(),
 			},
 			link_flags: decl.link_flags.clone(),
-			platform_os: self.ctx.platform.os.clone(),
-			platform_arch: self.ctx.platform.arch.clone(),
-			platform_abi: self.ctx.platform.abi.clone().unwrap_or_default(),
+			platform_os: platform.os.clone(),
+			platform_arch: platform.arch.clone(),
+			platform_abi: platform.abi.clone().unwrap_or_default(),
 			profile: forge_script::cells::ProfileView {
 				name: self.ctx.profile.name.clone(),
 				opt_level: i64::from(self.ctx.profile.opt_level),

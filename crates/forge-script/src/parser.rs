@@ -165,7 +165,10 @@ fn dependency_edge(name: Option<&str>) -> forge_core::DependencyEdge {
 	match name.unwrap_or("hard") {
 		"hard" | "" => forge_core::DependencyEdge::Hard,
 		"order_only" => forge_core::DependencyEdge::OrderOnly,
-		other => forge_core::DependencyEdge::Tagged(other.to_string()),
+		other => match forge_core::ConfigTransition::parse(other) {
+			Some(transition) => forge_core::DependencyEdge::Transition(transition),
+			None => forge_core::DependencyEdge::Tagged(other.to_string()),
+		},
 	}
 }
 

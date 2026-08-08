@@ -297,7 +297,10 @@ fn apply_dynamic(builder: &mut FieldsBuilder, key: &str, value: &Dynamic) -> Res
 					let edge = match edge_name.as_str() {
 						"hard" | "" => forge_core::DependencyEdge::Hard,
 						"order_only" => forge_core::DependencyEdge::OrderOnly,
-						other => forge_core::DependencyEdge::Tagged(other.to_string()),
+						other => match forge_core::ConfigTransition::parse(other) {
+							Some(transition) => forge_core::DependencyEdge::Transition(transition),
+							None => forge_core::DependencyEdge::Tagged(other.to_string()),
+						},
 					};
 					builder.dependency(label, edge)?;
 				} else {

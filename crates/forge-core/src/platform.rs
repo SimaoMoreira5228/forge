@@ -65,11 +65,38 @@ fn host_abi() -> Option<String> {
 	}
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
 pub enum ConfigTransition {
 	Host,
 	Exec,
+	#[default]
 	Target,
+}
+
+impl ConfigTransition {
+	pub fn parse(name: &str) -> Option<Self> {
+		match name {
+			"host" => Some(Self::Host),
+			"exec" => Some(Self::Exec),
+			"target" => Some(Self::Target),
+			_ => None,
+		}
+	}
+
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Host => "host",
+			Self::Exec => "exec",
+			Self::Target => "target",
+		}
+	}
+
+	pub fn resolve(self, target: &Platform) -> Platform {
+		match self {
+			Self::Host | Self::Exec => Platform::host(),
+			Self::Target => target.clone(),
+		}
+	}
 }
 
 #[cfg(test)]
@@ -99,5 +126,21 @@ mod tests {
 			cpu: None,
 		};
 		assert_eq!(p.catalog_key(), "linux-x86_64");
+	}
+
+	#[test]
+	fn transitions_resolve_to_host_or_target() {
+		let target = Platform {
+			os: "none".into(),
+			arch: "armv7".into(),
+			abi: Some("eabihf".into()),
+			cpu: Some("cortex-m4".into()),
+		};
+		assert_eq!(ConfigTransition::Host.resolve(&target), Platform::host());
+		assert_eq!(ConfigTransition::Exec.resolve(&target), Platform::host());
+		assert_eq!(ConfigTransition::Target.resolve(&target), target);
+		assert_eq!(ConfigTransition::parse("host"), Some(ConfigTransition::Host));
+		assert_eq!(ConfigTransition::parse("target"), Some(ConfigTransition::Target));
+		assert_eq!(ConfigTransition::parse("bogus"), None);
 	}
 }

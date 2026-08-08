@@ -12,9 +12,9 @@ pub mod publish;
 pub mod runner;
 pub mod schedule;
 pub mod source_store;
-pub mod std_cells;
 pub mod store;
 pub mod toolchain;
 
 pub use builder::{BuildOutcome, Engine};
+pub use forge_script::std_cells;
 pub mod query_output;

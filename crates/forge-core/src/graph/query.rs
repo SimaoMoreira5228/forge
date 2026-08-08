@@ -499,6 +499,7 @@ mod tests {
 			compatible_with: vec![],
 			sources: vec![],
 			headers: vec![],
+			configuration: Default::default(),
 		}
 	}
 

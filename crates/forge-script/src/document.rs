@@ -87,6 +87,7 @@ impl TargetKind {
 				"args",
 				"inputs",
 				"outputs",
+				"output_dir",
 				"deps",
 				"env",
 			],
@@ -131,6 +132,7 @@ pub struct TargetDecl {
 	pub inputs: Vec<SourceExpr>,
 	pub resolved_inputs: Vec<PathBuf>,
 	pub outputs: Vec<(PathBuf, bool)>,
+	pub output_dir: Option<String>,
 	pub env: std::collections::BTreeMap<String, String>,
 	pub timeout_secs: u64,
 	pub data: Vec<PathBuf>,
@@ -191,6 +193,9 @@ impl TargetDecl {
 		if set("outputs") {
 			self.outputs = overlay.outputs.clone();
 		}
+		if set("output_dir") {
+			self.output_dir = overlay.output_dir.clone();
+		}
 		if set("timeout_secs") {
 			self.timeout_secs = overlay.timeout_secs;
 		}
@@ -246,6 +251,7 @@ impl TargetDecl {
 			inputs: vec![],
 			resolved_inputs: vec![],
 			outputs: vec![],
+			output_dir: None,
 			env: std::collections::BTreeMap::new(),
 			timeout_secs: 60,
 			data: vec![],
@@ -333,6 +339,7 @@ impl FieldsBuilder {
 			"standard" => decl.standard = Some(value),
 			"linker" => decl.linker = Some(value),
 			"command" => decl.command = Some(value),
+			"output_dir" => decl.output_dir = Some(value.trim_end_matches('/').to_string()),
 			_ => unreachable!("string on unexpected key"),
 		}
 		Ok(())

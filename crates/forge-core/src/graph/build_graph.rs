@@ -52,6 +52,10 @@ impl BuildGraph {
 		self.by_label.get(label).copied()
 	}
 
+	pub fn connect(&mut self, from: ComponentId, to: ComponentId, edge: DependencyEdge) {
+		self.inner.add_edge(from, to, edge);
+	}
+
 	pub fn component(&self, id: ComponentId) -> &Component {
 		&self.inner[id]
 	}
@@ -288,6 +292,7 @@ mod tests {
 			compatible_with: vec![],
 			sources: vec![],
 			headers: vec![],
+			configuration: Default::default(),
 		}
 	}
 
@@ -299,6 +304,7 @@ mod tests {
 			compatible_with: vec![],
 			sources: vec![],
 			headers: vec![],
+			configuration: Default::default(),
 		}
 	}
 

@@ -587,6 +587,44 @@ fn clean_cache_and_test_flags_work() {
 }
 
 #[test]
+fn dynamic_rule_discovers_generated_sources_and_replans() {
+	if !have_compiler() {
+		eprintln!("skipping: no system compiler");
+		return;
+	}
+	let dir = std::env::temp_dir().join(format!("forge-idyn-{}", std::process::id()));
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(dir.join("src")).unwrap();
+	std::fs::write(
+		dir.join("FORGE_ROOT"),
+		"[project]\nname = \"dyn\"\n\n[discovery]\ninclude = [\".\"]\n\n[toolchains.gcc]\nfrom = \"path\"\npath = \"/usr\"\n",
+	)
+	.unwrap();
+	std::fs::write(
+		dir.join("FORGE.toml"),
+		"[rule.gen]\ncommand = \"/bin/sh\"\nargs = [\"-c\", \"mkdir -p gen && printf 'int gen(void){return 41;}\\n' > gen/api.c\"]\noutput_dir = \"gen\"\n\n[binary.app]\nsrcs = [\"src/main.c\", \"${glob('gen/*.c')}\"]\n",
+	)
+	.unwrap();
+	std::fs::write(
+		dir.join("src/main.c"),
+		"#include <stdio.h>\nint gen(void);\nint main(void){printf(\"%d\\n\", gen());return 0;}\n",
+	)
+	.unwrap();
+
+	let (ok, log) = run_forge(&dir, &["build"]);
+	assert!(ok, "dynamic build failed: {log}");
+	let binary = dir.join("forge-out/bin/debug/app");
+	assert!(binary.exists(), "generated source was not compiled in: {log}");
+	let output = Command::new(&binary).output().expect("run built binary");
+	assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "41");
+
+	let (_, log2) = run_forge(&dir, &["build"]);
+	assert!(log2.contains("0 executed"), "dynamic discovery must be cached: {log2}");
+
+	let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn stats_surface_telemetry_and_graph() {
 	if !have_compiler() {
 		eprintln!("skipping: no system compiler");

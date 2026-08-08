@@ -17,5 +17,8 @@ toml_edit.workspace = true
 [dev-dependencies]
 serde_json.workspace = true
 
+[build-dependencies]
+toml.workspace = true
+
 [lints]
 workspace = true

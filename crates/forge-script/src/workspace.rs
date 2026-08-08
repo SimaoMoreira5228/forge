@@ -15,6 +15,7 @@ pub struct WorkspaceConfig {
 	pub std_patches: BTreeMap<String, PathBuf>,
 	pub catalog_files: Vec<PathBuf>,
 	pub max_cache_bytes: Option<u64>,
+	pub target_platform: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +64,8 @@ impl WorkspaceConfig {
 		struct RawBuild {
 			#[serde(default)]
 			max_cache_size: Option<String>,
+			#[serde(default)]
+			target: Option<String>,
 		}
 
 		#[derive(Deserialize)]
@@ -243,13 +246,17 @@ impl WorkspaceConfig {
 			}
 		}
 
+		let max_cache_bytes = match raw.build.as_ref().and_then(|b| b.max_cache_size.as_deref()) {
+			Some(size) => Some(parse_size(size)?).filter(|n| *n > 0),
+			None => None,
+		};
+		let target_platform = raw.build.and_then(|b| b.target);
+
 		Ok(Self {
 			std_patches,
 			catalog_files,
-			max_cache_bytes: match raw.build.and_then(|b| b.max_cache_size) {
-				Some(size) => Some(parse_size(&size)?).filter(|n| *n > 0),
-				None => None,
-			},
+			max_cache_bytes,
+			target_platform,
 			name: raw.project.name.unwrap_or_else(|| "unnamed".into()),
 			discovery: Discovery {
 				include: raw
@@ -271,6 +278,20 @@ impl WorkspaceConfig {
 		let text = std::fs::read_to_string(root.join("FORGE_ROOT"))
 			.map_err(|e| ForgeDiagnostic::error(codes::script::PARSE_ERROR, format!("cannot read FORGE_ROOT: {e}")))?;
 		Self::parse(&text)
+	}
+
+	pub fn resolve_target(&self) -> Result<forge_core::Platform, ForgeDiagnostic> {
+		match &self.target_platform {
+			Some(name) => self.platforms.get(name).cloned().ok_or_else(|| {
+				ForgeDiagnostic::error(codes::script::UNKNOWN_KEY, format!("unknown target platform `{name}`")).with_help(
+					format!(
+						"declared platforms: {}",
+						self.platforms.keys().cloned().collect::<Vec<_>>().join(", ")
+					),
+				)
+			}),
+			None => Ok(forge_core::Platform::host()),
+		}
 	}
 
 	pub fn resolve_profile(&self, name: &str) -> Result<Profile, ForgeDiagnostic> {

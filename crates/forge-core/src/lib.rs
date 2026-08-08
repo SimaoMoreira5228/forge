@@ -11,7 +11,7 @@ pub use graph::build_graph::BuildGraph;
 pub use graph::component::{Component, ComponentId, ComponentKind, LinkType, Visibility};
 pub use graph::edge::{DependencyDecl, DependencyEdge};
 pub use label::Label;
-pub use platform::Platform;
+pub use platform::{ConfigTransition, Platform};
 pub use profile::Profile;
 pub use resolver::{
 	DependencyRequest, DependencyRequirement, LockedSource, PackageCandidate, ResolveError, ResolvedGraph, ResolvedPackage,

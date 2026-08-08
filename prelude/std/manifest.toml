@@ -1,11 +1,11 @@
 [cells.c]
-script = "c/cell.rhai"
+scripts = ["c/cell.rhai"]
 extensions = ["c", "h", "cpp", "cc", "cxx", "C", "hpp", "hh", "hxx"]
 preferred_toolchain = "clang"
 fallback_toolchains = ["gcc", "cc"]
 
 [cells.rust]
-script = "rust/cell.rhai"
+scripts = ["rust/manifest.rhai", "rust/features.rhai", "rust/build_script.rhai", "rust/cell.rhai"]
 workspace_script = "rust/workspace.rhai"
 extensions = ["rs"]
 preferred_toolchain = "rust"

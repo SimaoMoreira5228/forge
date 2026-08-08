@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use forge_core::{ActionSpec, ComponentKind, Platform};
+use forge_core::{ActionSpec, ComponentKind};
 use forge_diagnostics::{ForgeDiagnostic, codes};
 use forge_script::discover_packages;
 use forge_script::register::load_workspace;
@@ -73,7 +73,7 @@ impl Engine {
 	pub(crate) fn prepare(&self) -> Result<Prepared, ForgeDiagnostic> {
 		let config = forge_script::WorkspaceConfig::load(&self.workspace)?;
 		let packages = discover_packages(&self.workspace, &config.discovery)?;
-		let platform = Platform::host();
+		let platform = config.resolve_target()?;
 		let cells = crate::std_cells::StdCells::load(&self.workspace, &config.std_patches)?;
 		let (graph, decls, dependencies, requirements, candidates, mut diagnostics) = load_workspace(
 			&self.workspace,
@@ -118,7 +118,7 @@ impl Engine {
 		}
 		let prepared = self.prepare()?;
 		let profile = prepared.config.resolve_profile(profile_name)?;
-		let platform = Platform::host();
+		let platform = prepared.config.resolve_target()?;
 		if let Some(progress) = &mut progress {
 			progress.phase("Resolving toolchains...");
 		}
@@ -306,21 +306,51 @@ impl Engine {
 		progress.header(env!("CARGO_PKG_VERSION"));
 		progress.phase("Loading workspace...");
 		progress.phase("Resolving graph and dependencies...");
-		let (prepared, dag) = self.plan_dag_locked(profile_name, Some(&progress))?;
-		let profile = prepared.config.resolve_profile(profile_name)?;
-		let toolchains = ToolchainStore::load(&self.workspace, prepared.config.clone())?.resolve_all()?;
+		let (mut prepared, mut dag) = self.plan_dag_locked(profile_name, Some(&progress))?;
+		let mut profile = prepared.config.resolve_profile(profile_name)?;
+		let mut toolchains = ToolchainStore::load(&self.workspace, prepared.config.clone())?.resolve_all()?;
+
+		let cas = Cas::open(&self.out_dir());
+		let db = CacheDb::open(&self.out_dir())?;
+		let runner = SandboxRunner::new(&self.workspace, &self.out_dir());
+
+		if !dynamic_components(&prepared.decls).is_empty() {
+			progress.phase("Running dynamic actions...");
+			let dynamic = dynamic_components(&prepared.decls);
+			let discovery = ExecContext {
+				run_tests: false,
+				discovery: true,
+				dynamic: &dynamic,
+				workspace: self.workspace.clone(),
+				specs: &dag.specs,
+				cas: &cas,
+				db: &db,
+				runner: &runner,
+				toolchains: &toolchains,
+				profile_fingerprint: profile.fingerprint(),
+				outcome: parking_lot::Mutex::new(BuildOutcome::default()),
+				progress: &progress,
+				hash_cache: hasher::HashCache::new(),
+			};
+			execute_dag(&dag, &discovery, |ctx, index| ctx.run(index))?;
+			let (next_prepared, next_dag) = self.plan_dag_locked(profile_name, Some(&progress))?;
+			prepared = next_prepared;
+			dag = next_dag;
+			profile = prepared.config.resolve_profile(profile_name)?;
+			toolchains = ToolchainStore::load(&self.workspace, prepared.config.clone())?.resolve_all()?;
+		}
 
 		progress.set_total(dag.specs.len());
 		progress.analyzing(prepared.graph.node_count());
 		progress.planned(dag.specs.len());
 
-		let cas = Cas::open(&self.out_dir());
-		let db = CacheDb::open(&self.out_dir())?;
 		db.replace_graph(&prepared.graph.node_rows(), &prepared.graph.edge_rows());
-		let runner = SandboxRunner::new(&self.workspace, &self.out_dir());
 
+		let dynamic = dynamic_components(&prepared.decls);
 		let exec = ExecContext {
 			run_tests,
+			discovery: false,
+			dynamic: &dynamic,
 			workspace: self.workspace.clone(),
 			specs: &dag.specs,
 			cas: &cas,
@@ -372,6 +402,8 @@ impl Engine {
 
 struct ExecContext<'a> {
 	run_tests: bool,
+	discovery: bool,
+	dynamic: &'a std::collections::BTreeSet<String>,
 	workspace: PathBuf,
 	specs: &'a [ActionSpec],
 	cas: &'a Cas,
@@ -387,6 +419,9 @@ struct ExecContext<'a> {
 impl ExecContext<'_> {
 	fn run(&self, index: usize) -> Result<(), ForgeDiagnostic> {
 		let spec = &self.specs[index];
+		if self.discovery && !self.dynamic.contains(&spec.component) {
+			return Ok(());
+		}
 		let is_test_run = spec.is_test;
 		if is_test_run && !self.run_tests {
 			return Ok(());
@@ -513,6 +548,14 @@ impl ExecContext<'_> {
 			.action_finished(&spec.name, false, Some(action_started.elapsed().as_millis()));
 		Ok(())
 	}
+}
+
+fn dynamic_components(decls: &forge_script::DeclMap) -> std::collections::BTreeSet<String> {
+	decls
+		.iter()
+		.filter(|(_, decl)| decl.output_dir.is_some())
+		.map(|(label, _)| label.clone())
+		.collect()
 }
 
 pub(crate) fn compose_key(
