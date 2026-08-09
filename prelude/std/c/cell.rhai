@@ -57,7 +57,7 @@ fn linker_for(ctx) {
     throw `toolchain provides no linker`;
 }
 
-fn profile_args(c) {
+fn profile_args(c, llvm) {
     let args = [`-O${c.profile.opt_level}`];
     if c.profile.is_debug {
         args.push("-g");
@@ -66,7 +66,12 @@ fn profile_args(c) {
         args.push(`-fsanitize=${san}`);
     }
     if c.profile.coverage {
-        args.push("--coverage");
+        if llvm {
+            args.push("-fprofile-instr-generate");
+            args.push("-fcoverage-mapping");
+        } else {
+            args.push("--coverage");
+        }
     }
     if c.profile.lto {
         args.push("-flto");
@@ -83,8 +88,10 @@ fn compile_one(ctx, src) {
 
     let obj = ctx.obj_path(src);
     let depfile = `${obj}.d`;
+    let compiler = compiler_for(ctx, src);
+    let llvm = compiler.contains("clang");
 
-    let args = profile_args(ctx);
+    let args = profile_args(ctx, llvm);
     args.push(`-std=${chosen}`);
     for dir in ctx.includes {
         args.push(`-I${dir}`);
@@ -104,7 +111,7 @@ fn compile_one(ctx, src) {
     args.push(obj);
 
     let outputs = [obj, depfile];
-    if ctx.profile.coverage {
+    if ctx.profile.coverage && !llvm {
         let notes = obj;
         notes.replace(".o", ".gcno");
         outputs.push(notes);
@@ -114,7 +121,7 @@ fn compile_one(ctx, src) {
 
     ctx.action(#{
         name: `compile ${src}`,
-        command: compiler_for(ctx, src),
+        command: compiler,
         args: args,
         inputs: inputs,
         execution_deps: [],
@@ -142,9 +149,10 @@ fn archive_one(ctx, objs) {
 }
 
 fn link_one(ctx, objs, exe_path) {
+    let linker = linker_for(ctx);
     let args = objs + ctx.dep_archives;
     if ctx.linker == "" {
-        args = args + profile_args(ctx);
+        args = args + profile_args(ctx, linker.contains("clang"));
     }
     for flag in ctx.link_flags {
         args.push(flag);
@@ -160,7 +168,7 @@ fn link_one(ctx, objs, exe_path) {
 
     ctx.action(#{
         name: `link ${ctx.label}`,
-        command: linker_for(ctx),
+        command: linker,
         args: args,
         inputs: inputs,
         execution_deps: objs + ctx.dep_archives,
@@ -195,6 +203,9 @@ fn build(ctx) {
         let test_outputs = [];
         if ctx.profile.coverage {
             test_outputs.push("forge-out/profile/coverage/");
+            if linker_for(ctx).contains("clang") {
+                test_env["LLVM_PROFILE_FILE"] = "forge-out/profile/coverage/%m.profraw";
+            }
         }
         ctx.action(#{
             name: `run ${ctx.label}`,

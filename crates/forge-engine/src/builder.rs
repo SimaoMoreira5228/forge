@@ -257,45 +257,25 @@ impl Engine {
 		let toolchains =
 			ToolchainStore::load(&self.workspace, forge_script::WorkspaceConfig::load(&self.workspace)?)?.resolve_all()?;
 
-		eprintln!("coverage: merging raw profiles...");
-		let profiles = crate::coverage::merge_profiles(&self.workspace, &out_dir, &toolchains, None)?;
-		if profiles.is_empty() {
-			eprintln!("coverage: no profiling data found; did tests run with coverage enabled?");
-			return Ok(());
-		}
+		eprintln!("coverage: collecting profiles...");
+		let report = crate::coverage::collect(&self.workspace, &out_dir, &toolchains, None, "coverage")?;
 
-		eprintln!("coverage: generating report...");
-		let report = crate::coverage::generate_report(
-			&self.workspace,
-			&out_dir,
-			&profiles,
-			&toolchains,
-			match output {
-				Some(s) if s.ends_with(".info") || s == "lcov" => crate::coverage::CoverageFormat::Lcov,
-				_ => crate::coverage::CoverageFormat::Text,
-			},
-			None,
-		)?;
-
-		if let Some(path) = output {
-			if path.ends_with(".info") || path == "lcov" {
-				let lcov_path = out_dir.join("coverage.info");
-				let target = if path == "lcov" { &lcov_path } else { &PathBuf::from(path) };
-				if target != &lcov_path && lcov_path.exists() {
-					std::fs::copy(&lcov_path, target)
+		match output {
+			Some(path) if path.ends_with(".info") || path == "lcov" => match &report.lcov_path {
+				Some(lcov) if path != "lcov" => {
+					let target = PathBuf::from(path);
+					std::fs::copy(lcov, &target)
 						.map_err(|e| ForgeDiagnostic::error(8, format!("failed to copy {}: {e}", target.display())))?;
 					eprintln!("coverage: wrote {}", target.display());
-				} else {
-					eprintln!("coverage: {}", report.summary);
 				}
-			} else {
-				eprintln!(
-					"coverage: {} (report format `{}` not implemented yet, wrote text instead)",
-					report.summary, path
-				);
-			}
-		} else {
-			println!("{}", report.summary);
+				Some(lcov) => eprintln!("coverage: wrote {}", lcov.display()),
+				None => eprintln!("coverage: {}", report.summary),
+			},
+			Some(path) => eprintln!(
+				"coverage: {} (report format `{path}` not supported by the coverage backend, printed summary)",
+				report.summary
+			),
+			None => println!("{}", report.summary),
 		}
 
 		Ok(())

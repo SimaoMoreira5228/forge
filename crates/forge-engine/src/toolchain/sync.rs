@@ -107,10 +107,10 @@ fn sync_one(
 		let _ = std::fs::remove_dir_all(&top);
 	}
 
-	if catalog_name == "gcc"
-		&& let Some(bin) = installed_bin_dir(&install_dir)
+	if let Some(bin) = installed_bin_dir(&install_dir)
+		&& let Some(entry) = store.catalog.get(catalog_name)
 	{
-		let _ = ensure_gcc_prefix_links(&bin);
+		let _ = apply_bin_aliases(&bin, &entry.bin_aliases);
 	}
 
 	if installed_bin_dir(&install_dir).is_none() {
@@ -307,35 +307,36 @@ fn find_script_dir(install_dir: &Path, script: &str) -> Option<std::path::PathBu
 	None
 }
 
-fn ensure_gcc_prefix_links(bin_dir: &Path) -> std::io::Result<()> {
-	let mut prefix: Option<String> = None;
-	for entry in std::fs::read_dir(bin_dir)? {
-		let entry = entry?;
-		let name = entry.file_name().to_string_lossy().into_owned();
-		if name.ends_with("-gcc") {
-			prefix = Some(name[..name.len() - 3].to_string());
-			break;
+fn apply_bin_aliases(bin_dir: &Path, aliases: &[forge_core::toolchain::catalog::BinAlias]) -> std::io::Result<()> {
+	for alias in aliases {
+		let Some(source) = find_alias_source(bin_dir, &alias.from) else {
+			continue;
+		};
+		let destination = bin_dir.join(&alias.to);
+		if destination.exists() {
+			continue;
 		}
-	}
-	let Some(prefix) = prefix else {
-		return Ok(());
-	};
-	for (from, to) in [
-		(format!("{prefix}gcc"), "gcc"),
-		(format!("{prefix}g++"), "g++"),
-		(format!("{prefix}ar"), "ar"),
-		(format!("{prefix}ld"), "ld"),
-	] {
-		let src = bin_dir.join(&from);
-		let dst = bin_dir.join(to);
-		if src.exists() && !dst.exists() {
-			#[cfg(unix)]
-			std::os::unix::fs::symlink(&src, &dst)?;
-			#[cfg(not(unix))]
-			std::fs::copy(&src, &dst)?;
-		}
+		#[cfg(unix)]
+		std::os::unix::fs::symlink(&source, &destination)?;
+		#[cfg(not(unix))]
+		std::fs::copy(&source, &destination)?;
 	}
 	Ok(())
+}
+
+fn find_alias_source(bin_dir: &Path, pattern: &str) -> Option<std::path::PathBuf> {
+	let mut candidates: Vec<std::path::PathBuf> = std::fs::read_dir(bin_dir)
+		.ok()?
+		.flatten()
+		.map(|entry| entry.path())
+		.filter(|path| path.is_file())
+		.filter(|path| {
+			path.file_name()
+				.is_some_and(|name| forge_script::glob::glob_match(pattern, &name.to_string_lossy()))
+		})
+		.collect();
+	candidates.sort();
+	candidates.into_iter().next()
 }
 
 fn record_marker(install_dir: &Path) -> Result<(), ForgeDiagnostic> {
@@ -474,5 +475,27 @@ mod tests {
 		let path = fetch_blob(&store, "https://example.invalid/never", Some(&digest)).unwrap();
 		assert_eq!(path, store.blob(&digest));
 		let _ = std::fs::remove_dir_all(&root);
+	}
+
+	#[test]
+	fn applies_catalog_bin_aliases() {
+		let dir = std::env::temp_dir().join(format!("forge-sync-alias-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		std::fs::create_dir_all(&dir).unwrap();
+		std::fs::write(dir.join("x86_64-buildroot-linux-gnu-gcc"), b"#!/bin/sh\n").unwrap();
+		let aliases = vec![
+			forge_core::toolchain::catalog::BinAlias {
+				from: "*-gcc".into(),
+				to: "gcc".into(),
+			},
+			forge_core::toolchain::catalog::BinAlias {
+				from: "*-clang".into(),
+				to: "clang".into(),
+			},
+		];
+		apply_bin_aliases(&dir, &aliases).unwrap();
+		assert!(dir.join("gcc").is_file());
+		assert!(!dir.join("clang").exists(), "unmatched alias is skipped");
+		let _ = std::fs::remove_dir_all(&dir);
 	}
 }

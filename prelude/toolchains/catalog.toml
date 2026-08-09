@@ -17,8 +17,22 @@ url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/
 [toolchains.clang.targets.darwin-aarch64]
 url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-macOS-ARM64.tar.xz"
 
+[toolchains.clang.coverage]
+raw_extension = "profraw"
+format = "lcov"
+commands = [
+  { tool = "llvm-profdata", args = ["merge", "{raw}", "-o", "{work}/merged.profdata"] },
+  { tool = "llvm-cov", args = ["export", "-instr-profile", "{work}/merged.profdata", "-format", "lcov", "{objects}"], stdout = "{work}/coverage.info" },
+]
+
 [toolchains.gcc]
 default_version = "14"
+bin_aliases = [
+  { from = "*-gcc", to = "gcc" },
+  { from = "*-g++", to = "g++" },
+  { from = "*-ar", to = "ar" },
+  { from = "*-ld", to = "ld" },
+]
 
 [toolchains.gcc.version_aliases]
 "14" = "2025.08"
@@ -30,6 +44,14 @@ url = "https://toolchains.bootlin.com/downloads/releases/toolchains/x86-64/tarba
 
 [toolchains.gcc.targets.linux-aarch64]
 url = "https://toolchains.bootlin.com/downloads/releases/toolchains/aarch64/tarballs/aarch64--glibc--stable-{version}-1.tar.xz"
+
+[toolchains.gcc.coverage]
+raw_extension = "gcda"
+companions = ["gcno"]
+format = "gcov"
+commands = [
+  { tool = "gcov", args = ["-o", "{work}", "{raw}"], per_raw = true, cwd = "{workspace}" },
+]
 
 [toolchains.zig]
 default_version = "0.16.0"

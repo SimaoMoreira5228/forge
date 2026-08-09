@@ -21,6 +21,7 @@ pub struct ResolvedToolchain {
 	pub bin_dir: PathBuf,
 	pub path_dirs: Vec<PathBuf>,
 	pub digest: String,
+	pub coverage: Option<forge_core::toolchain::catalog::CoverageBackend>,
 }
 
 impl ResolvedToolchain {
@@ -141,12 +142,16 @@ impl ToolchainStore {
 				if !bin_dir.exists() {
 					return Err(toolchain_error(name, format!("path `{}` does not exist", bin_dir.display())));
 				}
-				Ok(Self::finish(name, path, bin_dir))
+				let mut tool = Self::finish(name, &bin_dir, bin_dir.clone());
+				tool.coverage = self.catalog.get(name).and_then(|entry| entry.coverage.clone());
+				Ok(tool)
 			}
 			ToolchainSelection::Version { version } => {
 				let resolved = self.catalog.resolve(name, Some(version))?;
 				let dir = self.install_dir(&resolved.name, &resolved.version);
-				self.synced_root(name, version, &dir)
+				let mut tool = self.synced_root(name, version, &dir)?;
+				tool.coverage = resolved.entry.coverage.clone();
+				Ok(tool)
 			}
 			ToolchainSelection::Url { url, .. } => {
 				let dir = self.install_dir(name, &Self::url_version(url));
@@ -178,6 +183,7 @@ impl ToolchainStore {
 			bin_dir,
 			path_dirs,
 			digest,
+			coverage: None,
 		}
 	}
 }

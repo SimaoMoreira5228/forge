@@ -15,6 +15,37 @@ pub struct ToolchainEntry {
 	pub version_aliases: BTreeMap<String, String>,
 	pub targets: BTreeMap<String, TargetUrl>,
 	pub install: Option<InstallScript>,
+	pub bin_aliases: Vec<BinAlias>,
+	pub coverage: Option<CoverageBackend>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CoverageBackend {
+	pub raw_extension: String,
+	pub companions: Vec<String>,
+	pub commands: Vec<CoverageCommand>,
+	pub format: CoverageFormat,
+}
+
+#[derive(Debug, Clone)]
+pub struct CoverageCommand {
+	pub tool: String,
+	pub args: Vec<String>,
+	pub per_raw: bool,
+	pub stdout: Option<String>,
+	pub cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoverageFormat {
+	Lcov,
+	Gcov,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinAlias {
+	pub from: String,
+	pub to: String,
 }
 
 #[derive(Debug, Clone)]
@@ -58,10 +89,69 @@ impl ToolchainEntry {
 		for (platform, url) in &override_entry.targets {
 			self.targets.insert(platform.clone(), url.clone());
 		}
+		for alias in &override_entry.bin_aliases {
+			if !self.bin_aliases.contains(alias) {
+				self.bin_aliases.push(alias.clone());
+			}
+		}
+		if override_entry.coverage.is_some() {
+			self.coverage = override_entry.coverage.clone();
+		}
 		if override_entry.install.is_some() {
 			self.install = override_entry.install.clone();
 		}
 	}
+}
+
+#[derive(Deserialize)]
+struct RawCoverage {
+	raw_extension: String,
+	#[serde(default)]
+	companions: Vec<String>,
+	commands: Vec<RawCoverageCommand>,
+	format: String,
+}
+
+#[derive(Deserialize)]
+struct RawCoverageCommand {
+	tool: String,
+	#[serde(default)]
+	args: Vec<String>,
+	#[serde(default)]
+	per_raw: bool,
+	#[serde(default)]
+	stdout: Option<String>,
+	#[serde(default)]
+	cwd: Option<String>,
+}
+
+fn parse_coverage(coverage: Option<RawCoverage>) -> Result<Option<CoverageBackend>, ForgeDiagnostic> {
+	let Some(coverage) = coverage else {
+		return Ok(None);
+	};
+	let format = match coverage.format.as_str() {
+		"lcov" => CoverageFormat::Lcov,
+		"gcov" => CoverageFormat::Gcov,
+		other => {
+			return Err(ForgeDiagnostic::error(101, format!("unknown coverage format `{other}`")));
+		}
+	};
+	Ok(Some(CoverageBackend {
+		raw_extension: coverage.raw_extension,
+		companions: coverage.companions,
+		commands: coverage
+			.commands
+			.into_iter()
+			.map(|command| CoverageCommand {
+				tool: command.tool,
+				args: command.args,
+				per_raw: command.per_raw,
+				stdout: command.stdout,
+				cwd: command.cwd,
+			})
+			.collect(),
+		format,
+	}))
 }
 
 impl Catalog {
@@ -84,6 +174,15 @@ impl Catalog {
 			install_script: Option<String>,
 			#[serde(default)]
 			install_args: Vec<String>,
+			#[serde(default)]
+			bin_aliases: Vec<RawBinAlias>,
+			coverage: Option<RawCoverage>,
+		}
+
+		#[derive(Deserialize)]
+		struct RawBinAlias {
+			from: String,
+			to: String,
 		}
 
 		#[derive(Deserialize)]
@@ -100,7 +199,7 @@ impl Catalog {
 			.toolchains
 			.into_iter()
 			.map(|(name, e)| {
-				(
+				Ok((
 					name,
 					ToolchainEntry {
 						default_version: e.default_version.unwrap_or_default(),
@@ -123,10 +222,19 @@ impl Catalog {
 							name,
 							args: e.install_args,
 						}),
+						bin_aliases: e
+							.bin_aliases
+							.into_iter()
+							.map(|alias| BinAlias {
+								from: alias.from,
+								to: alias.to,
+							})
+							.collect(),
+						coverage: parse_coverage(e.coverage)?,
 					},
-				)
+				))
 			})
-			.collect();
+			.collect::<Result<BTreeMap<_, _>, ForgeDiagnostic>>()?;
 
 		Ok(Self { entries })
 	}
@@ -194,6 +302,46 @@ pub struct ResolvedToolchain {
 	pub name: String,
 	pub version: String,
 	pub entry: ToolchainEntry,
+}
+
+#[test]
+fn parses_declared_coverage_backend() {
+	let cat = Catalog::parse(
+		r#"
+[toolchains.llvm]
+default_version = "1"
+
+[toolchains.llvm.coverage]
+raw_extension = "profraw"
+format = "lcov"
+commands = [
+  { tool = "llvm-profdata", args = ["merge", "{raw}"] },
+  { tool = "llvm-cov", args = ["export"], stdout = "{work}/coverage.info" },
+]
+"#,
+	)
+	.unwrap();
+	let backend = cat.get("llvm").unwrap().coverage.as_ref().unwrap();
+	assert_eq!(backend.raw_extension, "profraw");
+	assert_eq!(backend.format, CoverageFormat::Lcov);
+	assert_eq!(backend.commands.len(), 2);
+	assert_eq!(backend.commands[1].stdout.as_deref(), Some("{work}/coverage.info"));
+}
+
+#[test]
+fn rejects_unknown_coverage_format() {
+	let err = Catalog::parse(
+		r#"
+[toolchains.x]
+default_version = "1"
+[toolchains.x.coverage]
+raw_extension = "x"
+format = "nope"
+commands = [{ tool = "t", args = [] }]
+"#,
+	)
+	.unwrap_err();
+	assert!(format!("{err}").contains("unknown coverage format `nope`"));
 }
 
 #[cfg(test)]

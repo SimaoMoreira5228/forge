@@ -76,6 +76,7 @@ impl TargetKind {
 				"args",
 				"data",
 				"timeout_secs",
+				"compiler",
 				"linker",
 				"link_flags",
 				"env",
