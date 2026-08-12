@@ -3,7 +3,6 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use forge_core::{ActionSpec, EnvironmentFile, OutputKind};
@@ -13,6 +12,7 @@ pub struct SandboxRunner {
 	workspace: PathBuf,
 	out_prefix: Option<PathBuf>,
 	sandbox_root: PathBuf,
+	exec_root: PathBuf,
 }
 
 pub struct ExecReport {
@@ -27,10 +27,13 @@ const RUNNER_LANG_ENV: [(&str, &str); 2] = [("LANG", "C.UTF-8"), ("LC_ALL", "C.U
 
 impl SandboxRunner {
 	pub fn new(workspace: &Path, out_dir: &Path) -> Self {
+		let exec_root = out_dir.join("exec");
+		let _ = std::fs::create_dir_all(&exec_root);
 		Self {
 			workspace: workspace.to_path_buf(),
 			out_prefix: out_dir.strip_prefix(workspace).ok().map(Path::to_path_buf),
 			sandbox_root: out_dir.join("sandbox"),
+			exec_root,
 		}
 	}
 
@@ -142,24 +145,15 @@ impl SandboxRunner {
 		sandbox: &Path,
 		toolchain_bins: &[&Path],
 	) -> Result<ExecReport, std::io::Error> {
-		let ns_root = sandbox.with_file_name(format!(
-			"{}.ns{}-{}",
-			sandbox
-				.file_name()
-				.map(|name| name.to_string_lossy().into_owned())
-				.unwrap_or_default(),
-			std::process::id(),
-			NS_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-		));
-		std::fs::create_dir_all(&ns_root)?;
+		let exec_root = &self.exec_root;
 		let workdir = spec
 			.workdir
 			.as_ref()
-			.map_or_else(|| ns_root.clone(), |path| ns_root.join(path));
-		let argument_files = read_argument_files(sandbox, &spec.argument_files, &ns_root);
-		let mut command = self.command_for(spec, sandbox, &ns_root, toolchain_bins, &argument_files);
+			.map_or_else(|| exec_root.clone(), |path| exec_root.join(path));
+		let argument_files = read_argument_files(sandbox, &spec.argument_files, exec_root);
+		let mut command = self.command_for(spec, sandbox, exec_root, toolchain_bins, &argument_files);
 		let sandbox_c = CString::new(sandbox.as_os_str().as_bytes()).map_err(io_other)?;
-		let ns_root_c = CString::new(ns_root.as_os_str().as_bytes()).map_err(io_other)?;
+		let exec_root_c = CString::new(exec_root.as_os_str().as_bytes()).map_err(io_other)?;
 		let workdir_c = CString::new(workdir.as_os_str().as_bytes()).map_err(io_other)?;
 		unsafe {
 			command.pre_exec(move || {
@@ -181,7 +175,7 @@ impl SandboxRunner {
 				}
 				if libc::mount(
 					sandbox_c.as_ptr(),
-					ns_root_c.as_ptr(),
+					exec_root_c.as_ptr(),
 					std::ptr::null(),
 					libc::MS_BIND | libc::MS_REC,
 					std::ptr::null(),
@@ -199,7 +193,6 @@ impl SandboxRunner {
 		let started = Instant::now();
 		let output = command.output();
 		let duration = started.elapsed();
-		let _ = std::fs::remove_dir_all(&ns_root);
 		let output = output?;
 		if let Some(path) = &spec.stdout {
 			let _ = std::fs::write(sandbox.join(path), &output.stdout);
@@ -322,8 +315,6 @@ fn should_use_namespaces() -> bool {
 fn should_use_namespaces() -> bool {
 	false
 }
-
-static NS_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
 fn io_other(error: std::ffi::NulError) -> std::io::Error {
 	std::io::Error::new(std::io::ErrorKind::InvalidInput, error)

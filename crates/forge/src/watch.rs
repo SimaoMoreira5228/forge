@@ -63,9 +63,9 @@ fn rebuild(engine: &Engine, profile: &str, run_tests: bool, generation: usize) -
 	println!("\n=== [{}] {} ===", generation, chrono_stamp());
 	let started = std::time::Instant::now();
 	let result = if run_tests {
-		engine.test(profile)
+		engine.test(profile, None)
 	} else {
-		engine.build(profile)
+		engine.build(profile, None)
 	};
 	match result {
 		Ok(outcome) => println!(

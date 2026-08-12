@@ -8,11 +8,13 @@ pub mod junit;
 pub mod lock;
 pub mod planner;
 pub mod progress;
+pub mod proof;
 pub mod publish;
 pub mod runner;
 pub mod schedule;
 pub mod source_store;
 pub mod store;
+pub mod time_travel;
 pub mod toolchain;
 
 pub use builder::{BuildOutcome, Engine};

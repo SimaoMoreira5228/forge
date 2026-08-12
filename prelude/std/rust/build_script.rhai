@@ -38,7 +38,7 @@ fn emit_build_script(ctx, rustc, manifest, enabled, root, name, version, edition
     compile_env["TARGET"] = target_for(ctx);
     compile_env["RUSTC"] = rustc;
     ctx.action(#{
-        name: "rustc build script " + name,
+        name: "rustc build script " + name + "@" + version,
         command: rustc,
         args: build_args + ["-o", build_exe, build_files[0]],
         inputs: build_inputs,
@@ -70,7 +70,7 @@ fn emit_build_script(ctx, rustc, manifest, enabled, root, name, version, edition
     if ctx.platform_os == "linux" || ctx.platform_os == "darwin" { run_env["CARGO_CFG_UNIX"] = "1"; }
     run_env["CRUNCHY_LIB_SUFFIX"] = "/lib.rs";
     ctx.action(#{
-        name: "run build script " + name,
+        name: "run build script " + name + "@" + version,
         command: `FORGE_EXEC_ROOT/${build_exe}`,
         args: [],
         inputs: package_files + extra_inputs,

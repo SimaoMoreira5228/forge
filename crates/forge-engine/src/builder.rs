@@ -217,14 +217,28 @@ impl Engine {
 		Ok(packages)
 	}
 
-	pub fn build(&self, profile_name: &str) -> Result<BuildOutcome, ForgeDiagnostic> {
+	pub fn build(&self, profile_name: &str, selection: Option<&str>) -> Result<BuildOutcome, ForgeDiagnostic> {
 		let _lock = self.exclusive_lock()?;
-		self.execute_locked(profile_name, false)
+		self.execute_locked(profile_name, false, selection, false)
 	}
 
-	pub fn test(&self, profile_name: &str) -> Result<BuildOutcome, ForgeDiagnostic> {
+	pub fn test(&self, profile_name: &str, selection: Option<&str>) -> Result<BuildOutcome, ForgeDiagnostic> {
 		let _lock = self.exclusive_lock()?;
-		self.execute_locked(profile_name, true)
+		self.execute_locked(profile_name, true, selection, false)
+	}
+
+	pub fn replay(
+		&self,
+		profile_name: &str,
+		selection: Option<&str>,
+		proof_path: &Path,
+	) -> Result<(usize, Vec<crate::proof::ReplayDivergence>), ForgeDiagnostic> {
+		let _lock = self.exclusive_lock()?;
+		let recorded = crate::proof::Proof::load(proof_path)?;
+		recorded.check_seal()?;
+		self.execute_locked(profile_name, true, selection, true)?;
+		let replayed = crate::proof::Proof::load(&self.out_dir().join("forge.proof"))?;
+		Ok((recorded.entries.len(), crate::proof::compare(&recorded, &replayed)))
 	}
 
 	pub fn compile_commands(&self, profile_name: &str) -> Result<String, ForgeDiagnostic> {
@@ -244,10 +258,10 @@ impl Engine {
 		serde_json::to_string_pretty(&entries).map_err(|e| ForgeDiagnostic::error(8, format!("json: {e}")))
 	}
 
-	pub fn coverage(&self, output: Option<&str>) -> Result<(), ForgeDiagnostic> {
+	pub fn coverage(&self, output: Option<&str>, selection: Option<&str>) -> Result<(), ForgeDiagnostic> {
 		let _lock = self.exclusive_lock()?;
 		eprintln!("coverage: building with coverage flags...");
-		let build_outcome = self.execute_locked("coverage", true)?;
+		let build_outcome = self.execute_locked("coverage", true, selection, false)?;
 		eprintln!(
 			"coverage: tests ok ({} executed, {} cached)",
 			build_outcome.executed, build_outcome.test_cache_hits
@@ -281,12 +295,21 @@ impl Engine {
 		Ok(())
 	}
 
-	fn execute_locked(&self, profile_name: &str, run_tests: bool) -> Result<BuildOutcome, ForgeDiagnostic> {
+	fn execute_locked(
+		&self,
+		profile_name: &str,
+		run_tests: bool,
+		selection: Option<&str>,
+		force: bool,
+	) -> Result<BuildOutcome, ForgeDiagnostic> {
 		let mut progress = crate::progress::Progress::new(0, profile_name);
 		progress.header(env!("CARGO_PKG_VERSION"));
 		progress.phase("Loading workspace...");
 		progress.phase("Resolving graph and dependencies...");
 		let (mut prepared, mut dag) = self.plan_dag_locked(profile_name, Some(&progress))?;
+		if let Some(expression) = selection {
+			dag = select_dag(&prepared, &dag, expression)?;
+		}
 		let mut profile = prepared.config.resolve_profile(profile_name)?;
 		let mut toolchains = ToolchainStore::load(&self.workspace, prepared.config.clone())?.resolve_all()?;
 
@@ -300,6 +323,8 @@ impl Engine {
 			let discovery = ExecContext {
 				run_tests: false,
 				discovery: true,
+				record_proofs: false,
+				force: false,
 				dynamic: &dynamic,
 				workspace: self.workspace.clone(),
 				specs: &dag.specs,
@@ -311,11 +336,15 @@ impl Engine {
 				outcome: parking_lot::Mutex::new(BuildOutcome::default()),
 				progress: &progress,
 				hash_cache: hasher::HashCache::new(),
+				proofs: parking_lot::Mutex::new(vec![None; dag.specs.len()]),
 			};
 			execute_dag(&dag, &discovery, |ctx, index| ctx.run(index))?;
 			let (next_prepared, next_dag) = self.plan_dag_locked(profile_name, Some(&progress))?;
 			prepared = next_prepared;
 			dag = next_dag;
+			if let Some(expression) = selection {
+				dag = select_dag(&prepared, &dag, expression)?;
+			}
 			profile = prepared.config.resolve_profile(profile_name)?;
 			toolchains = ToolchainStore::load(&self.workspace, prepared.config.clone())?.resolve_all()?;
 		}
@@ -330,6 +359,8 @@ impl Engine {
 		let exec = ExecContext {
 			run_tests,
 			discovery: false,
+			record_proofs: true,
+			force,
 			dynamic: &dynamic,
 			workspace: self.workspace.clone(),
 			specs: &dag.specs,
@@ -341,6 +372,7 @@ impl Engine {
 			outcome: parking_lot::Mutex::new(BuildOutcome::default()),
 			progress: &progress,
 			hash_cache: hasher::HashCache::new(),
+			proofs: parking_lot::Mutex::new(vec![None; dag.specs.len()]),
 		};
 
 		execute_dag(&dag, &exec, |ctx, index| ctx.run(index))?;
@@ -354,6 +386,12 @@ impl Engine {
 			if evicted > 0 {
 				eprintln!("gc: evicted {:.1} MB of cached actions", evicted as f64 / (1024.0 * 1024.0));
 			}
+		}
+
+		let entries: Vec<crate::proof::ActionProof> = exec.proofs.into_inner().into_iter().flatten().collect();
+		if !entries.is_empty() {
+			crate::proof::Proof::seal(entries)?.write(&self.out_dir().join("forge.proof"))?;
+			crate::time_travel::record_revision(&self.workspace, &self.out_dir())?;
 		}
 
 		let mut outcome = exec.outcome.into_inner();
@@ -383,6 +421,8 @@ impl Engine {
 struct ExecContext<'a> {
 	run_tests: bool,
 	discovery: bool,
+	record_proofs: bool,
+	force: bool,
 	dynamic: &'a std::collections::BTreeSet<String>,
 	workspace: PathBuf,
 	specs: &'a [ActionSpec],
@@ -394,6 +434,7 @@ struct ExecContext<'a> {
 	outcome: parking_lot::Mutex<BuildOutcome>,
 	progress: &'a crate::progress::Progress,
 	hash_cache: hasher::HashCache,
+	proofs: parking_lot::Mutex<Vec<Option<crate::proof::ActionProof>>>,
 }
 
 impl ExecContext<'_> {
@@ -430,23 +471,26 @@ impl ExecContext<'_> {
 			.collect();
 		self.db.record_action_inputs(&key, &manifest);
 
-		if is_test_run
+		if !self.force
+			&& is_test_run
 			&& let Some(verdict) = self.db.prior_test_verdict(&key)
 			&& verdict == "PASSED"
 		{
 			self.outcome.lock().test_cache_hits += 1;
+			self.record_proof(index, spec, &input_hashes, &key)?;
 			self.progress
 				.action_finished(&spec.name, true, Some(action_started.elapsed().as_millis()));
 			return Ok(());
 		}
 
-		if self.cas.contains(&key) && !is_test_run {
+		if !self.force && self.cas.contains(&key) && !is_test_run {
 			let out_tuples: Vec<(PathBuf, forge_core::OutputKind)> =
 				spec.outputs.iter().map(|o| (o.path.clone(), o.kind)).collect();
 			self.cas.restore(&key, &out_tuples, &self.workspace)?;
 			self.db.record_action(&key, &spec.component, &spec.name);
 			self.db.mark_cache_hit(&key);
 			self.outcome.lock().cache_hits += 1;
+			self.record_proof(index, spec, &input_hashes, &key)?;
 			self.progress
 				.action_finished(&spec.name, true, Some(action_started.elapsed().as_millis()));
 			return Ok(());
@@ -524,10 +568,71 @@ impl ExecContext<'_> {
 			let mut outcome = self.outcome.lock();
 			outcome.executed += 1;
 		}
+		self.record_proof(index, spec, &input_hashes, &key)?;
 		self.progress
 			.action_finished(&spec.name, false, Some(action_started.elapsed().as_millis()));
 		Ok(())
 	}
+
+	fn record_proof(
+		&self,
+		index: usize,
+		spec: &ActionSpec,
+		input_hashes: &BTreeMap<PathBuf, String>,
+		key: &str,
+	) -> Result<(), ForgeDiagnostic> {
+		if !self.record_proofs || spec.is_test {
+			return Ok(());
+		}
+		let outputs = spec.outputs.iter().map(|output| output.path.clone()).collect::<Vec<_>>();
+		let proof = crate::proof::ActionProof {
+			action: spec.name.clone(),
+			component: spec.component.clone(),
+			key: key.to_string(),
+			toolchain: spec.toolchain_id.clone(),
+			inputs: input_hashes
+				.iter()
+				.map(|(path, hash)| (path.to_string_lossy().into_owned(), hash.clone()))
+				.collect(),
+			outputs: crate::proof::hash_records(&self.workspace, &outputs)?,
+		};
+		self.proofs.lock()[index] = Some(proof);
+		Ok(())
+	}
+}
+
+fn select_dag(prepared: &Prepared, dag: &ActionDag, expression: &str) -> Result<ActionDag, ForgeDiagnostic> {
+	let expr = forge_core::graph::query::parse(expression)?;
+	let ids = forge_core::graph::query::evaluate(&prepared.graph, &expr)?;
+	let selected: std::collections::BTreeSet<String> =
+		ids.iter().map(|id| prepared.graph.component(*id).label.to_string()).collect();
+	let mut keep = std::collections::BTreeSet::new();
+	let mut pending: Vec<usize> = dag
+		.specs
+		.iter()
+		.enumerate()
+		.filter(|(_, spec)| selected.contains(&spec.component))
+		.map(|(index, _)| index)
+		.collect();
+	if pending.is_empty() {
+		return Err(ForgeDiagnostic::error(
+			codes::targets::UNKNOWN_TARGET,
+			format!("selection `{expression}` matched no components"),
+		));
+	}
+	while let Some(index) = pending.pop() {
+		if keep.insert(index) {
+			pending.extend(dag.deps[index].iter().copied());
+		}
+	}
+	let remap: std::collections::BTreeMap<usize, usize> = keep.iter().enumerate().map(|(new, old)| (*old, new)).collect();
+	let mut specs = Vec::with_capacity(keep.len());
+	let mut deps = Vec::with_capacity(keep.len());
+	for old in &keep {
+		specs.push(dag.specs[*old].clone());
+		deps.push(dag.deps[*old].iter().map(|dep| remap[dep]).collect());
+	}
+	Ok(ActionDag { specs, deps })
 }
 
 fn dynamic_components(decls: &forge_script::DeclMap) -> std::collections::BTreeSet<String> {

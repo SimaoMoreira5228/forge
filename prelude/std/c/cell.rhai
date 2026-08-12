@@ -58,7 +58,7 @@ fn linker_for(ctx) {
 }
 
 fn profile_args(c, llvm) {
-    let args = [`-O${c.profile.opt_level}`];
+    let args = [`-O${c.profile.opt_level}`, "-ffile-prefix-map=FORGE_EXEC_ROOT=."];
     if c.profile.is_debug {
         args.push("-g");
     }
@@ -139,7 +139,7 @@ fn archive_one(ctx, objs) {
     ctx.action(#{
         name: `archive ${ctx.label}`,
         command: ar_for(ctx),
-        args: ["rcs", out] + objs,
+        args: ["rcsD", out] + objs,
         inputs: ctx.hdrs,
         execution_deps: objs,
         outputs: [out],

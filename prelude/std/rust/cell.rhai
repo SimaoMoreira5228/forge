@@ -66,7 +66,7 @@ fn build(ctx) {
             }
             let argument_files = if build_output != "" { build_output_argument_files(build_output) } else { [] };
             ctx.action(#{
-                name: "rustc dependency " + src.name,
+                name: "rustc dependency " + dependency_key(src),
                 command: rustc,
                 args: args,
                 inputs: inputs,

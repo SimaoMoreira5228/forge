@@ -17,6 +17,7 @@ struct Cli {
 enum Command {
 	Init,
 	Build {
+		target: Option<String>,
 		#[arg(long, default_value = "debug")]
 		profile: String,
 	},
@@ -27,6 +28,7 @@ enum Command {
 		args: Vec<String>,
 	},
 	Test {
+		target: Option<String>,
 		#[arg(long, default_value = "debug")]
 		profile: String,
 		#[arg(long)]
@@ -55,6 +57,7 @@ enum Command {
 		limit: usize,
 	},
 	Coverage {
+		target: Option<String>,
 		#[arg(long)]
 		output: Option<String>,
 	},
@@ -71,6 +74,22 @@ enum Command {
 	Fmt {
 		#[arg(long)]
 		check: bool,
+	},
+	Verify {
+		#[arg(long, default_value = "forge-out/forge.proof")]
+		proof: PathBuf,
+	},
+	Replay {
+		proof: PathBuf,
+		target: Option<String>,
+		#[arg(long, default_value = "debug")]
+		profile: String,
+	},
+	TimeTravel {
+		#[arg(long)]
+		to: Option<String>,
+		#[arg(long)]
+		proof: Option<PathBuf>,
 	},
 	Clean {
 		#[arg(long)]
@@ -137,8 +156,8 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 	match cli.command {
 		Command::Init => init(&workspace),
 
-		Command::Build { profile } => {
-			let outcome = Engine::open(&workspace).build(&profile)?;
+		Command::Build { target, profile } => {
+			let outcome = Engine::open(&workspace).build(&profile, target.as_deref())?;
 			println!(
 				"build ok: {} actions ({} executed, {} cache hits, {} tests served from cache)",
 				outcome.executed + outcome.cache_hits + outcome.test_cache_hits,
@@ -152,12 +171,13 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 		Command::Run { name, profile, args } => run_target(&workspace, &name, &profile, &args),
 
 		Command::Test {
+			target,
 			profile,
 			flake_report,
 			output,
 		} => {
 			let engine = Engine::open(&workspace);
-			let outcome_result = engine.test(&profile);
+			let outcome_result = engine.test(&profile, target.as_deref());
 
 			if let Some(spec) = &output {
 				let path = match spec.strip_prefix("junit:") {
@@ -278,7 +298,7 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 			Ok(())
 		}
 
-		Command::Coverage { output } => Engine::open(&workspace).coverage(output.as_deref()),
+		Command::Coverage { target, output } => Engine::open(&workspace).coverage(output.as_deref(), target.as_deref()),
 
 		Command::CompileCommands { profile, output } => {
 			let json = Engine::open(&workspace).compile_commands(&profile)?;
@@ -337,6 +357,64 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 				Ok(())
 			}
 		},
+
+		Command::TimeTravel { to, proof } => {
+			let path = match (to, proof) {
+				(_, Some(path)) => workspace.join(path),
+				(Some(revision), None) => forge_engine::time_travel::revision_proof_path(&workspace, &revision)?,
+				(None, None) => {
+					return Err(ForgeDiagnostic::error(
+						8,
+						"time-travel needs `--to <commit>` or `--proof <path>`",
+					));
+				}
+			};
+			let (restored, unavailable) = Engine::open(&workspace).time_travel(&path)?;
+			println!(
+				"time-travel restored {restored} actions from {} ({unavailable} unavailable)",
+				path.display()
+			);
+			Ok(())
+		}
+
+		Command::Replay { proof, target, profile } => {
+			let path = workspace.join(proof);
+			let (actions, divergences) = Engine::open(&workspace).replay(&profile, target.as_deref(), &path)?;
+			if divergences.is_empty() {
+				println!("replay reproduced {actions} actions");
+				Ok(())
+			} else {
+				for divergence in &divergences {
+					eprintln!("{}: {}", divergence.action, divergence.detail);
+				}
+				Err(ForgeDiagnostic::error(
+					8,
+					format!("replay diverged in {} of {actions} actions", divergences.len()),
+				))
+			}
+		}
+
+		Command::Verify { proof } => {
+			let path = workspace.join(proof);
+			let proof = forge_engine::proof::Proof::load(&path)?;
+			let divergences = proof.verify(&workspace)?;
+			if divergences.is_empty() {
+				println!("proof verified: {} actions", proof.entries.len());
+				Ok(())
+			} else {
+				for divergence in &divergences {
+					if divergence.action.is_empty() {
+						eprintln!("{}", divergence.detail);
+					} else {
+						eprintln!("{}: {}", divergence.action, divergence.detail);
+					}
+				}
+				Err(ForgeDiagnostic::error(
+					8,
+					format!("proof verification failed: {} divergences", divergences.len()),
+				))
+			}
+		}
 
 		Command::Fmt { check } => {
 			let config = forge_script::WorkspaceConfig::load(&workspace)?;
@@ -441,7 +519,7 @@ fn init(workspace: &Path) -> Result<(), ForgeDiagnostic> {
 
 fn run_target(workspace: &PathBuf, name: &str, profile: &str, args: &[String]) -> Result<(), ForgeDiagnostic> {
 	let engine = Engine::open(workspace);
-	let outcome = engine.build(profile)?;
+	let outcome = engine.build(profile, None)?;
 	let path = outcome
 		.binaries
 		.iter()

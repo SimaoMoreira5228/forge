@@ -122,6 +122,28 @@ pub fn hash_inputs(
 	}
 }
 
+pub fn hash_path(root: &Path, path: &Path) -> std::io::Result<String> {
+	let absolute = root.join(path);
+	if absolute.is_dir() {
+		let mut files: Vec<PathBuf> = walkdir::WalkDir::new(&absolute)
+			.into_iter()
+			.filter_map(Result::ok)
+			.filter(|entry| entry.file_type().is_file())
+			.map(|entry| entry.path().to_path_buf())
+			.collect();
+		files.sort();
+		let mut hasher = blake3::Hasher::new();
+		for file in files {
+			let relative = file.strip_prefix(&absolute).unwrap_or(&file);
+			hasher.update(relative.to_string_lossy().as_bytes());
+			hasher.update(&[0]);
+			hasher.update(&hash_file(&file)?);
+		}
+		return Ok(hex(hasher.finalize().as_bytes()));
+	}
+	Ok(hex(&hash_file(&absolute)?))
+}
+
 pub fn hex(bytes: &[u8]) -> String {
 	bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }

@@ -26,6 +26,17 @@ impl Cas {
 		self.action_dir(cache_key).join("manifest.json").exists()
 	}
 
+	pub fn published_kind(&self, cache_key: &str, path: &Path) -> Option<OutputKind> {
+		let target = self.action_dir(cache_key).join(path);
+		if target.is_dir() {
+			Some(OutputKind::Directory)
+		} else if target.is_file() {
+			Some(OutputKind::File)
+		} else {
+			None
+		}
+	}
+
 	pub fn restore(
 		&self,
 		cache_key: &str,
