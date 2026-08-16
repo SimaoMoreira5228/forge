@@ -14,23 +14,30 @@ pub struct SourcePackage {
 	pub version: String,
 	pub url: String,
 	pub sha256: String,
+	pub git_rev: Option<String>,
 }
 
 pub struct SourceStore {
 	store: Store,
 	workspace: PathBuf,
+	mirrors: Vec<(String, String)>,
 }
 
 impl SourceStore {
-	pub fn open(workspace: &Path) -> Self {
-		Self::with_store(workspace, Store::open())
+	pub fn open(workspace: &Path, mirrors: Vec<(String, String)>) -> Self {
+		Self::with_store(workspace, Store::open(), mirrors)
 	}
 
-	pub fn with_store(workspace: &Path, store: Store) -> Self {
+	pub fn with_store(workspace: &Path, store: Store, mirrors: Vec<(String, String)>) -> Self {
 		Self {
 			store,
 			workspace: workspace.to_path_buf(),
+			mirrors,
 		}
+	}
+
+	fn mirror(&self, url: &str) -> String {
+		mirror_url(url, &self.mirrors)
 	}
 
 	fn canonical(&self, package: &SourcePackage) -> Result<PathBuf, ForgeDiagnostic> {
@@ -38,13 +45,14 @@ impl SourceStore {
 		if dir.join(MARKER).is_file() {
 			return Ok(dir);
 		}
+		let url = self.mirror(&package.url);
 		if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
 			eprintln!(
 				"\x1b[36m  Fetching\x1b[0m {}@{} \x1b[2m{}\x1b[0m",
-				package.name, package.version, package.url
+				package.name, package.version, url
 			);
 		}
-		let archive = fetch_blob(&self.store, &package.url, Some(&package.sha256))?;
+		let archive = fetch_blob(&self.store, &url, Some(&package.sha256))?;
 		let staging = self.store.staging(&format!("src-{}", package.name));
 		std::fs::create_dir_all(&staging).map_err(|e| io_error("create", &staging, e))?;
 		extract(&archive, &staging).inspect_err(|_e| {
@@ -60,13 +68,21 @@ impl SourceStore {
 	}
 
 	pub fn fetch(&self, package: &SourcePackage) -> Result<PathBuf, ForgeDiagnostic> {
-		let canonical = self.canonical(package)?;
+		let canonical = match package.git_rev.clone() {
+			Some(revision) => self.canonical_git(package, &revision)?,
+			None => self.canonical(package)?,
+		};
+		self.materialize(package, &canonical)
+	}
+
+	fn materialize(&self, package: &SourcePackage, canonical: &Path) -> Result<PathBuf, ForgeDiagnostic> {
 		let view = self
 			.workspace
 			.join("forge-out/deps")
 			.join(&package.name)
 			.join(&package.version);
-		if view.join(MARKER).is_file() {
+		let canonical_id = canonical.to_string_lossy();
+		if std::fs::read_to_string(view.join(MARKER)).is_ok_and(|marker| marker == canonical_id) {
 			return Ok(view);
 		}
 		let parent = self.workspace.join("forge-out/deps");
@@ -80,12 +96,42 @@ impl SourceStore {
 				.map(|d| d.as_nanos())
 				.unwrap_or(0)
 		));
-		hardlink_tree(&canonical, &staging).inspect_err(|_e| {
+		hardlink_tree(canonical, &staging).inspect_err(|_e| {
 			let _ = std::fs::remove_dir_all(&staging);
 		})?;
-		std::fs::write(staging.join(MARKER), b"1").map_err(|e| io_error("mark", &staging, e))?;
+		std::fs::write(staging.join(MARKER), canonical_id.as_bytes()).map_err(|e| io_error("mark", &staging, e))?;
 		self.store.publish_dir(&staging, &view)?;
 		Ok(view)
+	}
+
+	// NOTE: git sources use the host `git` rather than a catalog toolchain.
+	fn canonical_git(&self, package: &SourcePackage, revision: &str) -> Result<PathBuf, ForgeDiagnostic> {
+		let digest = blake3::hash(format!("{}@{}", package.url, revision).as_bytes())
+			.to_hex()
+			.to_string();
+		let dir = self.store.sources().join("git").join(digest);
+		if dir.join(MARKER).is_file() {
+			return Ok(dir);
+		}
+		if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+			eprintln!(
+				"\x1b[36m  Fetching\x1b[0m {}@{} \x1b[2m{}#{}\x1b[0m",
+				package.name, package.version, package.url, revision
+			);
+		}
+		let staging = self.store.staging(&format!("git-{}", package.name));
+		std::fs::create_dir_all(&staging).map_err(|e| io_error("create", &staging, e))?;
+		git(&["init", "--quiet"], &staging)?;
+		git(&["remote", "add", "origin", &package.url], &staging)?;
+		git(&["fetch", "--quiet", "origin", revision], &staging)?;
+		git(&["checkout", "--quiet", "FETCH_HEAD"], &staging)?;
+		let _ = std::fs::remove_dir_all(staging.join(".git"));
+		std::fs::write(staging.join(MARKER), b"1").map_err(|e| io_error("mark", &staging, e))?;
+		{
+			let _publish = self.store.lock("store")?;
+			self.store.publish_dir(&staging, &dir)?;
+		}
+		Ok(dir)
 	}
 
 	pub fn fetch_lock(&self, lock: &ForgeLock) -> Result<Vec<(String, PathBuf)>, ForgeDiagnostic> {
@@ -99,11 +145,41 @@ impl SourceStore {
 					version: source.version,
 					url: source.url,
 					sha256: source.checksum,
+					git_rev: None,
 				})?;
 				Ok((name, path))
 			})
 			.collect()
 	}
+}
+
+fn git(args: &[&str], cwd: &Path) -> Result<(), ForgeDiagnostic> {
+	let output = std::process::Command::new("git")
+		.args(args)
+		.current_dir(cwd)
+		.output()
+		.map_err(|e| io_error("run git", cwd, e))?;
+	if output.status.success() {
+		return Ok(());
+	}
+	Err(ForgeDiagnostic::error(
+		codes::inputs::MISSING_INPUT,
+		format!(
+			"git {} failed: {}",
+			args.join(" "),
+			String::from_utf8_lossy(&output.stderr).trim()
+		),
+	))
+}
+
+fn mirror_url(url: &str, mirrors: &[(String, String)]) -> String {
+	mirrors
+		.iter()
+		.find(|(prefix, _)| url.starts_with(prefix.as_str()))
+		.map_or_else(
+			|| url.to_string(),
+			|(prefix, mirror)| format!("{mirror}{}", &url[prefix.len()..]),
+		)
 }
 
 fn hardlink_tree(from: &Path, to: &Path) -> Result<(), ForgeDiagnostic> {
@@ -182,12 +258,13 @@ mod tests {
 		std::fs::create_dir_all(store_root.join("blobs")).unwrap();
 		std::fs::copy(&archive_path, store_root.join("blobs").join(&digest)).unwrap();
 
-		let store = SourceStore::with_store(&ws, Store::at(&store_root));
+		let store = SourceStore::with_store(&ws, Store::at(&store_root), Vec::new());
 		let package = SourcePackage {
 			name: "demo".into(),
 			version: "1.0.0".into(),
 			url: "https://example.invalid/demo.tar.gz".into(),
 			sha256: digest.clone(),
+			git_rev: None,
 		};
 		let path = store.fetch(&package).unwrap();
 		assert!(
@@ -220,15 +297,29 @@ mod tests {
 		std::fs::create_dir_all(store_root.join("blobs")).unwrap();
 		std::fs::write(store_root.join("blobs").join(&digest), b"not an archive").unwrap();
 
-		let store = SourceStore::with_store(&ws, Store::at(&store_root));
+		let store = SourceStore::with_store(&ws, Store::at(&store_root), Vec::new());
 		let package = SourcePackage {
 			name: "demo".into(),
 			version: "1.0.0".into(),
 			url: "https://example.invalid/demo.tar.gz".into(),
 			sha256: digest,
+			git_rev: None,
 		};
 		assert!(store.fetch(&package).is_err());
 		assert!(!store_root.join("sources/demo/1.0.0/.forge-source").exists());
 		assert!(!ws.join("forge-out/deps/demo/1.0.0").exists());
+	}
+
+	#[test]
+	fn mirrors_rewrite_the_longest_matching_prefix() {
+		let mirrors = vec![
+			("https://crates.io/api/v1".to_string(), "https://mirror.corp/api".to_string()),
+			("https://crates.io".to_string(), "https://mirror.corp".to_string()),
+		];
+		assert_eq!(
+			mirror_url("https://crates.io/api/v1/crates/foo/1.0.0/download", &mirrors),
+			"https://mirror.corp/api/crates/foo/1.0.0/download"
+		);
+		assert_eq!(mirror_url("https://elsewhere/x", &mirrors), "https://elsewhere/x");
 	}
 }

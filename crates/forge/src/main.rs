@@ -480,7 +480,8 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 			let text = std::fs::read_to_string(&lock_path)
 				.map_err(|e| ForgeDiagnostic::error(8, format!("{}: {e}", lock_path.display())))?;
 			let lock = forge_core::resolver::ForgeLock::parse(&text).map_err(|e| ForgeDiagnostic::error(101, e))?;
-			let store = forge_engine::source_store::SourceStore::open(&workspace);
+			let mirrors = forge_script::WorkspaceConfig::load(&workspace)?.source_mirrors.clone();
+			let store = forge_engine::source_store::SourceStore::open(&workspace, mirrors);
 			for (package, path) in store.fetch_lock(&lock)? {
 				println!("{package}: {}", path.display());
 			}

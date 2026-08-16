@@ -12,14 +12,22 @@ pub struct Cas {
 }
 
 impl Cas {
-	pub fn open(out_dir: &Path) -> Self {
+	pub fn open() -> Self {
 		Self {
-			root: out_dir.join("cas"),
+			root: crate::store::Store::open().actions(),
 		}
 	}
 
 	fn action_dir(&self, cache_key: &str) -> PathBuf {
-		self.root.join("actions").join(cache_key)
+		self.root.join(cache_key)
+	}
+
+	pub fn at(root: impl Into<PathBuf>) -> Self {
+		Self { root: root.into() }
+	}
+
+	pub(crate) fn action_path(&self, cache_key: &str) -> PathBuf {
+		self.action_dir(cache_key)
 	}
 
 	pub fn contains(&self, cache_key: &str) -> bool {
@@ -78,7 +86,10 @@ impl Cas {
 	}
 
 	pub fn gc(&self, max_bytes: u64) -> Result<u64, ForgeDiagnostic> {
-		let actions = self.root.join("actions");
+		let store = crate::store::Store::open();
+		let _lease = store.lock("lease")?;
+		let _publication = store.lock("store")?;
+		let actions = self.root.clone();
 		if !actions.exists() {
 			return Ok(0);
 		}

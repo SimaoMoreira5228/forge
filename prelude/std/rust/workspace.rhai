@@ -31,15 +31,23 @@ if path_exists("Cargo.lock") {
         }
     }
     for pkg in lock["package"] {
-        if needed.contains(pkg["name"]) && pkg["checksum"] != () && pkg["checksum"] != "" && pkg["source"] != () && pkg["source"].contains("registry+") {
-            let deps = [];
-            if pkg["dependencies"] != () {
-                for dependency in pkg["dependencies"] {
-                    deps.push(dependency);
-                }
+        if !needed.contains(pkg["name"]) || pkg["source"] == () {
+            continue;
+        }
+        let deps = [];
+        if pkg["dependencies"] != () {
+            for dependency in pkg["dependencies"] {
+                deps.push(dependency);
             }
+        }
+        let source = pkg["source"];
+        if source.contains("registry+") {
             let url = `https://crates.io/api/v1/crates/${pkg["name"]}/${pkg["version"]}/download`;
             dependency(pkg["name"], pkg["version"], url, pkg["checksum"], deps);
+        } else if source.contains("git+") {
+            let parts = source.split("git+")[1].split("#");
+            let url = parts[0].split("?")[0];
+            dependency_git(pkg["name"], pkg["version"], url, parts[1], deps);
         }
     }
 }

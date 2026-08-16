@@ -192,6 +192,42 @@ fn register_collectors(
 		},
 	);
 
+	let sink = Rc::clone(dependencies);
+	engine.register_fn(
+		"dependency_git",
+		move |name: &str, version: &str, url: &str, revision: &str| -> Result<(), Box<EvalAltResult>> {
+			if name.is_empty() || version.is_empty() || url.is_empty() || revision.is_empty() {
+				return Err("dependency_git requires non-empty name, version, url, and revision".into());
+			}
+			sink.borrow_mut().push(forge_core::DependencyRequest::new(
+				name,
+				version,
+				format!("git+{url}#{revision}"),
+				String::new(),
+			));
+			Ok(())
+		},
+	);
+
+	let sink = Rc::clone(dependencies);
+	engine.register_fn(
+		"dependency_git",
+		move |name: &str, version: &str, url: &str, revision: &str, deps: rhai::Array| -> Result<(), Box<EvalAltResult>> {
+			if name.is_empty() || version.is_empty() || url.is_empty() || revision.is_empty() {
+				return Err("dependency_git requires non-empty name, version, url, and revision".into());
+			}
+			let dependencies = deps
+				.into_iter()
+				.map(|v| v.into_string().map_err(|_| "dependency deps must be strings".to_string()))
+				.collect::<Result<Vec<_>, _>>()?;
+			sink.borrow_mut().push(
+				forge_core::DependencyRequest::new(name, version, format!("git+{url}#{revision}"), String::new())
+					.with_dependencies(dependencies),
+			);
+			Ok(())
+		},
+	);
+
 	let sink = Rc::clone(requirements);
 	engine.register_fn(
 		"dependency_require",

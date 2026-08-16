@@ -13,6 +13,7 @@ pub fn execute_dag<T: Send + Sync>(
 ) -> Result<(), ForgeDiagnostic> {
 	validate_dag(dag)?;
 	let pending = AtomicUsize::new(dag.specs.len());
+	let in_flight = AtomicUsize::new(0);
 	let indegree: Vec<AtomicUsize> = dag.deps.iter().map(|d| AtomicUsize::new(d.len())).collect();
 	let dependents = dag.dependents();
 
@@ -43,9 +44,22 @@ pub fn execute_dag<T: Send + Sync>(
 								break None;
 							}
 							if let Some(index) = queue.pop_front() {
+								in_flight.fetch_add(1, Ordering::AcqRel);
 								break Some(index);
 							}
 							if pending.load(Ordering::Acquire) == 0 {
+								break None;
+							}
+							if in_flight.load(Ordering::Acquire) == 0 {
+								let mut slot = failure.lock();
+								if slot.is_none() {
+									*slot = Some(ForgeDiagnostic::error(
+										3,
+										"action scheduling stalled: no runnable action and nothing in flight",
+									));
+								}
+								drop(slot);
+								progress.notify_all();
 								break None;
 							}
 							progress.wait(&mut queue);
@@ -72,6 +86,7 @@ pub fn execute_dag<T: Send + Sync>(
 						}
 					}
 
+					in_flight.fetch_sub(1, Ordering::AcqRel);
 					if pending.fetch_sub(1, Ordering::AcqRel) == 1 {
 						progress.notify_all();
 					}

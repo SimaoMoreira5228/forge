@@ -16,6 +16,16 @@ pub struct WorkspaceConfig {
 	pub catalog_files: Vec<PathBuf>,
 	pub max_cache_bytes: Option<u64>,
 	pub target_platform: Option<String>,
+	pub source_mirrors: Vec<(String, String)>,
+	pub local_patches: BTreeMap<String, PathBuf>,
+	pub git_patches: BTreeMap<String, GitPatch>,
+	pub registry_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GitPatch {
+	pub git: Option<String>,
+	pub rev: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +67,8 @@ impl WorkspaceConfig {
 			#[serde(default)]
 			catalog: Option<RawCatalogSection>,
 			#[serde(default)]
+			registry: Option<RawRegistry>,
+			#[serde(default)]
 			build: Option<RawBuild>,
 		}
 
@@ -78,6 +90,30 @@ impl WorkspaceConfig {
 		struct RawPatch {
 			#[serde(default)]
 			std: BTreeMap<String, RawCellPatch>,
+			#[serde(default)]
+			local: BTreeMap<String, RawCellPatch>,
+			#[serde(default)]
+			source: BTreeMap<String, RawSourcePatch>,
+			#[serde(default)]
+			git: BTreeMap<String, RawGitPatch>,
+		}
+
+		#[derive(Deserialize)]
+		struct RawSourcePatch {
+			mirror: String,
+		}
+
+		#[derive(Deserialize)]
+		struct RawGitPatch {
+			#[serde(default)]
+			git: Option<String>,
+			#[serde(default)]
+			rev: Option<String>,
+		}
+
+		#[derive(Deserialize)]
+		struct RawRegistry {
+			url: String,
 		}
 
 		#[derive(Deserialize)]
@@ -240,11 +276,31 @@ impl WorkspaceConfig {
 			.unwrap_or_default();
 
 		let mut std_patches = BTreeMap::new();
+		let mut local_patches = BTreeMap::new();
+		let mut source_patches = BTreeMap::new();
+		let mut git_patches = BTreeMap::new();
 		if let Some(patch) = raw.patch {
 			for (cell, entry) in patch.std {
 				std_patches.insert(cell, PathBuf::from(entry.path));
 			}
+			for (name, entry) in patch.local {
+				local_patches.insert(name, PathBuf::from(entry.path));
+			}
+			for (prefix, entry) in patch.source {
+				source_patches.insert(prefix, entry.mirror);
+			}
+			for (url, entry) in patch.git {
+				git_patches.insert(
+					url,
+					GitPatch {
+						git: entry.git,
+						rev: entry.rev,
+					},
+				);
+			}
 		}
+		let mut source_mirrors: Vec<(String, String)> = source_patches.into_iter().collect();
+		source_mirrors.sort_by_key(|entry| std::cmp::Reverse(entry.0.len()));
 
 		let max_cache_bytes = match raw.build.as_ref().and_then(|b| b.max_cache_size.as_deref()) {
 			Some(size) => Some(parse_size(size)?).filter(|n| *n > 0),
@@ -252,11 +308,17 @@ impl WorkspaceConfig {
 		};
 		let target_platform = raw.build.and_then(|b| b.target);
 
+		let registry_url = raw.registry.map(|registry| registry.url);
+
 		Ok(Self {
 			std_patches,
 			catalog_files,
 			max_cache_bytes,
 			target_platform,
+			source_mirrors,
+			local_patches,
+			git_patches,
+			registry_url,
 			name: raw.project.name.unwrap_or_else(|| "unnamed".into()),
 			discovery: Discovery {
 				include: raw
@@ -333,7 +395,51 @@ fn parse_size(text: &str) -> Result<u64, ForgeDiagnostic> {
 
 #[cfg(test)]
 mod tests {
+	use std::path::PathBuf;
+
 	use super::parse_size;
+
+	#[test]
+	fn source_mirrors_parse_longest_prefix_first() {
+		let config = crate::workspace::WorkspaceConfig::parse(
+			"[patch.source.\"https://crates.io\"]\nmirror = \"https://mirror.corp\"\n\n[patch.source.\"https://crates.io/api/v1\"]\nmirror = \"https://mirror.corp/api\"\n",
+		)
+		.unwrap();
+		assert_eq!(
+			config.source_mirrors,
+			vec![
+				("https://crates.io/api/v1".to_string(), "https://mirror.corp/api".to_string()),
+				("https://crates.io".to_string(), "https://mirror.corp".to_string()),
+			]
+		);
+	}
+
+	#[test]
+	fn local_patches_parse_to_workspace_paths() {
+		let config = crate::workspace::WorkspaceConfig::parse(
+			"[patch.local.dep]\npath = \"vendor/dep\"\n\n[patch.local.other]\npath = \"vendor/other\"\n",
+		)
+		.unwrap();
+		assert_eq!(config.local_patches.get("dep").unwrap(), &PathBuf::from("vendor/dep"));
+		assert_eq!(config.local_patches.len(), 2);
+	}
+
+	#[test]
+	fn git_patches_parse_url_and_revision_overrides() {
+		let config = crate::workspace::WorkspaceConfig::parse(
+			"[patch.git.\"https://example.com/old\"]\ngit = \"https://example.com/fork\"\nrev = \"abc123\"\n",
+		)
+		.unwrap();
+		let patch = config.git_patches.get("https://example.com/old").unwrap();
+		assert_eq!(patch.git.as_deref(), Some("https://example.com/fork"));
+		assert_eq!(patch.rev.as_deref(), Some("abc123"));
+	}
+
+	#[test]
+	fn registry_url_parses() {
+		let config = crate::workspace::WorkspaceConfig::parse("[registry]\nurl = \"https://reg.example\"\n").unwrap();
+		assert_eq!(config.registry_url.as_deref(), Some("https://reg.example"));
+	}
 
 	#[test]
 	fn parses_human_cache_sizes() {

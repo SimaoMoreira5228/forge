@@ -220,7 +220,7 @@ impl SandboxRunner {
 		let started = Instant::now();
 		let mut output = build().output();
 		// NOTE: ext4 can transiently report ETXTBSY when a file was just closed by a
-		// writer; retry briefly instead of failing the build (same as Ninja/Bazel).
+
 		let mut attempts = 0;
 		while let Err(e) = &output {
 			if e.raw_os_error() != Some(26) || attempts >= 100 {

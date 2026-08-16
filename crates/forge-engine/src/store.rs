@@ -36,12 +36,20 @@ impl Store {
 		self.root.join("toolchains")
 	}
 
+	pub fn actions(&self) -> PathBuf {
+		self.root.join("actions")
+	}
+
 	pub fn blob(&self, digest: &str) -> PathBuf {
 		self.blobs().join(digest)
 	}
 
 	pub fn lock(&self, name: &str) -> Result<FileLock, ForgeDiagnostic> {
 		FileLock::exclusive(&self.locks_dir().join(format!("{name}.lock")), "forge store")
+	}
+
+	pub fn lock_shared(&self, name: &str) -> Result<FileLock, ForgeDiagnostic> {
+		FileLock::shared(&self.locks_dir().join(format!("{name}.lock")), "forge store")
 	}
 
 	pub fn locks_dir(&self) -> PathBuf {
@@ -76,6 +84,7 @@ impl Store {
 	}
 
 	pub fn clean(&self) -> Result<(), ForgeDiagnostic> {
+		let _lease = self.lock("lease")?;
 		let _lock = self.lock("store")?;
 		if self.root.exists() {
 			std::fs::remove_dir_all(&self.root).map_err(|e| io("clean store", &self.root, e))?;

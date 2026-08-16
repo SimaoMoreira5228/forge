@@ -12,7 +12,8 @@ impl Engine {
 	pub fn time_travel(&self, proof_path: &Path) -> Result<(usize, usize), ForgeDiagnostic> {
 		let _lock = self.exclusive_lock()?;
 		let proof = Proof::load(proof_path)?;
-		let cas = Cas::open(&self.out_dir());
+		let cas = Cas::open();
+		let _lease = crate::store::Store::open().lock_shared("lease")?;
 		let mut restored = 0;
 		let mut unavailable = 0;
 		for entry in &proof.entries {

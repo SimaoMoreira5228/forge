@@ -13,7 +13,7 @@ fn temp_sibling(target: &Path) -> PathBuf {
 }
 
 // NOTE: outputs are published via temp file + rename so a reader holding a hardlink
-// to the previous inode never observes a truncated file.
+
 pub fn publish_file(from: &Path, to: &Path) -> std::io::Result<()> {
 	if let Some(parent) = to.parent() {
 		std::fs::create_dir_all(parent)?;

@@ -150,73 +150,6 @@ impl Engine {
 		Ok((prepared, dag))
 	}
 
-	pub fn dependency_lock(&self) -> Result<forge_core::resolver::ForgeLock, ForgeDiagnostic> {
-		let _lock = self.shared_lock()?;
-		let prepared = self.prepare()?;
-		self.dependency_lock_for(&prepared, false)
-	}
-
-	fn dependency_lock_for(
-		&self,
-		prepared: &Prepared,
-		use_existing: bool,
-	) -> Result<forge_core::resolver::ForgeLock, ForgeDiagnostic> {
-		let path = self.workspace.join("forge.lock");
-		if use_existing && path.is_file() {
-			let text =
-				std::fs::read_to_string(&path).map_err(|e| ForgeDiagnostic::error(8, format!("{}: {e}", path.display())))?;
-			return forge_core::resolver::ForgeLock::parse(&text).map_err(|e| ForgeDiagnostic::error(101, e));
-		}
-		if prepared.requirements.is_empty() && prepared.candidates.is_empty() {
-			return Ok(forge_core::resolver::ForgeLock::from_requests(prepared.dependencies.clone()));
-		}
-		let resolved = forge_core::solve(
-			prepared.config.name.clone(),
-			prepared.requirements.clone(),
-			prepared.candidates.clone(),
-		)
-		.map_err(|error| ForgeDiagnostic::error(101, error.to_string()))?;
-		let lock = forge_core::resolver::ForgeLock::from_resolved(&resolved);
-		lock.sources().map_err(|error| ForgeDiagnostic::error(101, error))?;
-		Ok(lock)
-	}
-
-	pub(crate) fn fetch_sources(
-		&self,
-		prepared: &Prepared,
-	) -> Result<Vec<forge_script::cells::FetchedSource>, ForgeDiagnostic> {
-		if prepared.dependencies.is_empty() && prepared.requirements.is_empty() && prepared.candidates.is_empty() {
-			return Ok(Vec::new());
-		}
-		let lock = self.dependency_lock_for(prepared, true)?;
-		if lock.packages.is_empty() {
-			return Ok(Vec::new());
-		}
-		let store = crate::source_store::SourceStore::open(&self.workspace);
-		let fetched = store.fetch_lock(&lock)?;
-		let mut roots = BTreeMap::new();
-		for (package, root) in fetched {
-			let relative = root.strip_prefix(&self.workspace).map_err(|_| {
-				ForgeDiagnostic::error(101, format!("dependency source escaped workspace: {}", root.display()))
-			})?;
-			roots.insert(package, relative.to_string_lossy().into_owned());
-		}
-		let mut packages = Vec::new();
-		for package in lock.dependency_order().map_err(|e| ForgeDiagnostic::error(101, e))? {
-			let key = format!("{}@{}", package.name, package.version);
-			let root = roots
-				.get(&key)
-				.ok_or_else(|| ForgeDiagnostic::error(101, format!("missing fetched dependency `{key}`")))?;
-			packages.push(forge_script::cells::FetchedSource {
-				name: package.name.clone(),
-				version: package.version.clone(),
-				root: root.clone(),
-				dependencies: package.dependencies.clone(),
-			});
-		}
-		Ok(packages)
-	}
-
 	pub fn build(&self, profile_name: &str, selection: Option<&str>) -> Result<BuildOutcome, ForgeDiagnostic> {
 		let _lock = self.exclusive_lock()?;
 		self.execute_locked(profile_name, false, selection, false)
@@ -313,7 +246,10 @@ impl Engine {
 		let mut profile = prepared.config.resolve_profile(profile_name)?;
 		let mut toolchains = ToolchainStore::load(&self.workspace, prepared.config.clone())?.resolve_all()?;
 
-		let cas = Cas::open(&self.out_dir());
+		let cas = Cas::open();
+		let store = crate::store::Store::open();
+		let registry = prepared.config.registry_url.clone().map(crate::registry::Registry::open);
+		let lease = store.lock_shared("lease")?;
 		let db = CacheDb::open(&self.out_dir())?;
 		let runner = SandboxRunner::new(&self.workspace, &self.out_dir());
 
@@ -325,6 +261,8 @@ impl Engine {
 				discovery: true,
 				record_proofs: false,
 				force: false,
+				store: &store,
+				registry: None,
 				dynamic: &dynamic,
 				workspace: self.workspace.clone(),
 				specs: &dag.specs,
@@ -361,6 +299,8 @@ impl Engine {
 			discovery: false,
 			record_proofs: true,
 			force,
+			store: &store,
+			registry: registry.as_ref(),
 			dynamic: &dynamic,
 			workspace: self.workspace.clone(),
 			specs: &dag.specs,
@@ -381,8 +321,9 @@ impl Engine {
 			progress.finished(outcome.executed, outcome.cache_hits);
 		}
 
+		drop(lease);
 		if let Some(max_bytes) = prepared.config.max_cache_bytes {
-			let evicted = Cas::open(&self.out_dir()).gc(max_bytes)?;
+			let evicted = Cas::open().gc(max_bytes)?;
 			if evicted > 0 {
 				eprintln!("gc: evicted {:.1} MB of cached actions", evicted as f64 / (1024.0 * 1024.0));
 			}
@@ -423,6 +364,8 @@ struct ExecContext<'a> {
 	discovery: bool,
 	record_proofs: bool,
 	force: bool,
+	store: &'a crate::store::Store,
+	registry: Option<&'a crate::registry::Registry>,
 	dynamic: &'a std::collections::BTreeSet<String>,
 	workspace: PathBuf,
 	specs: &'a [ActionSpec],
@@ -483,7 +426,15 @@ impl ExecContext<'_> {
 			return Ok(());
 		}
 
-		if !self.force && self.cas.contains(&key) && !is_test_run {
+		let mut cached = !self.force && !is_test_run && self.cas.contains(&key);
+		if !cached
+			&& !self.force
+			&& !is_test_run
+			&& let Some(registry) = self.registry
+		{
+			cached = registry.fetch(&key, self.store, self.cas)?;
+		}
+		if cached {
 			let out_tuples: Vec<(PathBuf, forge_core::OutputKind)> =
 				spec.outputs.iter().map(|o| (o.path.clone(), o.kind)).collect();
 			self.cas.restore(&key, &out_tuples, &self.workspace)?;
