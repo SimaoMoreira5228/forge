@@ -640,21 +640,27 @@ fn rust_cell_builds_transitive_dependencies_and_caches() {
 
 	std::fs::write(
 		dir.join("FORGE_ROOT"),
-		"[project]\nname = \"rust_itest\"\n\n[discovery]\ninclude = [\".\"]\n\n[toolchains.rust]\nfrom = \"version\"\nversion = \"1.98.0\"\n",
+		"[project]\nname = \"rust_itest\"\n\n[discovery]\ninclude = [\".\", \"modules.a\"]\n\n[toolchains.rust]\nfrom = \"version\"\nversion = \"1.98.0\"\n",
 	)
 	.unwrap();
+	std::fs::create_dir_all(dir.join("modules.a")).unwrap();
 	std::fs::write(
 		dir.join("FORGE.toml"),
-		"[library.greet]\nvisibility = \"public\"\nsrcs = [\"src/greet.rs\"]\n\n[library.message]\ndeps = [\"greet\"]\nvisibility = \"public\"\nsrcs = [\"src/message.rs\"]\n\n[binary.app]\ndeps = [\"message\"]\nsrcs = [\"src/main.rs\"]\n",
+		"[binary.app]\ndeps = [\"//modules.a:message\"]\nsrcs = [\"src/main.rs\"]\n",
 	)
 	.unwrap();
 	std::fs::write(
-		dir.join("src/greet.rs"),
+		dir.join("modules.a/FORGE.toml"),
+		"[library.greet]\nvisibility = \"public\"\nsrcs = [\"modules.a/greet.rs\"]\n\n[library.message]\ndeps = [\"greet\"]\nvisibility = \"public\"\nsrcs = [\"modules.a/message.rs\"]\n",
+	)
+	.unwrap();
+	std::fs::write(
+		dir.join("modules.a/greet.rs"),
 		"pub fn greet() -> &'static str { \"hello from forge\" }\n",
 	)
 	.unwrap();
 	std::fs::write(
-		dir.join("src/message.rs"),
+		dir.join("modules.a/message.rs"),
 		"pub fn message() -> &'static str { greet::greet() }\n",
 	)
 	.unwrap();
@@ -669,6 +675,9 @@ fn rust_cell_builds_transitive_dependencies_and_caches() {
 		eprintln!("build log: {log}");
 	}
 	assert!(ok, "rust build failed: {log}");
+	assert!(dir.join("forge-out/lib/modules.a/libgreet.rlib").is_file());
+	assert!(dir.join("forge-out/lib/modules.a/libmessage.rlib").is_file());
+	assert!(!dir.join("forge-out/lib/modules.rlib").exists());
 
 	let binary = dir.join("forge-out/bin/debug/app");
 	assert!(binary.exists(), "rust binary not produced");

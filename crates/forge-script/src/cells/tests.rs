@@ -4,7 +4,7 @@ fn hooks() -> CellHooks {
 	CellHooks {
 		obj_path: Box::new(|src| format!("forge-out/obj/{src}.o")),
 		prior_depfile_headers: Box::new(|_| vec![]),
-		lib_path: Box::new(|name| format!("forge-out/lib/lib{name}.a")),
+		lib_path: Box::new(|filename| format!("forge-out/lib/modules.a/{filename}")),
 		bin: Box::new(|name| format!("/tools/bin/{name}")),
 		tool_id: Box::new(|| "gcc@abc123".into()),
 		read_file: Box::new(|_| Err("not implemented in tests".into())),
@@ -347,24 +347,45 @@ fn prebuilt_map_works() {
 }
 
 #[test]
-fn replace_in_action() {
+fn library_path_preserves_cell_filenames() {
 	let script = r#"
-            fn build(ctx) {
-                let s = "hello.a";
-			s.replace(".a", ".rlib");
-			let outputs = [s];
-                ctx.action(#{
-                    name: "test",
-                    command: "echo",
-                    args: ["hello"],
-                    inputs: [],
-                    outputs: outputs,
-                    env: #{},
-                    toolchain_id: "",
-                });
-            }
-        "#;
+        fn build(ctx) {
+            ctx.action(#{
+                name: "library",
+                command: ctx.bin("tool"),
+                outputs: [ctx.lib_path("plain"), ctx.lib_path("math.lib"), ctx.lib_path("libmath.so.1")],
+            });
+        }
+    "#;
 	let actions = lower(script, &component(), hooks()).unwrap();
-	assert_eq!(actions.len(), 1);
-	assert_eq!(actions[0].outputs, vec![("hello.rlib".to_string(), false)]);
+	assert_eq!(
+		actions[0].outputs,
+		["plain", "math.lib", "libmath.so.1"].map(|filename| (format!("forge-out/lib/modules.a/{filename}"), false))
+	);
+}
+
+#[test]
+fn library_path_rejects_paths() {
+	for filename in ["", ".", "..", "../out", "/out", "sub/out", r"sub\out", "C:out", "bad\0name"] {
+		let mut view = component();
+		view.name = filename.into();
+		let mut hooks = hooks();
+		hooks.lib_path = Box::new(|_| panic!("invalid filename reached the engine hook"));
+		let error = lower("fn build(ctx) { ctx.lib_path(ctx.name); }", &view, hooks).unwrap_err();
+		assert!(error.to_string().contains("lib_path requires a filename"), "{error}");
+	}
+}
+
+#[test]
+fn embedded_cells_choose_library_names_without_rewriting_directories() {
+	for (language, source, filename) in [("c", "lib/math.c", "libmath.a"), ("rust", "lib/math.rs", "libmath.rlib")] {
+		let mut view = component();
+		view.srcs = vec![source.into()];
+		let script = crate::std_cells::cell_script(language).unwrap();
+		let actions = lower(script, &view, hooks()).unwrap();
+		assert_eq!(
+			actions.last().unwrap().outputs,
+			vec![(format!("forge-out/lib/modules.a/{filename}"), false)]
+		);
+	}
 }

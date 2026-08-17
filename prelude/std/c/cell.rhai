@@ -1,5 +1,17 @@
 fn is_cpp(src) {
-    src.ends_with(".cpp") || src.ends_with(".cc") || src.ends_with(".cxx") || src.ends_with(".C");
+    src.ends_with(".cpp") || src.ends_with(".cc") || src.ends_with(".cxx") || src.ends_with(".C")
+        || is_module(src);
+}
+
+fn is_module(src) {
+    src.ends_with(".cppm") || src.ends_with(".ixx") || src.ends_with(".mpp") || src.ends_with(".cxxm");
+}
+
+fn module_name_of(ctx, src) {
+    if !is_module(src) { return ""; }
+    let text = ctx.read_file(src);
+    if !text.contains("export module ") { return ""; }
+    text.split("export module ")[1].split(";")[0];
 }
 
 fn compiler_for(ctx, src) {
@@ -82,7 +94,7 @@ fn profile_args(c, llvm) {
     args;
 }
 
-fn compile_one(ctx, src) {
+fn compile_one(ctx, src, module_flags) {
     let default_std = if is_cpp(src) { "c++20" } else { "c17" };
     let chosen = if ctx.standard == "" { default_std } else { ctx.standard };
 
@@ -92,6 +104,12 @@ fn compile_one(ctx, src) {
     let llvm = compiler.contains("clang");
 
     let args = profile_args(ctx, llvm);
+    let module_deps = [];
+    for flag in module_flags {
+        args.push(flag);
+        let parts = flag.split("=");
+        module_deps.push(parts[parts.len() - 1]);
+    }
     args.push(`-std=${chosen}`);
     for dir in ctx.includes {
         args.push(`-I${dir}`);
@@ -124,7 +142,7 @@ fn compile_one(ctx, src) {
         command: compiler,
         args: args,
         inputs: inputs,
-        execution_deps: [],
+        execution_deps: module_deps,
         outputs: outputs,
         env: ctx.env,
         toolchain_id: ctx.tool_id(),
@@ -134,7 +152,7 @@ fn compile_one(ctx, src) {
 }
 
 fn archive_one(ctx, objs) {
-    let out = ctx.lib_path(ctx.name);
+    let out = ctx.lib_path(`lib${ctx.name}.a`);
 
     ctx.action(#{
         name: `archive ${ctx.label}`,
@@ -183,9 +201,43 @@ fn build(ctx) {
         throw `library ${ctx.label} declares no sources`;
     }
 
+    let module_flags = [];
+    for src in ctx.srcs {
+        let name = module_name_of(ctx, src);
+        if name == "" { continue; }
+        let compiler = compiler_for(ctx, src);
+        if !compiler.contains("clang") {
+            throw `module interface ${src} requires clang, found ${compiler}`;
+        }
+        let pcm = `forge-out/mod/${name}.pcm`;
+        let std = if ctx.standard == "" { "c++20" } else { ctx.standard };
+        let args = profile_args(ctx, true);
+        args.push(`-std=${std}`);
+        args.push("-x");
+        args.push("c++-module");
+        args.push("--precompile");
+        args.push(src);
+        args.push("-o");
+        args.push(pcm);
+        for dir in ctx.includes {
+            args.push(`-I${dir}`);
+        }
+        ctx.action(#{
+            name: `precompile module ${name}`,
+            command: compiler,
+            args: args,
+            inputs: [src] + ctx.hdrs,
+            execution_deps: [],
+            outputs: [pcm],
+            env: ctx.env,
+            toolchain_id: ctx.tool_id(),
+        });
+        module_flags.push(`-fmodule-file=${name}=${pcm}`);
+    }
+
     let objs = [];
     for src in ctx.srcs {
-        objs.push(compile_one(ctx, src));
+        objs.push(compile_one(ctx, src, module_flags));
     }
 
     if ctx.kind == "library" {

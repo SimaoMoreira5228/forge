@@ -81,7 +81,6 @@ pub struct CellHooks {
 	pub read_file: FileReader,
 	pub glob: Globber,
 }
-
 type FileReader = Box<dyn Fn(&str) -> Result<String, String>>;
 type Globber = Box<dyn Fn(&str) -> Result<Vec<String>, String>>;
 
@@ -128,7 +127,15 @@ fn register_helpers(engine: &mut rhai::Engine, component: &ComponentView, hooks:
 
 	engine.register_fn("bin", move |_ctx: &mut Map, name: &str| -> String { bin(name) });
 	engine.register_fn("tool_id", move |_ctx: &mut Map| -> String { tool_id() });
-	engine.register_fn("lib_path", move |_ctx: &mut Map, name: &str| -> String { lib_path(name) });
+	engine.register_fn(
+		"lib_path",
+		move |_ctx: &mut Map, filename: &str| -> Result<String, Box<EvalAltResult>> {
+			if filename.is_empty() || matches!(filename, "." | "..") || filename.contains(['/', '\\', ':', '\0']) {
+				return Err("lib_path requires a filename without path separators".into());
+			}
+			Ok(lib_path(filename))
+		},
+	);
 	engine.register_fn("obj_path", move |_ctx: &mut Map, src: &str| -> String { obj_path(src) });
 	engine.register_fn("prior_depfile_headers", move |_ctx: &mut Map, obj: &str| -> rhai::Array {
 		prior_depfile_headers(obj).into_iter().map(Dynamic::from).collect()
@@ -137,6 +144,9 @@ fn register_helpers(engine: &mut rhai::Engine, component: &ComponentView, hooks:
 		"read_file",
 		move |_ctx: &mut Map, path: &str| -> Result<String, Box<EvalAltResult>> { read_file(path).map_err(|e| e.into()) },
 	);
+	engine.register_fn("json_decode", |text: &str| -> Result<Dynamic, Box<EvalAltResult>> {
+		crate::rhai_rt::json_decode(text).map_err(Into::into)
+	});
 	engine.register_fn("toml_decode", |text: &str| -> Result<Map, Box<EvalAltResult>> {
 		crate::rhai_rt::toml_decode(text).map_err(Into::into)
 	});

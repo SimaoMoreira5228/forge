@@ -134,8 +134,9 @@ fn build(ctx) {
         if ctx.srcs.len() == 0 {
             throw `library ${ctx.label} declares no sources`;
         }
-        let out = rlib_path(ctx, ctx.name);
+        let out = ctx.lib_path(`lib${ctx.name}.rlib`);
         let args = ["--crate-type", "lib", "--crate-name", name, "--edition", edition, "-C", `metadata=${name}-${ctx.profile.name}`, "-L", "dependency=forge-out/lib", "--remap-path-prefix", "FORGE_EXEC_ROOT=", "-L", "dependency=forge-out/lib/deps"];
+        args += dependency_search_args(ctx);
         for dep in ctx.dep_artifacts {
             args.push("--extern");
             args.push(`${dep[0]}=${dep[1]}`);
@@ -162,6 +163,7 @@ fn build(ctx) {
     let out_dir = if ctx.kind == "test" { "forge-out/test" } else { "forge-out/bin" };
     let exe = `${out_dir}/${ctx.profile.name}/${ctx.name}`;
     let args = ["--crate-type", "bin", "--crate-name", name, "--edition", edition, "-C", `metadata=${name}-${ctx.profile.name}`, "-L", "dependency=forge-out/lib", "--remap-path-prefix", "FORGE_EXEC_ROOT=", "-L", "dependency=forge-out/lib/deps"];
+    args += dependency_search_args(ctx);
     for dep in ctx.dep_artifacts {
         args.push("--extern");
         args.push(`${dep[0]}=${dep[1]}`);

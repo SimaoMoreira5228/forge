@@ -359,8 +359,8 @@ impl<'a> Planner<'a> {
 					.map(|p| p.to_string_lossy().into_owned())
 					.collect()
 			}),
-			lib_path: Box::new(move |component_name| {
-				PathBuf::from(format!("forge-out/lib/{pkg_slug}/lib{component_name}.a"))
+			lib_path: Box::new(move |filename| {
+				PathBuf::from(format!("forge-out/lib/{pkg_slug}/{filename}"))
 					.to_string_lossy()
 					.into_owned()
 			}),

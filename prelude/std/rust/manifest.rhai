@@ -21,10 +21,23 @@ fn crate_name(ctx) {
     name
 }
 
-fn rlib_path(ctx, component_name) {
-    let path = ctx.lib_path(component_name);
-    path.replace(".a", ".rlib");
-    path
+fn dependency_search_args(ctx) {
+    let directories = [];
+    for dep in ctx.dep_artifacts {
+        let parts = dep[1].split("/");
+        parts.pop();
+        let directory = "";
+        for part in parts {
+            if directory != "" { directory += "/"; }
+            directory += part;
+        }
+        if !directories.contains(directory) { directories.push(directory); }
+    }
+    let args = [];
+    for directory in directories {
+        args += ["-L", `dependency=${directory}`];
+    }
+    args
 }
 
 fn dependency_key(src) {

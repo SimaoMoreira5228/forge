@@ -1,6 +1,6 @@
 [cells.c]
 scripts = ["c/cell.rhai"]
-extensions = ["c", "h", "cpp", "cc", "cxx", "C", "hpp", "hh", "hxx"]
+extensions = ["c", "h", "cpp", "cc", "cxx", "C", "hpp", "hh", "hxx", "cppm", "ixx", "mpp", "cxxm"]
 preferred_toolchain = "clang"
 fallback_toolchains = ["gcc", "cc"]
 

@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use forge_diagnostics::ForgeDiagnostic;
 use rhai::{Dynamic, EvalAltResult, Map};
+use serde_json::Value as Json;
 
 use crate::document::{FieldsBuilder, TargetDecl, TargetKind};
 use crate::glob;
@@ -98,6 +99,9 @@ fn register_io(engine: &mut rhai::Engine, package_dir: &Path) {
 	engine.register_fn("toml_decode", |text: &str| -> Result<Map, Box<EvalAltResult>> {
 		toml_decode(text).map_err(Into::into)
 	});
+	engine.register_fn("json_decode", |text: &str| -> Result<Dynamic, Box<EvalAltResult>> {
+		json_decode(text).map_err(Into::into)
+	});
 }
 
 pub(crate) fn toml_decode(text: &str) -> Result<Map, String> {
@@ -108,6 +112,35 @@ pub(crate) fn toml_decode(text: &str) -> Result<Map, String> {
 		map.insert(key.clone().into(), toml_value_to_dynamic(val)?);
 	}
 	Ok(map)
+}
+
+pub fn json_decode(text: &str) -> Result<Dynamic, String> {
+	serde_json::from_str::<Json>(text)
+		.map(json_to_dynamic)
+		.map_err(|e| format!("json_decode: {e}"))
+}
+
+fn json_to_dynamic(value: serde_json::Value) -> Dynamic {
+	match value {
+		Json::Null => Dynamic::UNIT,
+		Json::Bool(b) => Dynamic::from(b),
+		Json::Number(n) => {
+			if let Some(i) = n.as_i64() {
+				Dynamic::from(i)
+			} else {
+				Dynamic::from(n.as_f64().unwrap_or_default())
+			}
+		}
+		Json::String(s) => Dynamic::from(s),
+		Json::Array(items) => Dynamic::from(items.into_iter().map(json_to_dynamic).collect::<rhai::Array>()),
+		Json::Object(fields) => {
+			let mut map = rhai::Map::new();
+			for (k, v) in fields {
+				map.insert(k.into(), json_to_dynamic(v));
+			}
+			Dynamic::from(map)
+		}
+	}
 }
 
 fn toml_value_to_dynamic(value: toml::Value) -> Result<Dynamic, String> {
@@ -389,4 +422,17 @@ fn apply_dynamic(builder: &mut FieldsBuilder, key: &str, value: &Dynamic) -> Res
 
 fn diag_to_box(d: ForgeDiagnostic) -> Box<EvalAltResult> {
 	d.to_string().into()
+}
+
+#[test]
+fn json_decode_maps_json_scalars_into_rhai() {
+	let doc = json_decode(r#"{"rules": [{"logical-name": "math.core", "n": 2}], "ok": true}"#).unwrap();
+	let map = doc.clone_cast::<rhai::Map>();
+	assert_eq!(map.len(), 2);
+	let rules = map["rules"].clone_cast::<rhai::Array>();
+	assert_eq!(rules.len(), 1);
+	let rule = rules[0].clone_cast::<rhai::Map>();
+	assert_eq!(rule["logical-name"].to_string(), "math.core");
+	assert_eq!(map["ok"].to_string(), "true");
+	assert!(json_decode("not json").is_err());
 }
