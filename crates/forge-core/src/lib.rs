@@ -1,4 +1,5 @@
 pub mod action;
+pub mod depfile;
 pub mod graph;
 pub mod label;
 pub mod platform;

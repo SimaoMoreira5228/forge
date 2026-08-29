@@ -132,14 +132,8 @@ enum ToolchainAction {
 
 #[derive(Subcommand)]
 enum DepsAction {
-	Lock {
-		#[arg(long, default_value = "forge.lock")]
-		output: PathBuf,
-	},
-	Sync {
-		#[arg(long, default_value = "forge.lock")]
-		lock: PathBuf,
-	},
+	Lock,
+	Sync,
 }
 
 fn main() {
@@ -464,26 +458,22 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 		},
 
 		Command::Deps {
-			action: DepsAction::Lock { output },
+			action: DepsAction::Lock,
 		} => {
-			let lock = Engine::open(&workspace).dependency_lock()?;
-			let path = workspace.join(output);
-			let text = lock.to_toml().map_err(|e| ForgeDiagnostic::error(101, e))?;
-			std::fs::write(&path, text).map_err(|e| ForgeDiagnostic::error(8, format!("{}: {e}", path.display())))?;
+			let path = Engine::open(&workspace).write_dependency_lock()?;
 			println!("wrote {}", path.display());
 			Ok(())
 		}
 		Command::Deps {
-			action: DepsAction::Sync { lock },
+			action: DepsAction::Sync,
 		} => {
-			let lock_path = workspace.join(&lock);
-			let text = std::fs::read_to_string(&lock_path)
-				.map_err(|e| ForgeDiagnostic::error(8, format!("{}: {e}", lock_path.display())))?;
-			let lock = forge_core::resolver::ForgeLock::parse(&text).map_err(|e| ForgeDiagnostic::error(101, e))?;
-			let mirrors = forge_script::WorkspaceConfig::load(&workspace)?.source_mirrors.clone();
-			let store = forge_engine::source_store::SourceStore::open(&workspace, mirrors);
-			for (package, path) in store.fetch_lock(&lock)? {
-				println!("{package}: {}", path.display());
+			for package in Engine::open(&workspace).sync_dependencies()? {
+				println!(
+					"{}@{}: {}",
+					package.name,
+					package.version,
+					workspace.join(package.root).display()
+				);
 			}
 			Ok(())
 		}
@@ -557,4 +547,17 @@ fn toolchains(workspace: &Path) -> Result<(), ForgeDiagnostic> {
 		}
 	}
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn dependency_commands_have_no_lock_path_overrides() {
+		assert!(Cli::try_parse_from(["forge", "deps", "lock"]).is_ok());
+		assert!(Cli::try_parse_from(["forge", "deps", "sync"]).is_ok());
+		assert!(Cli::try_parse_from(["forge", "deps", "lock", "--output", "other.lock"]).is_err());
+		assert!(Cli::try_parse_from(["forge", "deps", "sync", "--lock", "other.lock"]).is_err());
+	}
 }

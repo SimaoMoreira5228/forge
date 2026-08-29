@@ -48,6 +48,8 @@ pub struct ComponentView {
 	pub platform_arch: String,
 	pub platform_abi: String,
 	pub profile: ProfileView,
+	pub metadata: toml::Table,
+	pub cell_config: toml::Table,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -70,11 +72,11 @@ pub struct ProfileView {
 	pub sanitizers: Vec<String>,
 }
 
-type HeaderLookup = Box<dyn Fn(&str) -> Vec<String>>;
+type ArtifactPath = Box<dyn Fn(&str, &str) -> Result<String, String>>;
 
 pub struct CellHooks {
-	pub obj_path: Box<dyn Fn(&str) -> String>,
-	pub prior_depfile_headers: HeaderLookup,
+	pub artifact_path: ArtifactPath,
+	pub depfile_inputs: Globber,
 	pub lib_path: Box<dyn Fn(&str) -> String>,
 	pub bin: Box<dyn Fn(&str) -> String>,
 	pub tool_id: Box<dyn Fn() -> String>,
@@ -116,8 +118,8 @@ fn register_emitters(engine: &mut rhai::Engine, actions: &std::rc::Rc<std::cell:
 
 fn register_helpers(engine: &mut rhai::Engine, component: &ComponentView, hooks: CellHooks) {
 	let CellHooks {
-		obj_path,
-		prior_depfile_headers,
+		artifact_path,
+		depfile_inputs,
 		lib_path,
 		bin,
 		tool_id,
@@ -136,10 +138,19 @@ fn register_helpers(engine: &mut rhai::Engine, component: &ComponentView, hooks:
 			Ok(lib_path(filename))
 		},
 	);
-	engine.register_fn("obj_path", move |_ctx: &mut Map, src: &str| -> String { obj_path(src) });
-	engine.register_fn("prior_depfile_headers", move |_ctx: &mut Map, obj: &str| -> rhai::Array {
-		prior_depfile_headers(obj).into_iter().map(Dynamic::from).collect()
-	});
+	engine.register_fn(
+		"artifact_path",
+		move |_ctx: &mut Map, src: &str, category: &str| -> Result<String, Box<EvalAltResult>> {
+			artifact_path(src, category).map_err(Into::into)
+		},
+	);
+	engine.register_fn(
+		"depfile_inputs",
+		move |_ctx: &mut Map, path: &str| -> Result<rhai::Array, Box<EvalAltResult>> {
+			let inputs = depfile_inputs(path).map_err(Box::<EvalAltResult>::from)?;
+			Ok(inputs.into_iter().map(Dynamic::from).collect())
+		},
+	);
 	engine.register_fn(
 		"read_file",
 		move |_ctx: &mut Map, path: &str| -> Result<String, Box<EvalAltResult>> { read_file(path).map_err(|e| e.into()) },
@@ -151,7 +162,6 @@ fn register_helpers(engine: &mut rhai::Engine, component: &ComponentView, hooks:
 		crate::rhai_rt::toml_decode(text).map_err(Into::into)
 	});
 	register_graph_ops(engine);
-	register_platform_matches(engine);
 	engine.register_fn(
 		"glob",
 		move |_ctx: &mut Map, pattern: &str| -> Result<rhai::Array, Box<EvalAltResult>> {
@@ -160,33 +170,6 @@ fn register_helpers(engine: &mut rhai::Engine, component: &ComponentView, hooks:
 		},
 	);
 	let _ = component.profile;
-}
-
-fn register_platform_matches(engine: &mut rhai::Engine) {
-	engine.register_fn("platform_matches", |ctx: &mut Map, expr: &str| -> bool {
-		let field = |key: &str| {
-			ctx.get(key)
-				.and_then(|value| value.clone().into_string().ok())
-				.unwrap_or_default()
-		};
-		let debug = ctx
-			.get("profile")
-			.and_then(|value| value.clone().try_cast::<Map>())
-			.and_then(|profile| profile.get("is_debug").and_then(|value| value.as_bool().ok()))
-			.unwrap_or(false);
-		let os = field("platform_os");
-		let arch = field("platform_arch");
-		let abi = field("platform_abi");
-		crate::cfg::matches(
-			expr,
-			&crate::cfg::PlatformFacts {
-				os: &os,
-				arch: &arch,
-				abi: &abi,
-				debug,
-			},
-		)
-	});
 }
 
 fn register_graph_ops(engine: &mut rhai::Engine) {
@@ -264,6 +247,12 @@ fn context_map(component: &ComponentView) -> Map {
 	}
 	ctx.insert("env".into(), Dynamic::from(env));
 	ctx.insert("profile".into(), Dynamic::from(profile_to_map(&component.profile)));
+	for (name, table) in [("metadata", &component.metadata), ("cell_config", &component.cell_config)] {
+		ctx.insert(
+			name.into(),
+			crate::rhai_rt::toml_value_to_dynamic(toml::Value::Table(table.clone())).expect("valid TOML value"),
+		);
+	}
 	ctx
 }
 

@@ -5,7 +5,7 @@ preferred_toolchain = "clang"
 fallback_toolchains = ["gcc", "cc"]
 
 [cells.rust]
-scripts = ["rust/manifest.rhai", "rust/features.rhai", "rust/build_script.rhai", "rust/cell.rhai"]
+scripts = ["rust/workspace.rhai", "rust/manifest.rhai", "rust/cfg.rhai", "rust/features.rhai", "rust/build_script.rhai", "rust/cell.rhai"]
 workspace_script = "rust/workspace.rhai"
 extensions = ["rs"]
 preferred_toolchain = "rust"

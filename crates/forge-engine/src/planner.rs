@@ -47,6 +47,7 @@ pub struct PlanContext<'a> {
 	pub platform: &'a Platform,
 	pub toolchains: &'a BTreeMap<String, ResolvedToolchain>,
 	pub cells: &'a StdCells,
+	pub cell_config: &'a BTreeMap<String, toml::Table>,
 	pub workspace: Option<&'a Path>,
 	pub fetched_sources: &'a [FetchedSource],
 	pub progress: Option<&'a crate::progress::Progress>,
@@ -300,7 +301,7 @@ impl<'a> Planner<'a> {
 	) -> Result<(), ForgeDiagnostic> {
 		let component = self.ctx.graph.component(id);
 		let label = component.label.to_string();
-		let object_namespace = label.replace(['/', ':'], "_");
+		let artifact_namespace = label.replace(['/', ':'], "_");
 		if let Some(progress) = self.ctx.progress {
 			progress.phase(&format!("Lowering {label}..."));
 		}
@@ -348,17 +349,13 @@ impl<'a> Planner<'a> {
 		let tool_digest = tool_id(&tool);
 
 		let hooks = CellHooks {
-			obj_path: Box::new(move |src| {
-				object_path(Path::new(src), &profile, &object_namespace)
-					.to_string_lossy()
-					.into_owned()
+			artifact_path: Box::new(move |src, category| {
+				artifact_path(Path::new(src), &profile.name, &artifact_namespace, category)
 			}),
-			prior_depfile_headers: Box::new(|obj| {
-				previous_depfile_headers(&PathBuf::from(format!("{obj}.d")))
-					.into_iter()
-					.map(|p| p.to_string_lossy().into_owned())
-					.collect()
-			}),
+			depfile_inputs: {
+				let workspace = self.ctx.workspace.unwrap_or(Path::new(".")).to_path_buf();
+				Box::new(move |path| depfile_inputs(&workspace, Path::new(path)))
+			},
 			lib_path: Box::new(move |filename| {
 				PathBuf::from(format!("forge-out/lib/{pkg_slug}/{filename}"))
 					.to_string_lossy()
@@ -398,6 +395,8 @@ impl<'a> Planner<'a> {
 		}
 
 		let view = ComponentView {
+			metadata: decl.metadata.clone(),
+			cell_config: self.ctx.cell_config.get(&language).cloned().unwrap_or_default(),
 			label,
 			name,
 			kind: kind.to_string(),
@@ -593,39 +592,63 @@ fn tool_id(tool: &ResolvedToolchain) -> String {
 	format!("{}@{}", tool.name, &tool.digest[..12.min(tool.digest.len())])
 }
 
-fn object_path(source: &Path, profile: &Profile, namespace: &str) -> PathBuf {
+fn artifact_path(source: &Path, profile: &str, namespace: &str, category: &str) -> Result<String, String> {
 	let stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("src");
+	for fragment in [profile, namespace, category, stem] {
+		if fragment.is_empty() || matches!(fragment, "." | "..") || fragment.contains(['/', '\\', ':', '\0']) {
+			return Err(format!("artifact_path requires single path components, got {fragment:?}"));
+		}
+	}
 	let suffix = hasher::hex(blake3::hash(source.to_string_lossy().as_bytes()).as_bytes())[..8].to_string();
-	let directory = if profile.coverage { "profile" } else { "obj" };
-	PathBuf::from(format!(
-		"forge-out/{directory}/{}/{}_{}_{suffix}.o",
-		profile.name, namespace, stem
-	))
+	Ok(format!("forge-out/{category}/{profile}/{namespace}_{stem}_{suffix}"))
 }
 
-fn previous_depfile_headers(depfile: &Path) -> Vec<PathBuf> {
-	let Ok(text) = std::fs::read_to_string(depfile) else {
-		return Vec::new();
+fn depfile_inputs(workspace: &Path, depfile: &Path) -> Result<Vec<String>, String> {
+	let workspace = std::path::absolute(workspace).map_err(|e| e.to_string())?;
+	let path = workspace.join(depfile);
+	let text = match std::fs::read_to_string(&path) {
+		Ok(text) => text,
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+		Err(e) => return Err(format!("cannot read depfile {}: {e}", path.display())),
 	};
-	parse_depfile(&text)
-}
-
-fn parse_depfile(text: &str) -> Vec<PathBuf> {
-	const HEADER_EXTS: &[&str] = &["h", "hh", "hpp", "hxx", "inc", "inl"];
-	let flattened = text.replace("\\\n", " ");
-	let Some((_, rest)) = flattened.split_once(':') else {
-		return Vec::new();
-	};
-	rest.split_whitespace()
-		.filter(|token| *token != "\\")
-		.filter_map(|token| {
-			let path = PathBuf::from(token.replace('\\', ""));
-			let is_header = path
-				.extension()
-				.and_then(|e| e.to_str())
-				.map(|e| HEADER_EXTS.contains(&e))
-				.unwrap_or(false);
-			(is_header && path.is_file()).then_some(path)
-		})
+	forge_core::depfile::parse(&text)
+		.into_iter()
+		.map(|input| depfile_input_path(&workspace, Path::new(&input)).map(|p| path_string(&p)))
 		.collect()
 }
+
+fn depfile_input_path(workspace: &Path, input: &Path) -> Result<PathBuf, String> {
+	let relative = if let Ok(path) = input.strip_prefix("FORGE_EXEC_ROOT") {
+		path
+	} else if input.is_absolute() {
+		if let Ok(path) = input.strip_prefix(workspace.join("forge-out/exec")) {
+			path
+		} else if let Ok(path) = input.strip_prefix(workspace.join("forge-out/sandbox")) {
+			let mut components = path.components();
+			components.next();
+			components.as_path()
+		} else {
+			input
+				.strip_prefix(workspace)
+				.map_err(|_| format!("depfile input is outside workspace: {}", input.display()))?
+		}
+	} else {
+		input
+	};
+	let mut normalized = PathBuf::new();
+	for component in relative.components() {
+		match component {
+			std::path::Component::CurDir => {}
+			std::path::Component::Normal(part) => normalized.push(part),
+			std::path::Component::ParentDir if normalized.pop() => {}
+			_ => return Err(format!("depfile input escapes workspace: {}", input.display())),
+		}
+	}
+	if normalized.as_os_str().is_empty() {
+		return Err(format!("depfile input is not a file path: {}", input.display()));
+	}
+	Ok(normalized)
+}
+
+#[cfg(test)]
+mod tests;

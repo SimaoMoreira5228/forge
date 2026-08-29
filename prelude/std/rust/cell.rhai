@@ -79,30 +79,44 @@ fn build(ctx) {
         }
     }
 
+    let crate_manifest = workspace_crate_manifest(ctx);
     let external_inputs = [];
     let external_externs = [];
+    let external_names = [];
     for src in ctx.fetched_sources {
         let key = dependency_key(src);
         if meta[key]["active"] == false { continue; }
         let out = meta[key]["artifact"];
-        let crate_n = crate_name(#{ name: src.name });
         external_inputs.push(out);
+        let entry = dependency_entry(ctx, crate_manifest, src.name);
+        if rust_mode(ctx["cell_config"]) == "cargo" && entry == () { continue; }
+        let crate_n = dependency_crate_name(ctx, crate_manifest, src.name, crate_name(#{ name: src.name }));
+        if external_names.contains(crate_n) { throw `multiple locked versions for direct dependency ${crate_n}; select explicitly in a future importer milestone`; }
+        external_names.push(crate_n);
         external_externs.push(`${crate_n}=${out}`);
     }
 
     let crate_env = workspace_crate_env(ctx);
     let crate_root_dir = workspace_crate_root(ctx);
-    let crate_manifest = workspace_crate_manifest(ctx);
+    crate_manifest["forge-manifest-path"] = workspace_manifest_path(ctx);
     let crate_version = if crate_manifest["package"] != () && crate_manifest["package"]["version"].type_of() == "string" { crate_manifest["package"]["version"] } else { workspace_package_version(ctx) };
     let crate_entry = if ctx.kind == "library" { "src/lib.rs" } else { "src/main.rs" };
-    let crate_root_file = if crate_root_dir != "" && ctx.glob(`${crate_root_dir}/${crate_entry}`).len() > 0 {
-        `${crate_root_dir}/${crate_entry}`
+    let declared_root = rust_metadata(ctx)["crate_root"];
+    let conventional_root = rust_path(crate_root_dir, crate_entry);
+    let crate_root_file = if declared_root != () {
+        rust_path("", declared_root)
+    } else if ctx.srcs.contains(conventional_root) {
+        conventional_root
     } else if ctx.srcs.len() > 0 {
         ctx.srcs[0]
     } else {
         throw `component ${ctx.label} declares no crate root`;
     };
-    let build_output = emit_build_script(ctx, rustc, crate_manifest, [], crate_root_dir, ctx.name, crate_version, edition, build_dependency_externs(meta, crate_manifest), ctx.glob(`${crate_root_dir}/**/*`), ctx.hdrs + external_inputs);
+    let crate_features = expand_features(crate_manifest["features"], if rust_metadata(ctx)["enabled_features"] == () {
+        if crate_manifest["features"] == () || crate_manifest["features"]["default"] == () { [] } else { crate_manifest["features"]["default"] }
+    } else { rust_metadata(ctx)["enabled_features"] });
+    let package_files = ctx.srcs + ctx.hdrs;
+    let build_output = emit_build_script(ctx, rustc, crate_manifest, crate_features, crate_root_dir, ctx.name, crate_version, edition, build_dependency_externs(meta, crate_manifest), package_files, ctx.hdrs + external_inputs);
     if build_output != "" {
         crate_env = merge_env(crate_env, #{ "OUT_DIR": `FORGE_EXEC_ROOT/${build_output}` });
     }
@@ -136,10 +150,10 @@ fn build(ctx) {
         }
         let out = ctx.lib_path(`lib${ctx.name}.rlib`);
         let args = ["--crate-type", "lib", "--crate-name", name, "--edition", edition, "-C", `metadata=${name}-${ctx.profile.name}`, "-L", "dependency=forge-out/lib", "--remap-path-prefix", "FORGE_EXEC_ROOT=", "-L", "dependency=forge-out/lib/deps"];
-        args += dependency_search_args(ctx);
+        args += dependency_search_args(ctx) + feature_cfg_args(crate_manifest, crate_features) + ctx.flags;
         for dep in ctx.dep_artifacts {
             args.push("--extern");
-            args.push(`${dep[0]}=${dep[1]}`);
+            args.push(`${workspace_extern_name(ctx, dep[0])}=${dep[1]}`);
         }
         for ext in external_externs {
             args.push("--extern");
@@ -163,10 +177,10 @@ fn build(ctx) {
     let out_dir = if ctx.kind == "test" { "forge-out/test" } else { "forge-out/bin" };
     let exe = `${out_dir}/${ctx.profile.name}/${ctx.name}`;
     let args = ["--crate-type", "bin", "--crate-name", name, "--edition", edition, "-C", `metadata=${name}-${ctx.profile.name}`, "-L", "dependency=forge-out/lib", "--remap-path-prefix", "FORGE_EXEC_ROOT=", "-L", "dependency=forge-out/lib/deps"];
-    args += dependency_search_args(ctx);
+    args += dependency_search_args(ctx) + feature_cfg_args(crate_manifest, crate_features) + ctx.flags;
     for dep in ctx.dep_artifacts {
         args.push("--extern");
-        args.push(`${dep[0]}=${dep[1]}`);
+        args.push(`${workspace_extern_name(ctx, dep[0])}=${dep[1]}`);
     }
     for ext in external_externs {
         args.push("--extern");

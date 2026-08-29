@@ -5,7 +5,8 @@ use std::time::Instant;
 use forge_core::{ActionSpec, ComponentKind};
 use forge_diagnostics::{ForgeDiagnostic, codes};
 use forge_script::discover_packages;
-use forge_script::register::load_workspace;
+use forge_script::register::{LoadedWorkspace, load_workspace_resolving};
+use forge_script::rhai_rt::ResolutionContext;
 
 use crate::cas::Cas;
 use crate::db::CacheDb;
@@ -45,6 +46,7 @@ pub struct Prepared {
 	pub dependencies: Vec<forge_core::DependencyRequest>,
 	pub requirements: Vec<forge_core::DependencyRequirement>,
 	pub candidates: Vec<forge_core::PackageCandidate>,
+	pub imported_lock: Option<String>,
 }
 
 impl Engine {
@@ -72,15 +74,39 @@ impl Engine {
 
 	pub(crate) fn prepare(&self) -> Result<Prepared, ForgeDiagnostic> {
 		let config = forge_script::WorkspaceConfig::load(&self.workspace)?;
+		self.prepare_with_context(config, &ResolutionContext::default())
+	}
+
+	pub(crate) fn prepare_for_resolution(&self) -> Result<Prepared, ForgeDiagnostic> {
+		let config = forge_script::WorkspaceConfig::load(&self.workspace)?;
+		let resolution = crate::metadata_fetch::resolution_context(config.resolution.clone());
+		self.prepare_with_context(config, &resolution)
+	}
+
+	fn prepare_with_context(
+		&self,
+		config: forge_script::WorkspaceConfig,
+		resolution: &ResolutionContext,
+	) -> Result<Prepared, ForgeDiagnostic> {
 		let packages = discover_packages(&self.workspace, &config.discovery)?;
 		let platform = config.resolve_target()?;
 		let cells = crate::std_cells::StdCells::load(&self.workspace, &config.std_patches)?;
-		let (graph, decls, dependencies, requirements, candidates, mut diagnostics) = load_workspace(
+		let LoadedWorkspace {
+			graph,
+			decls,
+			dependencies,
+			requirements,
+			candidates,
+			imported_lock,
+			mut diagnostics,
+		} = load_workspace_resolving(
 			&self.workspace,
 			&packages,
 			&platform,
 			&config.platforms,
 			cells.workspace_scripts(),
+			&config.cell,
+			resolution,
 		);
 
 		if let Err(visibility_errors) = graph.check_visibility() {
@@ -100,6 +126,7 @@ impl Engine {
 			dependencies,
 			requirements,
 			candidates,
+			imported_lock,
 		})
 	}
 
@@ -139,6 +166,7 @@ impl Engine {
 			platform: &platform,
 			toolchains: &toolchains,
 			cells: &cells,
+			cell_config: &prepared.config.cell,
 			workspace: Some(&self.workspace),
 			fetched_sources: &fetched_sources,
 			progress,

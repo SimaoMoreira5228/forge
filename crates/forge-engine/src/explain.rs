@@ -41,6 +41,7 @@ impl Engine {
 			platform: &platform,
 			toolchains: &toolchains,
 			cells: &cells,
+			cell_config: &prepared.config.cell,
 			workspace: Some(&self.workspace),
 			fetched_sources: &fetched_sources,
 			progress: None,

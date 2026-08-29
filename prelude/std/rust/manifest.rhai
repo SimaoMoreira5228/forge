@@ -7,18 +7,24 @@ fn rustc_for(ctx) {
 }
 
 fn edition_for(ctx) {
-    let std_val = ctx.standard;
-    if std_val == "" {
-        "2024"
-    } else {
-        std_val
-    }
+    let metadata = rust_metadata(ctx);
+    let manifest = workspace_crate_manifest(ctx);
+    let edition = if metadata["edition"] != () { metadata["edition"] }
+        else if rust_mode(ctx["cell_config"]) == "cargo" || (metadata["package"] != () && metadata["package"]["edition"] != ()) { manifest["package"]["edition"] }
+        else if ctx.standard != "" { ctx.standard }
+        else { "2024" };
+    if !["2015", "2018", "2021", "2024"].contains(edition) { throw `unsupported Rust edition: ${edition}`; }
+    edition
 }
 
 fn crate_name(ctx) {
-    let name = ctx.name;
-    name.replace("-", "_");
-    name
+    let metadata = rust_metadata(ctx);
+    rust_name(if metadata["name"] == () { ctx.name } else { metadata["name"] })
+}
+
+fn workspace_extern_name(ctx, name) {
+    let aliases = rust_metadata(ctx)["externs"];
+    rust_name(if aliases != () && aliases[name] != () { aliases[name] } else { name })
 }
 
 fn dependency_search_args(ctx) {
@@ -76,7 +82,7 @@ fn active_dep_sections(ctx, manifest) {
     let targets = manifest["target"];
     if targets != () {
         for key in targets.keys() {
-            if !ctx.platform_matches(key) { continue; }
+            if !rust_cfg_matches(ctx, key) { continue; }
             let section = targets[key];
             let targeted = section["dependencies"];
             if targeted != () { sections.push(targeted); }

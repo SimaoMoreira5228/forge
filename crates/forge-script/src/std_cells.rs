@@ -32,7 +32,7 @@ struct CellEntry {
 
 pub struct StdCells {
 	scripts: BTreeMap<String, String>,
-	workspace_scripts: Vec<String>,
+	workspace_scripts: Vec<(String, String)>,
 	ext_to_cell: BTreeMap<String, String>,
 	toolchain_map: BTreeMap<String, Vec<String>>,
 	standard_map: BTreeMap<String, String>,
@@ -79,7 +79,7 @@ impl StdCells {
 			scripts,
 			workspace_scripts: EMBEDDED_WORKSPACE_SCRIPTS
 				.iter()
-				.map(|(_, script)| script.to_string())
+				.map(|(name, script)| (name.to_string(), script.to_string()))
 				.collect(),
 			ext_to_cell,
 			toolchain_map,
@@ -87,7 +87,7 @@ impl StdCells {
 		})
 	}
 
-	pub fn workspace_scripts(&self) -> &[String] {
+	pub fn workspace_scripts(&self) -> &[(String, String)] {
 		&self.workspace_scripts
 	}
 

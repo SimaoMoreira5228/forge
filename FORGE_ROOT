@@ -6,6 +6,9 @@ version = "0.2.0"
 include = ["."]
 exclude = ["local"]
 
+[cell.rust]
+mode = "cargo"
+
 [toolchains.rust]
 from = "version"
 version = "1.98.0"

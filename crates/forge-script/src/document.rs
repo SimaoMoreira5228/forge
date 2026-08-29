@@ -67,6 +67,7 @@ impl TargetKind {
 				"linker",
 				"link_flags",
 				"env",
+				"metadata",
 			],
 			TargetKind::Test => &[
 				"visibility",
@@ -80,6 +81,7 @@ impl TargetKind {
 				"linker",
 				"link_flags",
 				"env",
+				"metadata",
 			],
 			TargetKind::Rule => &[
 				"visibility",
@@ -91,6 +93,7 @@ impl TargetKind {
 				"output_dir",
 				"deps",
 				"env",
+				"metadata",
 			],
 		}
 	}
@@ -135,6 +138,7 @@ pub struct TargetDecl {
 	pub outputs: Vec<(PathBuf, bool)>,
 	pub output_dir: Option<String>,
 	pub env: std::collections::BTreeMap<String, String>,
+	pub metadata: toml::Table,
 	pub timeout_secs: u64,
 	pub data: Vec<PathBuf>,
 	pub fields_set: std::collections::BTreeSet<String>,
@@ -203,6 +207,9 @@ impl TargetDecl {
 		if set("data") {
 			self.data = overlay.data.clone();
 		}
+		if set("metadata") {
+			self.metadata = overlay.metadata.clone();
+		}
 		if set("env") {
 			for (k, v) in &overlay.env {
 				self.env.insert(k.clone(), v.clone());
@@ -254,6 +261,7 @@ impl TargetDecl {
 			outputs: vec![],
 			output_dir: None,
 			env: std::collections::BTreeMap::new(),
+			metadata: toml::Table::new(),
 			timeout_secs: 60,
 			data: vec![],
 			fields_set: Default::default(),
@@ -283,7 +291,7 @@ impl FieldsBuilder {
 		})
 	}
 
-	fn check(&self, key: &str) -> Result<(), ForgeDiagnostic> {
+	pub(crate) fn check(&self, key: &str) -> Result<(), ForgeDiagnostic> {
 		if self.decl.kind.allowed_keys().contains(&key) {
 			return Ok(());
 		}
@@ -364,6 +372,13 @@ impl FieldsBuilder {
 	pub fn env_entry(&mut self, k: String, v: String) -> Result<(), ForgeDiagnostic> {
 		self.decl.fields_set.insert("env".into());
 		self.decl.env.insert(k, v);
+		Ok(())
+	}
+
+	pub fn metadata(&mut self, metadata: toml::Table) -> Result<(), ForgeDiagnostic> {
+		self.check("metadata")?;
+		self.decl.fields_set.insert("metadata".into());
+		self.decl.metadata = metadata;
 		Ok(())
 	}
 

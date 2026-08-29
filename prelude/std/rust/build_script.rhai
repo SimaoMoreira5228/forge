@@ -1,6 +1,8 @@
 fn emit_build_script(ctx, rustc, manifest, enabled, root, name, version, edition, build_deps, package_files, extra_inputs) {
     let build_name = if manifest["package"] == () || manifest["package"]["build"] == () { "build.rs" } else { manifest["package"]["build"] };
-    let build_files = ctx.glob(`${root}/${build_name}`);
+    if build_name == false { return ""; }
+    if build_name == true { build_name = "build.rs"; }
+    let build_files = ctx.glob(if root == "" { build_name } else { `${root}/${build_name}` });
     if build_files.len() == 0 { return ""; }
     let pkg_name = crate_name(#{ name: name });
     let build_output = `forge-out/build/${name}-${version}`;
@@ -32,8 +34,9 @@ fn emit_build_script(ctx, rustc, manifest, enabled, root, name, version, edition
         }
     }
     let compile_env = merge_env(string_env(ctx.env), cargo_pkg_env(manifest, name, version));
-    compile_env["CARGO_MANIFEST_DIR"] = `FORGE_EXEC_ROOT/${root}`;
-    compile_env["CARGO_MANIFEST_PATH"] = `FORGE_EXEC_ROOT/${root}/Cargo.toml`;
+    let manifest_path = if manifest["forge-manifest-path"] == () { if root == "" { "Cargo.toml" } else { `${root}/Cargo.toml` } } else { manifest["forge-manifest-path"] };
+    compile_env["CARGO_MANIFEST_DIR"] = if root == "" { "FORGE_EXEC_ROOT" } else { `FORGE_EXEC_ROOT/${root}` };
+    compile_env["CARGO_MANIFEST_PATH"] = `FORGE_EXEC_ROOT/${manifest_path}`;
     compile_env["HOST"] = target_for(ctx);
     compile_env["TARGET"] = target_for(ctx);
     compile_env["RUSTC"] = rustc;
@@ -49,8 +52,8 @@ fn emit_build_script(ctx, rustc, manifest, enabled, root, name, version, edition
     });
     let run_env = merge_env(string_env(ctx.env), cargo_pkg_env(manifest, name, version));
     run_env["OUT_DIR"] = `FORGE_EXEC_ROOT/${build_output}`;
-    run_env["CARGO_MANIFEST_DIR"] = `FORGE_EXEC_ROOT/${root}`;
-    run_env["CARGO_MANIFEST_PATH"] = `FORGE_EXEC_ROOT/${root}/Cargo.toml`;
+    run_env["CARGO_MANIFEST_DIR"] = compile_env["CARGO_MANIFEST_DIR"];
+    run_env["CARGO_MANIFEST_PATH"] = compile_env["CARGO_MANIFEST_PATH"];
     for feature_name in feature_env(enabled).keys() { run_env[feature_name] = "1"; }
     run_env["NUM_JOBS"] = "1";
     run_env["OPT_LEVEL"] = `${ctx.profile.opt_level}`;
@@ -115,10 +118,14 @@ fn cargo_pkg_env(manifest, name, version) {
     let env = #{};
     env["CARGO_PKG_NAME"] = name;
     env["CARGO_PKG_VERSION"] = version;
-    env["CARGO_PKG_VERSION_MAJOR"] = version.split(".")[0];
-    env["CARGO_PKG_VERSION_MINOR"] = version.split(".")[1];
-    env["CARGO_PKG_VERSION_PATCH"] = version.split(".")[2];
-    env["CARGO_PKG_VERSION_PRE"] = "";
+    let release = version.split("+")[0].split("-");
+    let parts = release[0].split(".");
+    if parts.len() != 3 { throw `Rust package version must be major.minor.patch: ${version}`; }
+    env["CARGO_PKG_VERSION_MAJOR"] = parts[0];
+    env["CARGO_PKG_VERSION_MINOR"] = parts[1];
+    env["CARGO_PKG_VERSION_PATCH"] = parts[2];
+    let prerelease = version.split("+")[0];
+    env["CARGO_PKG_VERSION_PRE"] = if prerelease.contains("-") { prerelease.sub_string(prerelease.index_of("-") + 1) } else { "" };
     env["CARGO_PKG_AUTHORS"] = if pkg == () || pkg["authors"] == () { "" } else { authors_env(pkg["authors"]) };
     env["CARGO_PKG_DESCRIPTION"] = if pkg == () { "" } else { manifest_string(pkg["description"]) };
     env["CARGO_PKG_HOMEPAGE"] = if pkg == () { "" } else { manifest_string(pkg["homepage"]) };
@@ -138,40 +145,79 @@ fn merge_env(base, extra) {
     base
 }
 
+fn rust_metadata(ctx) {
+    let metadata = if ctx["metadata"] == () { #{} } else { ctx["metadata"] };
+    let rust = if metadata["rust"] == () { #{} } else { metadata["rust"] };
+    if rust.type_of() != "map" { throw "metadata.rust must be a table"; }
+    for key in rust.keys() {
+        if !["root", "crate_root", "name", "edition", "package", "build", "manifest", "manifest_path", "externs", "dependencies", "build-dependencies", "features", "enabled_features"].contains(key) {
+            throw `unknown metadata.rust key: ${key}`;
+        }
+    }
+    rust
+}
+
 fn workspace_crate_root(ctx) {
+    let metadata = rust_metadata(ctx);
+    if metadata["root"] != () { return rust_path("", metadata["root"]); }
     if ctx.srcs.len() == 0 { return ""; }
     let first = ctx.srcs[0];
     let index = first.index_of("/src/");
     if index < 0 { return ""; }
-    first.sub_string(0, index)
+    rust_path("", first.sub_string(0, index))
 }
 
 fn workspace_crate_manifest(ctx) {
-    let root = workspace_crate_root(ctx);
-    if root == "" || ctx.glob(`${root}/Cargo.toml`).len() == 0 { return #{}; }
-    toml_decode(ctx.read_file(`${root}/Cargo.toml`))
+    let metadata = rust_metadata(ctx);
+    let mode = rust_mode(ctx["cell_config"]);
+    let manifest = #{};
+    if mode == "cargo" {
+        if metadata["manifest"] != () {
+            manifest = metadata["manifest"];
+        } else {
+            let path = rust_path(workspace_crate_root(ctx), "Cargo.toml");
+            if ctx.glob(path).len() == 0 { throw `cargo mode requires package manifest: ${path}`; }
+            manifest = toml_decode(ctx.read_file(path));
+            let root = toml_decode(ctx.read_file("Cargo.toml"));
+            manifest = cargo_inherit(manifest, if root["workspace"] == () { #{} } else { root["workspace"] });
+        }
+    } else if metadata["manifest"] != () {
+        throw "native Rust metadata uses package/dependencies, not a Cargo manifest";
+    }
+    let pkg = if manifest["package"] == () { #{} } else { manifest["package"] };
+    if metadata["package"] != () { pkg = merge_env(pkg, metadata["package"]); }
+    if metadata["edition"] != () { pkg["edition"] = metadata["edition"]; }
+    if metadata["build"] != () { pkg["build"] = metadata["build"]; }
+    if pkg["name"] == () { pkg["name"] = ctx.name; }
+    if pkg["version"] == () { pkg["version"] = "0.0.0"; }
+    if pkg["edition"] == () { pkg["edition"] = if mode == "native" { "2024" } else { "2015" }; }
+    if mode == "native" && pkg["build"] == () { pkg["build"] = false; }
+    manifest["package"] = pkg;
+    for key in ["dependencies", "build-dependencies", "features"] {
+        if metadata[key] != () { manifest[key] = metadata[key]; }
+    }
+    manifest
 }
 
 fn workspace_package_version(ctx) {
-    let root = if ctx.glob("Cargo.toml").len() == 0 { #{} } else { toml_decode(ctx.read_file("Cargo.toml")) };
-    let workspace = root["workspace"];
-    if workspace != () && workspace["package"] != () && workspace["package"]["version"] != () {
-        workspace["package"]["version"]
-    } else {
-        "0.0.0"
-    }
+    workspace_crate_manifest(ctx)["package"]["version"]
+}
+
+fn workspace_manifest_path(ctx) {
+    let metadata = rust_metadata(ctx);
+    if metadata["manifest_path"] != () { return rust_path("", metadata["manifest_path"]); }
+    if rust_mode(ctx["cell_config"]) == "cargo" { rust_path(workspace_crate_root(ctx), "Cargo.toml") }
+    else { "FORGE.toml" }
 }
 
 fn workspace_crate_env(ctx) {
     let manifest = workspace_crate_manifest(ctx);
-    let name = if manifest["package"] != () { manifest["package"]["name"] } else { ctx.name };
-    let declared = if manifest["package"] != () && manifest["package"]["version"] != () { manifest["package"]["version"] } else { () };
-    let version = if declared.type_of() == "string" { declared } else { workspace_package_version(ctx) };
+    let pkg = manifest["package"];
     let root = workspace_crate_root(ctx);
-    let env = merge_env(string_env(ctx.env), cargo_pkg_env(manifest, name, version));
-    env["CARGO_CRATE_NAME"] = ctx.name;
-    env["CARGO_MANIFEST_DIR"] = `FORGE_EXEC_ROOT/${root}`;
-    env["CARGO_MANIFEST_PATH"] = `FORGE_EXEC_ROOT/${root}/Cargo.toml`;
+    let env = merge_env(string_env(ctx.env), cargo_pkg_env(manifest, pkg["name"], pkg["version"]));
+    env["CARGO_CRATE_NAME"] = crate_name(ctx);
+    env["CARGO_MANIFEST_DIR"] = if root == "" { "FORGE_EXEC_ROOT" } else { `FORGE_EXEC_ROOT/${root}` };
+    env["CARGO_MANIFEST_PATH"] = `FORGE_EXEC_ROOT/${workspace_manifest_path(ctx)}`;
     env
 }
 

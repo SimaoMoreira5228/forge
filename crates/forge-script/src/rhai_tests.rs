@@ -42,6 +42,74 @@ fn rhai_registers_components() {
 }
 
 #[test]
+fn rhai_metadata_matches_nested_toml() {
+	let script = r#"
+		binary("app", #{ metadata: #{
+			literal: "${not_interpolated}",
+			enabled: true,
+			count: 7,
+			ratio: 1.5,
+			mixed: ["text", 2, false, [3]],
+			empty: #{},
+			options: #{ name: "value" },
+			entries: [#{ name: "first" }, #{ name: "second" }],
+		} });
+	"#;
+	let text = r#"
+[binary.app.metadata]
+literal = "${not_interpolated}"
+enabled = true
+count = 7
+ratio = 1.5
+mixed = ["text", 2, false, [3]]
+empty = {}
+[binary.app.metadata.options]
+name = "value"
+[[binary.app.metadata.entries]]
+name = "first"
+[[binary.app.metadata.entries]]
+name = "second"
+"#;
+	let output = run_forge_rhai(script, Path::new("."), &forge_core::Platform::host()).unwrap();
+	let expected = crate::parser::parse_forge_toml(text).unwrap();
+	assert_eq!(output.targets[0].metadata, expected[0].metadata);
+	assert!(output.targets[0].fields_set.contains("metadata"));
+	assert!(output.targets[0].env.is_empty());
+}
+
+#[test]
+fn rhai_metadata_defaults_and_allowed_kinds() {
+	for kind in ["library", "binary", "test", "rule"] {
+		let command = if kind == "rule" { "command: \"run\"," } else { "" };
+		let script = format!("{kind}(\"absent\", #{{ {command} }}); {kind}(\"empty\", #{{ {command} metadata: #{{}} }});");
+		let output = run_forge_rhai(&script, Path::new("."), &forge_core::Platform::host()).unwrap();
+		assert!(output.targets[0].metadata.is_empty());
+		assert!(!output.targets[0].fields_set.contains("metadata"));
+		assert!(output.targets[1].metadata.is_empty());
+		assert!(output.targets[1].fields_set.contains("metadata"));
+	}
+}
+
+#[test]
+fn rhai_metadata_wrong_types_and_unknown_ordinary_keys_are_rejected() {
+	for value in ["\"text\"", "1", "1.5", "true", "[]", "[#{ value: 1 }]", "()"] {
+		let script = format!("binary(\"app\", #{{ metadata: {value} }});");
+		let err = run_forge_rhai(&script, Path::new("."), &forge_core::Platform::host()).unwrap_err();
+		assert!(format!("{err}").contains("field `metadata` expects a map"));
+	}
+	for value in ["()", "[1, ()]", "#{ nested: () }", "'x'", "Fn(\"binary\")"] {
+		let script = format!("binary(\"app\", #{{ metadata: #{{ value: {value} }} }});");
+		let err = run_forge_rhai(&script, Path::new("."), &forge_core::Platform::host()).unwrap_err();
+		assert!(format!("{err}").contains("metadata values must be"));
+	}
+	for value in ["\"text\"", "1", "true", "[]", "#{ value: \"text\" }"] {
+		let script = format!("test(\"app\", #{{ metadata: #{{}}, ordinary: {value} }});");
+		let err = run_forge_rhai(&script, Path::new("."), &forge_core::Platform::host()).unwrap_err();
+		assert!(format!("{err}").contains("unknown key `ordinary`"));
+	}
+}
+
+#[test]
 fn rhai_unknown_field_errors_like_toml() {
 	let err = run_forge_rhai(
 		r#"binary("x", #{ src: ["a.cpp"] });"#,

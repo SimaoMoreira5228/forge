@@ -7,6 +7,7 @@ pub mod explain;
 pub mod hasher;
 pub mod junit;
 pub mod lock;
+mod metadata_fetch;
 pub mod planner;
 pub mod progress;
 pub mod proof;

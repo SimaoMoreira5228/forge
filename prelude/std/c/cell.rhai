@@ -98,7 +98,9 @@ fn compile_one(ctx, src, module_flags) {
     let default_std = if is_cpp(src) { "c++20" } else { "c17" };
     let chosen = if ctx.standard == "" { default_std } else { ctx.standard };
 
-    let obj = ctx.obj_path(src);
+    let category = if ctx.profile.coverage { "profile" } else { "obj" };
+    let stem = ctx.artifact_path(src, category);
+    let obj = `${stem}.o`;
     let depfile = `${obj}.d`;
     let compiler = compiler_for(ctx, src);
     let llvm = compiler.contains("clang");
@@ -130,12 +132,10 @@ fn compile_one(ctx, src, module_flags) {
 
     let outputs = [obj, depfile];
     if ctx.profile.coverage && !llvm {
-        let notes = obj;
-        notes.replace(".o", ".gcno");
-        outputs.push(notes);
+        outputs.push(`${stem}.gcno`);
     }
 
-    let inputs = [src] + ctx.hdrs + ctx.prior_depfile_headers(obj);
+    let inputs = [src] + ctx.hdrs + ctx.depfile_inputs(depfile);
 
     ctx.action(#{
         name: `compile ${src}`,

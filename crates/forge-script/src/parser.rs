@@ -99,6 +99,16 @@ fn apply_field(
 	value: &Item,
 	_file_text: &str,
 ) -> Result<(), ForgeDiagnostic> {
+	builder.check(key)?;
+	if key == "metadata" {
+		let table = value
+			.clone()
+			.into_table()
+			.map_err(|_| ForgeDiagnostic::error(codes::script::WRONG_TYPE, "field `metadata` expects a table"))?;
+		let metadata = toml::from_str(&toml_edit::DocumentMut::from(table).to_string())
+			.map_err(|e| ForgeDiagnostic::error(codes::script::WRONG_TYPE, format!("invalid metadata: {e}")))?;
+		return builder.metadata(metadata);
+	}
 	if let Some(array) = value.as_array() {
 		if key == "visibility" {
 			let mut patterns = Vec::new();

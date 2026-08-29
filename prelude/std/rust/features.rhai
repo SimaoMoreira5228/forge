@@ -39,26 +39,27 @@ fn collect_requests(section, requests) {
 
 fn workspace_root_requests(ctx) {
     let requests = #{};
-    let root = if ctx.glob("Cargo.toml").len() == 0 { #{} } else { toml_decode(ctx.read_file("Cargo.toml")) };
-    let workspace = root["workspace"];
-    if workspace != () && workspace["dependencies"] != () {
-        requests = collect_requests(workspace["dependencies"], requests);
-    }
-    if workspace != () && workspace["members"] != () {
-        for member in workspace["members"] {
-            for manifest_path in ctx.glob(`${member}/Cargo.toml`) {
-                let manifest = toml_decode(ctx.read_file(manifest_path));
-                if manifest["dependencies"] != () {
-                    requests = collect_requests(manifest["dependencies"], requests);
-                }
-                if manifest["build-dependencies"] != () {
-                    requests = collect_requests(manifest["build-dependencies"], requests);
-                }
-            }
+    if rust_mode(ctx["cell_config"]) == "native" || rust_metadata(ctx)["manifest"] != () {
+        for section in active_dep_sections(ctx, workspace_crate_manifest(ctx)) {
+            requests = collect_requests(section, requests);
         }
+        return requests;
     }
-    if root["dependencies"] != () { requests = collect_requests(root["dependencies"], requests); }
-    if root["build-dependencies"] != () { requests = collect_requests(root["build-dependencies"], requests); }
+    let root = toml_decode(ctx.read_file("Cargo.toml"));
+    let workspace = if root["workspace"] == () { #{} } else { root["workspace"] };
+    let paths = if root["package"] == () { [] } else { ["Cargo.toml"] };
+    let excluded = [];
+    if workspace["exclude"] != () {
+        for member in workspace["exclude"] { excluded += ctx.glob(rust_path(member, "Cargo.toml")); }
+    }
+    if workspace["members"] != () {
+        for member in workspace["members"] { paths += ctx.glob(rust_path(member, "Cargo.toml")); }
+    }
+    for path in paths {
+        if excluded.contains(path) { continue; }
+        let manifest = cargo_inherit(toml_decode(ctx.read_file(path)), workspace);
+        for section in active_dep_sections(ctx, manifest) { requests = collect_requests(section, requests); }
+    }
     requests
 }
 

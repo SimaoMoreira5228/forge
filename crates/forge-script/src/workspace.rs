@@ -13,6 +13,7 @@ pub struct WorkspaceConfig {
 	pub profiles: BTreeMap<String, Profile>,
 	pub platforms: BTreeMap<String, forge_core::Platform>,
 	pub std_patches: BTreeMap<String, PathBuf>,
+	pub cell: BTreeMap<String, toml::Table>,
 	pub catalog_files: Vec<PathBuf>,
 	pub max_cache_bytes: Option<u64>,
 	pub target_platform: Option<String>,
@@ -20,6 +21,24 @@ pub struct WorkspaceConfig {
 	pub local_patches: BTreeMap<String, PathBuf>,
 	pub git_patches: BTreeMap<String, GitPatch>,
 	pub registry_url: Option<String>,
+	pub resolution: ResolutionLimits,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolutionLimits {
+	pub max_response_bytes: u64,
+	pub timeout_secs: u64,
+	pub max_requests: usize,
+}
+
+impl Default for ResolutionLimits {
+	fn default() -> Self {
+		Self {
+			max_response_bytes: 8 * 1024 * 1024,
+			timeout_secs: 20,
+			max_requests: 256,
+		}
+	}
 }
 
 #[derive(Debug, Clone, Default)]
@@ -70,6 +89,21 @@ impl WorkspaceConfig {
 			registry: Option<RawRegistry>,
 			#[serde(default)]
 			build: Option<RawBuild>,
+			#[serde(default)]
+			deps: Option<RawDeps>,
+			#[serde(default)]
+			cell: BTreeMap<String, toml::Table>,
+		}
+
+		#[derive(Deserialize, Default)]
+		#[serde(deny_unknown_fields)]
+		struct RawDeps {
+			#[serde(default)]
+			max_response_bytes: Option<u64>,
+			#[serde(default)]
+			timeout_secs: Option<u64>,
+			#[serde(default)]
+			max_requests: Option<usize>,
 		}
 
 		#[derive(Deserialize)]
@@ -309,8 +343,23 @@ impl WorkspaceConfig {
 		let target_platform = raw.build.and_then(|b| b.target);
 
 		let registry_url = raw.registry.map(|registry| registry.url);
+		let defaults = ResolutionLimits::default();
+		let deps = raw.deps.unwrap_or_default();
+		let resolution = ResolutionLimits {
+			max_response_bytes: deps.max_response_bytes.unwrap_or(defaults.max_response_bytes),
+			timeout_secs: deps.timeout_secs.unwrap_or(defaults.timeout_secs),
+			max_requests: deps.max_requests.unwrap_or(defaults.max_requests),
+		};
+		if resolution.max_response_bytes == 0 || resolution.timeout_secs == 0 || resolution.max_requests == 0 {
+			return Err(ForgeDiagnostic::error(
+				codes::script::WRONG_TYPE,
+				"[deps] limits must be positive",
+			));
+		}
 
 		Ok(Self {
+			resolution,
+			cell: raw.cell,
 			std_patches,
 			catalog_files,
 			max_cache_bytes,
@@ -398,6 +447,44 @@ mod tests {
 	use std::path::PathBuf;
 
 	use super::parse_size;
+
+	#[test]
+	fn resolution_limits_default_override_and_validate() {
+		use super::{ResolutionLimits, WorkspaceConfig};
+
+		assert_eq!(WorkspaceConfig::parse("").unwrap().resolution, ResolutionLimits::default());
+		let config =
+			WorkspaceConfig::parse("[deps]\nmax_response_bytes = 32\ntimeout_secs = 1\nmax_requests = 2\n").unwrap();
+		assert_eq!(
+			config.resolution,
+			ResolutionLimits {
+				max_response_bytes: 32,
+				timeout_secs: 1,
+				max_requests: 2
+			}
+		);
+		let partial = WorkspaceConfig::parse("[deps]\nmax_requests = 17\n").unwrap();
+		assert_eq!(partial.resolution.timeout_secs, 20);
+		assert_eq!(partial.resolution.max_requests, 17);
+		for key in ["max_response_bytes", "timeout_secs", "max_requests"] {
+			for value in ["0", "-1", "1.5", "\"unlimited\""] {
+				assert!(WorkspaceConfig::parse(&format!("[deps]\n{key} = {value}\n")).is_err());
+			}
+		}
+		assert!(WorkspaceConfig::parse("[deps]\nmax_request = 20\n").is_err());
+	}
+
+	#[test]
+	fn cell_config_preserves_arbitrary_nested_values() {
+		let config = crate::workspace::WorkspaceConfig::parse(
+			"[cell.demo]\nmode = \"external\"\nenabled = true\n[ cell.demo.options ]\nvalues = [1, 2]\n",
+		)
+		.unwrap();
+		assert_eq!(config.cell["demo"]["mode"].as_str(), Some("external"));
+		assert_eq!(config.cell["demo"]["enabled"].as_bool(), Some(true));
+		assert_eq!(config.cell["demo"]["options"]["values"].as_array().unwrap().len(), 2);
+		assert!(crate::workspace::WorkspaceConfig::parse("").unwrap().cell.is_empty());
+	}
 
 	#[test]
 	fn source_mirrors_parse_longest_prefix_first() {

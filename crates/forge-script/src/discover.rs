@@ -26,13 +26,6 @@ pub fn discover_packages(workspace: &Path, discovery: &Discovery) -> Result<Vec<
 		walk(workspace.join(root_dir), workspace, discovery, &mut found)?;
 	}
 	found.sort_by(|a, b| a.package.cmp(&b.package));
-	if found.is_empty() {
-		return Err(ForgeDiagnostic::error(
-			codes::targets::UNKNOWN_TARGET,
-			"no FORGE.toml or FORGE.rhai found under the configured discovery paths",
-		)
-		.with_help("add a [discovery] section to FORGE_ROOT or create a FORGE.toml"));
-	}
 	Ok(found)
 }
 

@@ -243,34 +243,74 @@ use crate::discover::PackageSource;
 
 pub type DeclMap = BTreeMap<String, TargetDecl>;
 
+pub struct LoadedWorkspace {
+	pub graph: BuildGraph,
+	pub decls: DeclMap,
+	pub dependencies: Vec<forge_core::DependencyRequest>,
+	pub requirements: Vec<forge_core::DependencyRequirement>,
+	pub candidates: Vec<forge_core::PackageCandidate>,
+	pub imported_lock: Option<String>,
+	pub diagnostics: Vec<ForgeDiagnostic>,
+}
+
 pub fn load_workspace(
 	workspace: &std::path::Path,
 	packages: &[PackageSource],
 	platform: &forge_core::Platform,
 	declared_platforms: &std::collections::BTreeMap<String, forge_core::Platform>,
-	bootstrap: &[String],
-) -> (
-	BuildGraph,
-	DeclMap,
-	Vec<forge_core::DependencyRequest>,
-	Vec<forge_core::DependencyRequirement>,
-	Vec<forge_core::PackageCandidate>,
-	Vec<ForgeDiagnostic>,
-) {
+	bootstrap: &[(String, String)],
+	cell_configs: &BTreeMap<String, toml::Table>,
+) -> LoadedWorkspace {
+	load_workspace_resolving(
+		workspace,
+		packages,
+		platform,
+		declared_platforms,
+		bootstrap,
+		cell_configs,
+		&crate::rhai_rt::ResolutionContext::default(),
+	)
+}
+
+pub fn load_workspace_resolving(
+	workspace: &std::path::Path,
+	packages: &[PackageSource],
+	platform: &forge_core::Platform,
+	declared_platforms: &std::collections::BTreeMap<String, forge_core::Platform>,
+	bootstrap: &[(String, String)],
+	cell_configs: &BTreeMap<String, toml::Table>,
+	resolution: &crate::rhai_rt::ResolutionContext,
+) -> LoadedWorkspace {
 	let mut graph = BuildGraph::new();
-	let generated = collect_generated_dirs(workspace, packages, platform);
+	let mut files: Vec<(String, Vec<TargetDecl>)> = Vec::new();
 	let mut pending_wires: Vec<(String, Vec<TargetDecl>)> = Vec::new();
 	let mut dependencies = Vec::new();
 	let mut requirements = Vec::new();
 	let mut candidates = Vec::new();
+	let mut imported_lock = None;
 	let mut sink = Vec::new();
+	let empty_config = toml::Table::new();
 
-	for script in bootstrap {
-		match crate::rhai_rt::run_forge_rhai(script, workspace, platform) {
+	for (cell, script) in bootstrap {
+		let config = cell_configs.get(cell).unwrap_or(&empty_config);
+		match crate::rhai_rt::run_forge_rhai_resolving(script, workspace, platform, config, resolution) {
 			Ok(output) => {
+				if let Some(claim) = output.imported_lock {
+					if let Some(existing) = &imported_lock {
+						if existing != &claim {
+							sink.push(ForgeDiagnostic::error(
+								101,
+								format!("conflicting imported lock authorities `{existing}` and `{claim}` (cell `{cell}`)"),
+							));
+						}
+					} else {
+						imported_lock = Some(claim);
+					}
+				}
 				dependencies.extend(output.dependencies);
 				requirements.extend(output.requirements);
 				candidates.extend(output.candidates);
+				files.push((String::new(), output.targets));
 			}
 			Err(d) => sink.push(d),
 		}
@@ -289,12 +329,23 @@ pub fn load_workspace(
 			}
 		};
 		let parsed = if pkg.file.extension().is_some_and(|e| e == "rhai") {
-			crate::rhai_rt::run_forge_rhai(&text, &package_dir, platform).map(|output| {
-				dependencies.extend(output.dependencies);
-				requirements.extend(output.requirements);
-				candidates.extend(output.candidates);
-				output.targets
-			})
+			crate::rhai_rt::run_forge_rhai_resolving(&text, &package_dir, platform, &empty_config, resolution).and_then(
+				|output| {
+					if output.imported_lock.is_some() {
+						return Err(ForgeDiagnostic::error(
+							101,
+							format!(
+								"{}: imported lock authority may only be declared by a workspace cell",
+								pkg.file.display()
+							),
+						));
+					}
+					dependencies.extend(output.dependencies);
+					requirements.extend(output.requirements);
+					candidates.extend(output.candidates);
+					Ok(output.targets)
+				},
+			)
 		} else {
 			crate::parser::parse_forge_toml(&text)
 		};
@@ -306,6 +357,31 @@ pub fn load_workspace(
 			}
 		};
 
+		files.push((pkg.package.clone(), file_decls));
+	}
+
+	if imported_lock.is_some() && (!requirements.is_empty() || !candidates.is_empty()) {
+		sink.push(ForgeDiagnostic::error(
+			101,
+			"imported dependencies are externally managed; solver requirements and candidates are not allowed",
+		));
+	}
+	let generated: Vec<_> = files
+		.iter()
+		.flat_map(|(package, decls)| {
+			decls.iter().filter_map(move |decl| {
+				if decl.kind != crate::document::TargetKind::Rule {
+					return None;
+				}
+				decl.output_dir.as_ref().map(|dir| DynamicDir {
+					dir: dir.trim_end_matches('/').to_string(),
+					label: Label::new(package, decl.name.clone()),
+				})
+			})
+		})
+		.collect();
+	for (package, file_decls) in files {
+		let package_dir = workspace.join(&package);
 		let mut usable = Vec::new();
 		for mut decl in file_decls {
 			decl.apply_platform_overrides(platform, declared_platforms);
@@ -318,8 +394,8 @@ pub fn load_workspace(
 			}
 		}
 
-		match register_components(&mut graph, usable.clone(), &pkg.package, &package_dir, &generated) {
-			Ok(_) => pending_wires.push((pkg.package.clone(), usable)),
+		match register_components(&mut graph, usable.clone(), &package, &package_dir, &generated) {
+			Ok(_) => pending_wires.push((package, usable)),
 			Err(e) => sink.push(e),
 		}
 	}
@@ -332,7 +408,21 @@ pub fn load_workspace(
 		}
 	}
 	wire_generated_sources(&mut graph, &generated);
-	(graph, decls, dependencies, requirements, candidates, sink)
+	if graph.node_count() == 0 && packages.is_empty() && sink.is_empty() {
+		sink.push(ForgeDiagnostic::error(
+			codes::targets::UNKNOWN_TARGET,
+			"no targets registered by workspace cells and no FORGE.toml or FORGE.rhai found",
+		));
+	}
+	LoadedWorkspace {
+		graph,
+		decls,
+		dependencies,
+		requirements,
+		candidates,
+		imported_lock,
+		diagnostics: sink,
+	}
 }
 
 #[cfg(test)]
@@ -363,8 +453,171 @@ mod tests {
 	fn graph_for(dir: &Path, active: &forge_core::Platform) -> BuildGraph {
 		let config = crate::workspace::WorkspaceConfig::load(dir).unwrap();
 		let packages = crate::discover::discover_packages(dir, &config.discovery).unwrap();
-		let (graph, ..) = load_workspace(dir, &packages, active, &BTreeMap::new(), &[]);
-		graph
+		let ws = load_workspace(dir, &packages, active, &BTreeMap::new(), &[], &config.cell);
+		ws.graph
+	}
+
+	#[test]
+	fn resolution_context_reaches_bootstrap_and_packages() {
+		let dir = fixture("resolution-context");
+		let script = r#"if !resolving_dependencies { throw "not resolving"; } binary(http_get(cell_config.name), #{});"#;
+		let scripts = vec![("demo".into(), script.into())];
+		let config = crate::workspace::WorkspaceConfig::parse("[cell.demo]\nname = \"bootstrap\"\n").unwrap();
+		let file = dir.join("FORGE.rhai");
+		std::fs::write(
+			&file,
+			r#"if !resolving_dependencies { throw "not resolving"; } binary(http_get("package"), #{});"#,
+		)
+		.unwrap();
+		let packages = vec![PackageSource {
+			package: String::new(),
+			file,
+		}];
+		let context = crate::rhai_rt::ResolutionContext {
+			http_get: Some(std::rc::Rc::new(|url| Ok(url.to_string()))),
+		};
+		let platform = forge_core::Platform::host();
+		let platforms = BTreeMap::new();
+		let ws = load_workspace_resolving(&dir, &packages, &platform, &platforms, &scripts, &config.cell, &context);
+		assert!(ws.diagnostics.is_empty(), "{:?}", ws.diagnostics);
+		assert!(ws.graph.get(&Label::new("", "bootstrap")).is_some());
+		assert!(ws.graph.get(&Label::new("", "package")).is_some());
+		let ws = load_workspace(&dir, &packages, &platform, &platforms, &scripts, &config.cell);
+		assert_eq!(ws.diagnostics.len(), 2);
+		assert!(ws.diagnostics.iter().all(|error| error.to_string().contains("not resolving")));
+		std::fs::remove_dir_all(dir).unwrap();
+	}
+
+	#[test]
+	fn bootstrap_targets_use_cell_config_and_wire_root_declarations() {
+		let dir = fixture("bootstrap");
+		let packages = vec![PackageSource {
+			package: String::new(),
+			file: dir.join("FORGE.toml"),
+		}];
+		let config = crate::workspace::WorkspaceConfig::parse("[cell.demo]\nname = \"boot\"\n").unwrap();
+		let scripts = vec![(
+			"demo".into(),
+			r#"rule(cell_config.name, #{ command: "run", deps: ["app"], inputs: ["app.c"] });"#.into(),
+		)];
+		let LoadedWorkspace {
+			graph,
+			decls,
+			imported_lock,
+			diagnostics,
+			..
+		} = load_workspace(
+			&dir,
+			&packages,
+			&forge_core::Platform::host(),
+			&BTreeMap::new(),
+			&scripts,
+			&config.cell,
+		);
+		assert!(diagnostics.is_empty(), "{diagnostics:?}");
+		assert!(imported_lock.is_none());
+		let boot = graph.get(&Label::new("", "boot")).unwrap();
+		let app = graph.get(&Label::new("", "app")).unwrap();
+		assert!(graph.dependencies_of(boot).contains(&app));
+		assert_eq!(decls["//:boot"].resolved_inputs, vec![PathBuf::from("app.c")]);
+		std::fs::remove_dir_all(dir).unwrap();
+	}
+
+	#[test]
+	fn bootstrap_only_workspace_and_empty_package_discovery() {
+		let dir = fixture("bootstrap-only");
+		std::fs::remove_file(dir.join("FORGE.toml")).unwrap();
+		let config = crate::workspace::WorkspaceConfig::load(&dir).unwrap();
+		let packages = crate::discover::discover_packages(&dir, &config.discovery).unwrap();
+		assert!(packages.is_empty());
+		let scripts = vec![("demo".into(), r#"binary("boot", #{});"#.into())];
+		let ws = load_workspace(
+			&dir,
+			&packages,
+			&forge_core::Platform::host(),
+			&BTreeMap::new(),
+			&scripts,
+			&config.cell,
+		);
+		assert!(ws.diagnostics.is_empty(), "{:?}", ws.diagnostics);
+		assert_eq!(ws.graph.node_count(), 1);
+		let ws = load_workspace(
+			&dir,
+			&packages,
+			&forge_core::Platform::host(),
+			&BTreeMap::new(),
+			&[],
+			&config.cell,
+		);
+		assert!(ws.diagnostics.iter().any(|d| d.to_string().contains("no targets registered")));
+		std::fs::write(dir.join("FORGE.rhai"), "").unwrap();
+		let packages = crate::discover::discover_packages(&dir, &config.discovery).unwrap();
+		let ws = load_workspace(
+			&dir,
+			&packages,
+			&forge_core::Platform::host(),
+			&BTreeMap::new(),
+			&[],
+			&config.cell,
+		);
+		assert!(ws.diagnostics.is_empty(), "{:?}", ws.diagnostics);
+		std::fs::remove_dir_all(dir).unwrap();
+	}
+
+	#[test]
+	fn imported_authority_rejects_conflicts_package_claims_and_solver_inputs() {
+		let dir = fixture("authority");
+		let first = ("first".into(), r#"imported_lock("external.lock");"#.into());
+		let second = ("second".into(), r#"imported_lock("other.lock");"#.into());
+		let LoadedWorkspace {
+			imported_lock: authority,
+			diagnostics,
+			..
+		} = load_workspace(
+			&dir,
+			&[],
+			&forge_core::Platform::host(),
+			&BTreeMap::new(),
+			&[first.clone(), second],
+			&BTreeMap::new(),
+		);
+		assert_eq!(authority.as_deref(), Some("external.lock"));
+		assert!(
+			diagnostics
+				.iter()
+				.any(|d| d.to_string().contains("conflicting imported lock"))
+		);
+		let path = dir.join("FORGE.rhai");
+		let packages = vec![PackageSource {
+			package: String::new(),
+			file: path.clone(),
+		}];
+		for (script, expected) in [
+			(r#"imported_lock("external.lock");"#, "only be declared by a workspace cell"),
+			(
+				r#"dependency_require("demo", "1.0.0", "2.0.0");"#,
+				"solver requirements and candidates",
+			),
+			(
+				r#"dependency_candidate("demo", "1.0.0", "https://example.invalid/demo", "sha", []);"#,
+				"solver requirements and candidates",
+			),
+		] {
+			std::fs::write(&path, script).unwrap();
+			let LoadedWorkspace { diagnostics, .. } = load_workspace(
+				&dir,
+				&packages,
+				&forge_core::Platform::host(),
+				&BTreeMap::new(),
+				std::slice::from_ref(&first),
+				&BTreeMap::new(),
+			);
+			assert!(
+				diagnostics.iter().any(|d| d.to_string().contains(expected)),
+				"{diagnostics:?}"
+			);
+		}
+		std::fs::remove_dir_all(dir).unwrap();
 	}
 
 	#[test]

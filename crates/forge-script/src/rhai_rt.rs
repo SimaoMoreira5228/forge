@@ -9,12 +9,20 @@ use serde_json::Value as Json;
 use crate::document::{FieldsBuilder, TargetDecl, TargetKind};
 use crate::glob;
 
+pub type MetadataFetcher = Rc<dyn Fn(&str) -> Result<String, String>>;
+
+#[derive(Clone, Default)]
+pub struct ResolutionContext {
+	pub http_get: Option<MetadataFetcher>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ScriptOutput {
 	pub targets: Vec<TargetDecl>,
 	pub dependencies: Vec<forge_core::DependencyRequest>,
 	pub requirements: Vec<forge_core::DependencyRequirement>,
 	pub candidates: Vec<forge_core::PackageCandidate>,
+	pub imported_lock: Option<String>,
 }
 
 pub fn run_forge_rhai(
@@ -22,6 +30,26 @@ pub fn run_forge_rhai(
 	package_dir: &Path,
 	platform: &forge_core::Platform,
 ) -> Result<ScriptOutput, ForgeDiagnostic> {
+	run_forge_rhai_configured(script, package_dir, platform, &toml::Table::new())
+}
+
+pub fn run_forge_rhai_configured(
+	script: &str,
+	package_dir: &Path,
+	platform: &forge_core::Platform,
+	config: &toml::Table,
+) -> Result<ScriptOutput, ForgeDiagnostic> {
+	run_forge_rhai_resolving(script, package_dir, platform, config, &ResolutionContext::default())
+}
+
+pub fn run_forge_rhai_resolving(
+	script: &str,
+	package_dir: &Path,
+	platform: &forge_core::Platform,
+	config: &toml::Table,
+	resolution: &ResolutionContext,
+) -> Result<ScriptOutput, ForgeDiagnostic> {
+	let imported = Rc::new(RefCell::new(None::<String>));
 	let decls: Rc<RefCell<Vec<TargetDecl>>> = Rc::new(RefCell::new(Vec::new()));
 	let dependencies = Rc::new(RefCell::new(Vec::new()));
 	let requirements = Rc::new(RefCell::new(Vec::new()));
@@ -33,9 +61,30 @@ pub fn run_forge_rhai(
 	register_glob(&mut engine, package_dir);
 	register_platform(&mut engine, platform);
 	register_io(&mut engine, package_dir);
+	let http_get = resolution.http_get.clone();
+	engine.register_fn("http_get", move |url: &str| -> Result<String, Box<EvalAltResult>> {
+		let fetch = http_get
+			.as_ref()
+			.ok_or("http_get is only available during explicit dependency resolution")?;
+		fetch(url).map_err(Into::into)
+	});
 
+	let claim = imported.clone();
+	engine.register_fn("imported_lock", move |origin: &str| -> Result<(), Box<EvalAltResult>> {
+		if origin.is_empty() || claim.borrow().as_ref().is_some_and(|current| current != origin) {
+			return Err("conflicting or empty imported lock authority".into());
+		}
+		*claim.borrow_mut() = Some(origin.to_string());
+		Ok(())
+	});
+	let mut scope = rhai::Scope::new();
+	scope.push_constant("resolving_dependencies", resolution.http_get.is_some());
+	scope.push_dynamic(
+		"cell_config",
+		toml_value_to_dynamic(toml::Value::Table(config.clone())).map_err(|e| ForgeDiagnostic::error(101, e))?,
+	);
 	engine
-		.eval::<()>(script)
+		.eval_with_scope::<()>(&mut scope, script)
 		.map_err(|e| ForgeDiagnostic::error(101, format!("rhai error: {e}")).with_source("FORGE.rhai", script))?;
 
 	Ok(ScriptOutput {
@@ -43,6 +92,7 @@ pub fn run_forge_rhai(
 		dependencies: dependencies.borrow().clone(),
 		requirements: requirements.borrow().clone(),
 		candidates: candidates.borrow().clone(),
+		imported_lock: imported.borrow().clone(),
 	})
 }
 
@@ -143,7 +193,7 @@ fn json_to_dynamic(value: serde_json::Value) -> Dynamic {
 	}
 }
 
-fn toml_value_to_dynamic(value: toml::Value) -> Result<Dynamic, String> {
+pub(crate) fn toml_value_to_dynamic(value: toml::Value) -> Result<Dynamic, String> {
 	Ok(match value {
 		toml::Value::String(s) => Dynamic::from(s),
 		toml::Value::Integer(i) => Dynamic::from(i),
@@ -339,6 +389,46 @@ fn build_decl(kind: TargetKind, name: &str, fields: Map) -> Result<TargetDecl, F
 }
 
 fn apply_dynamic(builder: &mut FieldsBuilder, key: &str, value: &Dynamic) -> Result<(), ForgeDiagnostic> {
+	fn metadata_value(value: Dynamic) -> Result<toml::Value, ForgeDiagnostic> {
+		if let Some(map) = value.clone().try_cast::<Map>() {
+			let table = map
+				.into_iter()
+				.map(|(k, v)| Ok((k.to_string(), metadata_value(v)?)))
+				.collect::<Result<toml::Table, ForgeDiagnostic>>()?;
+			return Ok(toml::Value::Table(table));
+		}
+		if let Some(list) = value.clone().try_cast::<rhai::Array>() {
+			return Ok(toml::Value::Array(
+				list.into_iter().map(metadata_value).collect::<Result<_, _>>()?,
+			));
+		}
+		if let Ok(v) = value.as_bool() {
+			return Ok(toml::Value::Boolean(v));
+		}
+		if let Ok(v) = value.as_int() {
+			return Ok(toml::Value::Integer(v));
+		}
+		if let Ok(v) = value.as_float() {
+			return Ok(toml::Value::Float(v));
+		}
+		if let Ok(v) = value.into_string() {
+			return Ok(toml::Value::String(v));
+		}
+		Err(ForgeDiagnostic::error(
+			103,
+			"metadata values must be strings, numbers, booleans, arrays, or maps",
+		))
+	}
+
+	builder.check(key)?;
+	if key == "metadata" {
+		if !value.is::<Map>() {
+			return Err(ForgeDiagnostic::error(103, "field `metadata` expects a map"));
+		}
+		if let toml::Value::Table(table) = metadata_value(value.clone())? {
+			return builder.metadata(table);
+		}
+	}
 	if let Some(map) = value.clone().try_cast::<Map>() {
 		if key == "env" {
 			for (k, v) in map {
@@ -422,6 +512,50 @@ fn apply_dynamic(builder: &mut FieldsBuilder, key: &str, value: &Dynamic) -> Res
 
 fn diag_to_box(d: ForgeDiagnostic) -> Box<EvalAltResult> {
 	d.to_string().into()
+}
+
+#[test]
+fn resolution_callback_is_opt_in_and_propagates_results() {
+	let platform = forge_core::Platform::host();
+	let config = toml::Table::new();
+	let script = r#"if resolving_dependencies { throw "unexpected resolution"; }"#;
+	run_forge_rhai(script, Path::new("."), &platform).unwrap();
+	run_forge_rhai_configured(script, Path::new("."), &platform, &config).unwrap();
+	let script = r#"http_get("https://example.invalid/metadata");"#;
+	let error =
+		run_forge_rhai_resolving(script, Path::new("."), &platform, &config, &ResolutionContext::default()).unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("only available during explicit dependency resolution")
+	);
+	let calls = Rc::new(RefCell::new(Vec::new()));
+	let sink = calls.clone();
+	let context = ResolutionContext {
+		http_get: Some(Rc::new(move |url| {
+			sink.borrow_mut().push(url.to_string());
+			if url == "failure" {
+				Err("callback failed".into())
+			} else {
+				Ok("payload".into())
+			}
+		})),
+	};
+	let script = r#"if !resolving_dependencies { throw "not resolving"; } binary(http_get("metadata"), #{});"#;
+	let output = run_forge_rhai_resolving(script, Path::new("."), &platform, &config, &context.clone()).unwrap();
+	assert_eq!(output.targets[0].name, "payload");
+	let error =
+		run_forge_rhai_resolving(r#"http_get("failure");"#, Path::new("."), &platform, &config, &context).unwrap_err();
+	assert!(error.to_string().contains("callback failed"));
+	assert_eq!(*calls.borrow(), ["metadata", "failure"]);
+	assert!(
+		run_forge_rhai(
+			r#"let resolving_dependencies = true; http_get("metadata");"#,
+			Path::new("."),
+			&platform
+		)
+		.is_err()
+	);
 }
 
 #[test]

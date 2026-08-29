@@ -2,8 +2,8 @@ use super::*;
 
 fn hooks() -> CellHooks {
 	CellHooks {
-		obj_path: Box::new(|src| format!("forge-out/obj/{src}.o")),
-		prior_depfile_headers: Box::new(|_| vec![]),
+		artifact_path: Box::new(|src, category| Ok(format!("forge-out/{category}/{src}"))),
+		depfile_inputs: Box::new(|_| Ok(vec![])),
 		lib_path: Box::new(|filename| format!("forge-out/lib/modules.a/{filename}")),
 		bin: Box::new(|name| format!("/tools/bin/{name}")),
 		tool_id: Box::new(|| "gcc@abc123".into()),
@@ -38,34 +38,49 @@ const MINIMAL_CELL: &str = r#"
                 command: ctx.bin("cc"),
                 args: ["-c", ctx.srcs[0]],
                 inputs: ctx.srcs,
-                outputs: [ctx.obj_path(ctx.srcs[0])],
+                outputs: [ctx.artifact_path(ctx.srcs[0], "obj") + ".o"],
             });
         }
     "#;
 
 #[test]
-fn platform_matches_binding() {
+fn rust_cell_owns_target_predicates() {
+	let cell = crate::std_cells::cell_script("rust").unwrap();
 	let mut engine = rhai::Engine::new();
-	register_platform_matches(&mut engine);
-	let mut profile = Map::new();
-	profile.insert("is_debug".into(), Dynamic::from(true));
-	let mut ctx = Map::new();
-	ctx.insert("platform_os".into(), Dynamic::from("linux".to_string()));
-	ctx.insert("platform_arch".into(), Dynamic::from("x86_64".to_string()));
-	ctx.insert("platform_abi".into(), Dynamic::from("gnu".to_string()));
-	ctx.insert("profile".into(), Dynamic::from(profile));
-	let mut scope = rhai::Scope::new();
-	scope.push("ctx", ctx);
-	assert!(
-		!engine
-			.eval_with_scope::<bool>(&mut scope, "ctx.platform_matches(\"cfg(windows)\")")
-			.unwrap()
-	);
-	assert!(
-		engine
-			.eval_with_scope::<bool>(&mut scope, "ctx.platform_matches(\"x86_64-unknown-linux-gnu\")")
-			.unwrap()
-	);
+	engine.set_max_expr_depths(128, 128);
+	let checks = r#"
+let ctx = #{ platform_os: "linux", platform_arch: "x86_64", platform_abi: "gnu", profile: #{ is_debug: true } };
+for sample in [
+    ["cfg(windows)", false], ["cfg(unix)", true], ["cfg(debug_assertions)", true],
+    ["cfg(target_os = \"linux\")", true], ["cfg(target_os = \"lin ux\")", false],
+    ["cfg(target_arch = \"aarch64\")", false], ["cfg(target_pointer_width = \"64\")", true],
+    ["cfg(all(any(target_os = \"linux\", target_os = \"android\"), not(any(all(target_os = \"linux\", target_env = \"\"), getrandom_backend = \"custom\"))))", true],
+    ["cfg(all())", true], ["cfg(any())", false], ["cfg(all(unix,))", true],
+    ["x86_64-unknown-linux-gnu", true], ["x86_64-pc-windows-msvc", false]
+] {
+    if rust_cfg_matches(ctx, sample[0]) != sample[1] { throw `incorrect cfg result: ${sample}`; }
+}
+for expression in ["cfg(not())", "cfg(not(unix, windows))", "cfg(all(unix)", "cfg(unix))", "cfg(all(,unix))", "cfg(target_os = linux)", "cfg(target_os = \"linux)", "cfg(unix windows)", "cfg(foo(unix))"] {
+    let rejected = false;
+    try { rust_cfg_matches(ctx, expression); } catch { rejected = true; }
+    if !rejected { throw `accepted invalid cfg: ${expression}`; }
+}
+ctx.platform_os = "darwin";
+if !rust_cfg_matches(ctx, "cfg(all(target_os = \"macos\", target_vendor = \"apple\"))") { throw "Darwin mapping failed"; }
+ctx.platform_os = "windows";
+if !rust_cfg_matches(ctx, "cfg(all(windows, not(unix), target_family = \"windows\"))") { throw "Windows mapping failed"; }
+ctx.platform_os = "linux";
+let manifest = #{ target: #{ "cfg(windows)": #{ dependencies: #{ win: "1" } }, "cfg(unix)": #{ dependencies: #{ posix: "1" } } } };
+if active_dep_names(ctx, manifest) != ["posix"] { throw "target dependency filtering failed"; }
+"#;
+	engine.eval::<()>(&format!("{cell}\n{checks}")).unwrap();
+	let error = lower(
+		"fn build(ctx) { ctx.platform_matches(\"cfg(unix)\"); }",
+		&component(),
+		hooks(),
+	)
+	.unwrap_err();
+	assert!(error.to_string().contains("Function not found: platform_matches"), "{error}");
 }
 
 #[test]
@@ -148,7 +163,12 @@ fn workspace_root_requests_reads_members() {
 		crate::rhai_rt::toml_decode(text).map_err(Into::into)
 	});
 	let mut scope = rhai::Scope::new();
-	scope.push("ctx", Map::new());
+	let mut ctx = Map::new();
+	ctx.insert(
+		"cell_config".into(),
+		Dynamic::from(rhai::Map::from_iter([("mode".into(), Dynamic::from("cargo".to_string()))])),
+	);
+	scope.push("ctx", ctx);
 	let tail = r#"
 let requests = workspace_root_requests(ctx);
 let has_clap = requests.contains("clap");
@@ -344,6 +364,83 @@ fn prebuilt_map_works() {
 	let actions = lower(script, &component(), hooks()).unwrap();
 	assert_eq!(actions.len(), 1);
 	assert_eq!(actions[0].outputs, vec![("out.txt".to_string(), false)]);
+}
+
+#[test]
+fn artifact_and_depfile_callbacks_receive_exact_arguments() {
+	let mut hooks = hooks();
+	hooks.artifact_path = Box::new(|source, category| {
+		assert_eq!((source, category), ("lib/math.c", "custom"));
+		Ok("forge-out/custom/stem".into())
+	});
+	hooks.depfile_inputs = Box::new(|path| {
+		assert_eq!(path, "forge-out/custom/stem.dependencies");
+		Ok(vec!["missing.unusual".into(), "extensionless".into()])
+	});
+	let actions = lower(
+		r#"
+		fn build(ctx) {
+			let stem = ctx.artifact_path(ctx.srcs[0], "custom");
+			ctx.action(#{ name: "generic", command: "tool", outputs: [stem + ".xyz"],
+				inputs: ctx.depfile_inputs(stem + ".dependencies") });
+		}
+	"#,
+		&component(),
+		hooks,
+	)
+	.unwrap();
+	assert_eq!(actions[0].inputs, ["missing.unusual", "extensionless"]);
+	assert_eq!(actions[0].outputs, [("forge-out/custom/stem.xyz".into(), false)]);
+}
+
+#[test]
+fn artifact_and_depfile_callback_errors_reach_the_cell() {
+	for method in ["artifact_path(ctx.srcs[0], \"obj\")", "depfile_inputs(\"explicit.d\")"] {
+		let mut hooks = hooks();
+		hooks.artifact_path = Box::new(|_, _| Err("invalid artifact fragment".into()));
+		hooks.depfile_inputs = Box::new(|_| Err("cannot read depfile".into()));
+		let error = lower(&format!("fn build(ctx) {{ ctx.{method}; }}"), &component(), hooks).unwrap_err();
+		assert!(
+			error.to_string().contains(if method.starts_with("artifact") {
+				"invalid artifact fragment"
+			} else {
+				"cannot read depfile"
+			}),
+			"{error}"
+		);
+	}
+}
+
+#[test]
+fn c_cell_owns_coverage_directory_and_suffixes() {
+	for coverage in [false, true] {
+		let mut view = component();
+		view.profile.coverage = coverage;
+		view.compiler = "gcc".into();
+		let mut hooks = hooks();
+		hooks.artifact_path = Box::new(move |source, category| {
+			assert_eq!(source, "lib/math.c");
+			assert_eq!(category, if coverage { "profile" } else { "obj" });
+			Ok(format!("forge-out/{category}/a.o/stem"))
+		});
+		let prefix = if coverage { "profile" } else { "obj" };
+		hooks.depfile_inputs = Box::new(move |path| {
+			assert_eq!(path, format!("forge-out/{prefix}/a.o/stem.o.d"));
+			Ok(vec![])
+		});
+		let actions = lower(crate::std_cells::cell_script("c").unwrap(), &view, hooks).unwrap();
+		let mut outputs = vec![
+			format!("forge-out/{prefix}/a.o/stem.o"),
+			format!("forge-out/{prefix}/a.o/stem.o.d"),
+		];
+		if coverage {
+			outputs.push(format!("forge-out/{prefix}/a.o/stem.gcno"));
+		}
+		assert_eq!(
+			actions[0].outputs,
+			outputs.into_iter().map(|p| (p, false)).collect::<Vec<_>>()
+		);
+	}
 }
 
 #[test]

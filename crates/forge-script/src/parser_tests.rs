@@ -146,6 +146,93 @@ fn unknown_field_inside_target_overlay_is_rejected() {
 }
 
 #[test]
+fn metadata_preserves_nested_and_inline_values() {
+	let nested = r#"
+[binary.app.metadata]
+literal = "${not_interpolated}"
+enabled = true
+count = 7
+ratio = 1.5
+created = 2026-09-17T12:00:00Z
+mixed = ["text", 2, false, [3]]
+empty = {}
+[binary.app.metadata.options]
+name = "value"
+[[binary.app.metadata.entries]]
+name = "first"
+[[binary.app.metadata.entries]]
+name = "second"
+"#;
+	let inline = r#"
+[binary.app]
+metadata = { literal = "${not_interpolated}", enabled = true, count = 7, ratio = 1.5, created = 2026-09-17T12:00:00Z, mixed = ["text", 2, false, [3]], empty = {}, options = { name = "value" }, entries = [{ name = "first" }, { name = "second" }] }
+"#;
+	let nested = parse_forge_toml(nested).unwrap().remove(0);
+	let inline = parse_forge_toml(inline).unwrap().remove(0);
+	assert_eq!(nested.metadata, inline.metadata);
+	assert!(nested.fields_set.contains("metadata"));
+	assert!(inline.fields_set.contains("metadata"));
+	assert_eq!(nested.metadata["literal"].as_str(), Some("${not_interpolated}"));
+	assert_eq!(nested.metadata["enabled"].as_bool(), Some(true));
+	assert_eq!(nested.metadata["count"].as_integer(), Some(7));
+	assert_eq!(nested.metadata["ratio"].as_float(), Some(1.5));
+	assert!(nested.metadata["created"].is_datetime());
+	assert_eq!(nested.metadata["options"]["name"].as_str(), Some("value"));
+	assert_eq!(nested.metadata["entries"][1]["name"].as_str(), Some("second"));
+	assert!(nested.env.is_empty());
+}
+
+#[test]
+fn metadata_defaults_and_allowed_kinds() {
+	for kind in ["library", "binary", "test", "rule"] {
+		let command = if kind == "rule" { "command = \"run\"\n" } else { "" };
+		let text = format!("[{kind}.app]\n{command}");
+		let decl = parse_forge_toml(&text).unwrap().remove(0);
+		assert!(decl.metadata.is_empty());
+		assert!(!decl.fields_set.contains("metadata"));
+		let decl = parse_forge_toml(&format!("{text}metadata = {{}}\n")).unwrap().remove(0);
+		assert!(decl.metadata.is_empty());
+		assert!(decl.fields_set.contains("metadata"));
+	}
+}
+
+#[test]
+fn metadata_wrong_types_and_unknown_ordinary_keys_are_rejected() {
+	for value in ["\"text\"", "1", "1.5", "true", "[]", "[{ value = 1 }]"] {
+		let err = parse_forge_toml(&format!("[binary.app]\nmetadata = {value}\n")).unwrap_err();
+		assert!(format!("{err}").contains("field `metadata` expects a table"));
+	}
+	let err = parse_forge_toml("[[binary.app.metadata]]\nvalue = 1\n").unwrap_err();
+	assert!(format!("{err}").contains("field `metadata` expects a table"));
+	for value in ["\"text\"", "1", "true", "[]", "{ value = \"text\" }"] {
+		let err = parse_forge_toml(&format!("[test.app]\nmetadata = {{}}\nordinary = {value}\n")).unwrap_err();
+		assert!(format!("{err}").contains("unknown key `ordinary`"));
+	}
+}
+
+#[test]
+fn metadata_overlays_replace_instead_of_merge() {
+	let active = forge_core::Platform {
+		os: "linux".into(),
+		arch: "x86_64".into(),
+		abi: None,
+		cpu: None,
+	};
+	for (overlay, expected) in [
+		("metadata = { nested = { new = true } }", "nested = { new = true }"),
+		("metadata = {}", ""),
+		("flags = []", "base = true\nnested = { old = true }"),
+	] {
+		let text = format!(
+			"[binary.app]\nmetadata = {{ base = true, nested = {{ old = true }} }}\n[binary.app.target.\"os=linux\"]\n{overlay}\n"
+		);
+		let mut decl = parse_forge_toml(&text).unwrap().remove(0);
+		decl.apply_platform_overrides(&active, &Default::default());
+		assert_eq!(decl.metadata, toml::from_str::<toml::Table>(expected).unwrap());
+	}
+}
+
+#[test]
 fn empty_target_table_is_rejected() {
 	let err = parse_forge_toml("[binary.a]\nsrcs=[\"a.c\"]\n\n[binary.a.target]\n").unwrap_err();
 	assert!(format!("{err}").contains("no platform matchers"));
