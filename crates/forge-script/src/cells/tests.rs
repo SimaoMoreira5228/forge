@@ -23,8 +23,8 @@ fn component() -> ComponentView {
 		workspace: "/workspace".into(),
 		profile: ProfileView {
 			name: "debug".into(),
-			opt_level: 0,
-			debug: true,
+			opt_level: "0".into(),
+			debug: "full".into(),
 			..Default::default()
 		},
 		..Default::default()
@@ -81,6 +81,70 @@ if active_dep_names(ctx, manifest) != ["posix"] { throw "target dependency filte
 	)
 	.unwrap_err();
 	assert!(error.to_string().contains("Function not found: platform_matches"), "{error}");
+}
+
+#[test]
+fn rust_profile_args_translate_optimization_settings() {
+	let cell = crate::std_cells::cell_script("rust").unwrap();
+	let mut engine = rhai::Engine::new();
+	engine.set_max_expr_depths(128, 128);
+	let checks = r#"
+let empty = #{};
+let debug_profile = #{ opt_level: "0", "debug": "full", lto: "off", strip: "none", options: empty };
+if rust_crate_profile_args(debug_profile, true) != ["-C", "opt-level=0", "-C", "debuginfo=2"] { throw "wrong debug args"; }
+if rust_profile_args(#{ profile: debug_profile }) != ["-C", "opt-level=0", "-C", "debuginfo=2"] { throw "wrong ctx debug args"; }
+let release = #{ opt_level: "3", "debug": "none", lto: "fat", strip: "symbols", options: empty };
+if rust_crate_profile_args(release, true) != ["-C", "opt-level=3", "-C", "debuginfo=0", "-C", "lto", "-C", "strip=symbols"] { throw "wrong release args"; }
+if rust_crate_profile_args(release, false) != ["-C", "opt-level=3", "-C", "debuginfo=0"] { throw "wrong host release args"; }
+let size = #{ opt_level: "z", "debug": "line-tables-only", lto: "thin", strip: "debuginfo", options: empty };
+if rust_crate_profile_args(size, true) != ["-C", "opt-level=z", "-C", "debuginfo=line-tables-only", "-C", "lto=thin", "-C", "strip=debuginfo"] { throw "wrong size args"; }
+let host = #{ opt_level: "0", "debug": "limited", lto: "off", strip: "none", options: empty };
+let with_build = #{ opt_level: "3", "debug": "none", lto: "off", strip: "none", options: empty, build: host };
+if rust_host_profile(#{ profile: with_build }) != host { throw "build override not selected"; }
+if rust_host_profile(#{ profile: release }) != release { throw "main profile not used without override"; }
+let options = #{ "codegen-units": 1, "panic": "abort", "overflow-checks": false, "split-debuginfo": "packed", "rustflags": ["-C", "target-cpu=native"] };
+let option_args = rust_crate_profile_args(#{ opt_level: "3", "debug": "none", lto: "off", strip: "none", options: options }, true);
+let expected = ["-C", "opt-level=3", "-C", "debuginfo=0", "-C", "codegen-units=1", "-C", "panic=abort", "-C", "overflow-checks=off", "-C", "split-debuginfo=packed", "-C", "target-cpu=native"];
+if option_args != expected { throw `wrong option args: ${option_args}`; }
+"#;
+	engine.eval::<()>(&format!("{cell}\n{checks}")).unwrap();
+}
+
+#[test]
+fn rust_cell_resolves_build_and_linked_dependencies() {
+	let cell = crate::std_cells::cell_script("rust").unwrap();
+	let mut engine = rhai::Engine::new();
+	engine.set_max_expr_depths(128, 128);
+	engine.set_max_call_levels(128);
+	let checks = r#"
+let ctx = #{ platform_os: "linux", platform_arch: "x86_64", platform_abi: "gnu", profile: #{ is_debug: true } };
+let manifest = #{
+    "build-dependencies": #{ cc: "1" },
+    "target": #{ "cfg(unix)": #{ "build-dependencies": #{ "pkg-config": "1" } } },
+};
+let sections = active_build_sections(ctx, manifest);
+if sections.len() != 2 { throw `expected 2 build sections, got ${sections.len()}`; }
+let meta = #{
+    "aws-lc-sys@0.45.0": #{
+        src: #{ name: "aws-lc-sys", version: "0.45.0" },
+        manifest: #{ "package": #{ links: "aws_lc_0_45_0" } },
+        active: true,
+        artifact: "forge-out/lib/deps/libaws_lc_sys.rlib",
+    },
+    "zeroize@1.8.1": #{
+        src: #{ name: "zeroize", version: "1.8.1" },
+        manifest: #{ "package": #{} },
+        active: true,
+        artifact: "forge-out/lib/deps/libzeroize.rlib",
+    },
+};
+let dep_manifest = #{ dependencies: #{ "aws-lc-sys": #{ optional: true }, zeroize: "1" } };
+let linked = linked_dependencies(ctx, meta, dep_manifest);
+if linked.len() != 1 { throw `expected 1 linked dependency, got ${linked.len()}`; }
+if linked[0].links != "aws_lc_0_45_0" { throw `wrong links: ${linked[0].links}`; }
+if linked[0].dir != "forge-out/build/aws-lc-sys-0.45.0" { throw `wrong dir: ${linked[0].dir}`; }
+"#;
+	engine.eval::<()>(&format!("{cell}\n{checks}")).unwrap();
 }
 
 #[test]
@@ -441,6 +505,25 @@ fn c_cell_owns_coverage_directory_and_suffixes() {
 			outputs.into_iter().map(|p| (p, false)).collect::<Vec<_>>()
 		);
 	}
+}
+
+#[test]
+fn c_cell_picks_lto_aware_archiver() {
+	for (compiler, expected) in [("gcc", "/tools/bin/gcc-ar"), ("clang", "/tools/bin/llvm-ar")] {
+		let mut view = component();
+		view.kind = "library".into();
+		view.compiler = compiler.into();
+		view.profile.lto = "fat".into();
+		let actions = lower(crate::std_cells::cell_script("c").unwrap(), &view, hooks()).unwrap();
+		let archive = actions.iter().find(|action| action.name.starts_with("archive ")).unwrap();
+		assert_eq!(archive.command, expected, "{compiler}");
+	}
+	let mut view = component();
+	view.kind = "library".into();
+	view.compiler = "gcc".into();
+	let actions = lower(crate::std_cells::cell_script("c").unwrap(), &view, hooks()).unwrap();
+	let archive = actions.iter().find(|action| action.name.starts_with("archive ")).unwrap();
+	assert_eq!(archive.command, "/tools/bin/ar");
 }
 
 #[test]

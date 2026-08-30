@@ -28,11 +28,14 @@ struct CellEntry {
 	fallback_toolchains: Vec<String>,
 	#[serde(default)]
 	standard: String,
+	#[serde(default)]
+	resolve: bool,
 }
 
 pub struct StdCells {
 	scripts: BTreeMap<String, String>,
 	workspace_scripts: Vec<(String, String)>,
+	resolve_scripts: Vec<(String, String)>,
 	ext_to_cell: BTreeMap<String, String>,
 	toolchain_map: BTreeMap<String, Vec<String>>,
 	standard_map: BTreeMap<String, String>,
@@ -81,6 +84,11 @@ impl StdCells {
 				.iter()
 				.map(|(name, script)| (name.to_string(), script.to_string()))
 				.collect(),
+			resolve_scripts: EMBEDDED_WORKSPACE_SCRIPTS
+				.iter()
+				.filter(|(name, _)| manifest.cells.get(*name).is_some_and(|entry| entry.resolve))
+				.map(|(name, script)| (name.to_string(), script.to_string()))
+				.collect(),
 			ext_to_cell,
 			toolchain_map,
 			standard_map,
@@ -89,6 +97,10 @@ impl StdCells {
 
 	pub fn workspace_scripts(&self) -> &[(String, String)] {
 		&self.workspace_scripts
+	}
+
+	pub fn resolve_scripts(&self) -> &[(String, String)] {
+		&self.resolve_scripts
 	}
 
 	pub fn get(&self, cell: &str) -> Result<&String, ForgeDiagnostic> {

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use forge_core::Profile;
+use forge_core::{DebugInfo, Lto, OptLevel, Profile, Strip};
 use forge_diagnostics::{ForgeDiagnostic, codes};
 use serde::Deserialize;
 
@@ -186,24 +186,24 @@ impl WorkspaceConfig {
 		struct RawProfile {
 			#[serde(default)]
 			inherits: Option<String>,
-			#[serde(default = "default_opt")]
-			opt_level: u8,
 			#[serde(default)]
-			debug: bool,
+			opt_level: Option<OptLevel>,
 			#[serde(default)]
-			lto: bool,
+			debug: Option<DebugInfo>,
 			#[serde(default)]
-			strip: bool,
+			lto: Option<Lto>,
 			#[serde(default)]
-			coverage: bool,
+			strip: Option<Strip>,
 			#[serde(default)]
-			defines: Vec<String>,
+			coverage: Option<bool>,
 			#[serde(default)]
-			sanitizers: Vec<String>,
-		}
-
-		fn default_opt() -> u8 {
-			0
+			defines: Option<Vec<String>>,
+			#[serde(default)]
+			sanitizers: Option<Vec<String>>,
+			#[serde(default)]
+			options: Option<toml::Table>,
+			#[serde(default)]
+			build: Option<Box<RawProfile>>,
 		}
 
 		#[derive(Deserialize)]
@@ -259,37 +259,69 @@ impl WorkspaceConfig {
 		}
 
 		let mut profiles: BTreeMap<String, Profile> = BTreeMap::new();
-		for (name, p) in raw.profile {
-			let base = match (&p.inherits, name.as_str()) {
-				(Some(parent), _) => profiles.get(parent).cloned().ok_or_else(|| {
-					ForgeDiagnostic::error(
-						codes::script::WRONG_TYPE,
-						format!("profile `{name}` inherits unknown profile `{parent}`"),
-					)
-				})?,
-				(None, "debug") => Profile::debug(),
-				(None, _) => Profile::debug(),
-			};
-			let overlay = Profile {
-				name: name.clone(),
-				opt_level: p.opt_level,
-				debug: p.debug,
-				lto: p.lto,
-				strip: p.strip,
-				defines: p.defines.clone(),
-				sanitizers: p.sanitizers.clone(),
-				coverage: p.coverage,
-			};
-			profiles.insert(name, overlay.inherited_from(&base));
-		}
-		if !profiles.contains_key("debug") {
-			profiles.insert("debug".into(), Profile::debug());
+		profiles.insert("debug".into(), Profile::debug());
+		profiles.insert("release".into(), Profile::release());
+		let overlay = |name: String, p: &RawProfile, base: &Profile| Profile {
+			name,
+			opt_level: p.opt_level.unwrap_or(base.opt_level),
+			debug: p.debug.unwrap_or(base.debug),
+			lto: p.lto.unwrap_or(base.lto),
+			strip: p.strip.unwrap_or(base.strip),
+			coverage: p.coverage.unwrap_or(base.coverage),
+			defines: p.defines.clone().unwrap_or_default(),
+			sanitizers: p.sanitizers.clone().unwrap_or_default(),
+			options: p.options.clone().unwrap_or_default(),
+			build: None,
+		};
+		let mut pending: Vec<(String, RawProfile)> = raw.profile.into_iter().collect();
+		while !pending.is_empty() {
+			let mut deferred = Vec::new();
+			let mut resolved_any = false;
+			for (name, p) in pending {
+				let base = match &p.inherits {
+					Some(parent) => match profiles.get(parent) {
+						Some(base) => base.clone(),
+						None => {
+							deferred.push((name, p));
+							continue;
+						}
+					},
+					None if name == "release" => Profile::release(),
+					None => Profile::debug(),
+				};
+				let mut profile = overlay(name.clone(), &p, &base);
+				if let Some(build) = &p.build {
+					if build.inherits.is_some() {
+						return Err(ForgeDiagnostic::error(
+							codes::script::WRONG_TYPE,
+							format!("profile `{name}` build override cannot inherit"),
+						));
+					}
+					profile.build = Some(Box::new(overlay(format!("{name}.build"), build, &Profile::debug())));
+				}
+				profiles.insert(name, profile.inherited_from(&base));
+				resolved_any = true;
+			}
+			if !resolved_any {
+				let (name, p) = &deferred[0];
+				return Err(ForgeDiagnostic::error(
+					codes::script::WRONG_TYPE,
+					format!(
+						"profile `{name}` inherits unknown profile `{}`",
+						p.inherits.as_deref().unwrap_or("")
+					),
+				));
+			}
+			pending = deferred;
 		}
 		profiles.entry("coverage".into()).or_insert_with(|| Profile {
 			name: "coverage".into(),
 			coverage: true,
 			..Profile::debug()
 		});
+		profiles
+			.entry("test".into())
+			.or_insert_with(|| Profile::named("test", &Profile::debug()));
 
 		let mut platforms = BTreeMap::new();
 		for (name, pl) in raw.platforms {
@@ -472,6 +504,75 @@ mod tests {
 			}
 		}
 		assert!(WorkspaceConfig::parse("[deps]\nmax_request = 20\n").is_err());
+	}
+
+	#[test]
+	fn builtin_profiles_and_inheritance_keep_unset_settings() {
+		use forge_core::{DebugInfo, Lto, OptLevel, Strip};
+
+		use super::WorkspaceConfig;
+
+		let config = WorkspaceConfig::parse("").unwrap();
+		assert_eq!(config.profiles["debug"].opt_level, OptLevel::Off);
+		assert_eq!(config.profiles["debug"].debug, DebugInfo::Full);
+		let release = &config.profiles["release"];
+		assert_eq!(release.opt_level, OptLevel::Aggressive);
+		assert_eq!(release.debug, DebugInfo::None);
+		assert_eq!(release.lto, Lto::Off);
+		assert_eq!(release.strip, Strip::Symbols);
+		assert_eq!(release.defines, vec!["NDEBUG"]);
+		for builtin in ["debug", "release", "coverage", "test"] {
+			assert!(config.profiles.contains_key(builtin), "missing {builtin}");
+		}
+
+		let config = WorkspaceConfig::parse("[profile.release]\nopt_level = 2\n").unwrap();
+		let release = &config.profiles["release"];
+		assert_eq!(release.opt_level, OptLevel::Default);
+		assert_eq!(release.debug, DebugInfo::None);
+		assert_eq!(release.lto, Lto::Off);
+		assert_eq!(release.strip, Strip::Symbols);
+
+		let config = WorkspaceConfig::parse("[profile.asan]\ninherits = \"debug\"\nsanitizers = [\"address\"]\n").unwrap();
+		let asan = &config.profiles["asan"];
+		assert_eq!(asan.debug, DebugInfo::Full);
+		assert_eq!(asan.opt_level, OptLevel::Off);
+		assert_eq!(asan.sanitizers, vec!["address"]);
+
+		let config = WorkspaceConfig::parse(
+			"[profile.release]\nlto = \"thin\"\nstrip = \"debuginfo\"\n[profile.release.options]\ncodegen-units = 1\npanic = \"abort\"\n[profile.release.build]\nopt_level = 0\ndebug = 1\n",
+		)
+		.unwrap();
+		let release = &config.profiles["release"];
+		assert_eq!(release.lto, Lto::Thin);
+		assert_eq!(release.strip, Strip::Debuginfo);
+		assert_eq!(release.options["codegen-units"].as_integer(), Some(1));
+		assert_eq!(release.options["panic"].as_str(), Some("abort"));
+		let build = release.build.as_ref().expect("build override");
+		assert_eq!(build.opt_level, OptLevel::Off);
+		assert_eq!(build.debug, DebugInfo::Limited);
+		assert!(
+			config
+				.profiles
+				.values()
+				.all(|profile| profile.build.is_none() || profile.name == "release")
+		);
+	}
+
+	#[test]
+	fn invalid_profile_values_are_rejected() {
+		use super::WorkspaceConfig;
+
+		for text in [
+			"[profile.x]\nopt_level = 9\n",
+			"[profile.x]\nopt_level = \"fast\"\n",
+			"[profile.x]\ndebug = \"loud\"\n",
+			"[profile.x]\nlto = \"maybe\"\n",
+			"[profile.x]\nstrip = \"everything\"\n",
+			"[profile.asan]\ninherits = \"missing\"\n",
+			"[profile.release]\n[profile.release.build]\ninherits = \"release\"\n",
+		] {
+			assert!(WorkspaceConfig::parse(text).is_err(), "accepted: {text}");
+		}
 	}
 
 	#[test]

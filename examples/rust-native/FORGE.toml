@@ -1,0 +1,20 @@
+[library.math]
+visibility = "public"
+srcs       = ["src/lib.rs"]
+
+[binary.app]
+deps = ["math"]
+srcs = ["src/main.rs"]
+
+[binary.app.metadata.rust.dependencies.blake3]
+range = { min = "1.8", max = "2" }
+
+[binary.app.metadata.rust.dependencies.aws-lc-rs]
+range = { min = "1.18", max = "2" }
+
+[test.math_unit]
+srcs = ["src/lib.rs"]
+
+[test.math_integration]
+deps = ["math"]
+srcs = ["tests/integration.rs"]

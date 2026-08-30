@@ -1,0 +1,12 @@
+[project]
+name = "rust-native"
+
+[discovery]
+include = ["."]
+
+[toolchains.rust]
+from = "version"
+version = "1.98.0"
+
+[cell.rust]
+mode = "native"

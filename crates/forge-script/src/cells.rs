@@ -50,6 +50,7 @@ pub struct ComponentView {
 	pub profile: ProfileView,
 	pub metadata: toml::Table,
 	pub cell_config: toml::Table,
+	pub targets: Vec<toml::Table>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -63,13 +64,32 @@ pub struct FetchedSource {
 #[derive(Debug, Clone, Default)]
 pub struct ProfileView {
 	pub name: String,
-	pub opt_level: i64,
-	pub debug: bool,
-	pub lto: bool,
-	pub strip: bool,
+	pub opt_level: String,
+	pub debug: String,
+	pub lto: String,
+	pub strip: String,
 	pub coverage: bool,
 	pub defines: Vec<String>,
 	pub sanitizers: Vec<String>,
+	pub options: toml::Table,
+	pub build: Option<Box<ProfileView>>,
+}
+
+impl From<&forge_core::Profile> for ProfileView {
+	fn from(profile: &forge_core::Profile) -> Self {
+		Self {
+			name: profile.name.clone(),
+			opt_level: profile.opt_level.as_str().into(),
+			debug: profile.debug.as_str().into(),
+			lto: profile.lto.as_str().into(),
+			strip: profile.strip.as_str().into(),
+			coverage: profile.coverage,
+			defines: profile.defines.clone(),
+			sanitizers: profile.sanitizers.clone(),
+			options: profile.options.clone(),
+			build: profile.build.as_deref().map(|build| Box::new(ProfileView::from(build))),
+		}
+	}
 }
 
 type ArtifactPath = Box<dyn Fn(&str, &str) -> Result<String, String>>;
@@ -90,6 +110,7 @@ pub fn lower(script: &str, component: &ComponentView, hooks: CellHooks) -> Resul
 	let actions: std::rc::Rc<std::cell::RefCell<Vec<ActionDecl>>> = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
 	let mut engine = rhai::Engine::new();
 	engine.set_max_expr_depths(128, 128);
+	engine.set_max_call_levels(128);
 
 	register_emitters(&mut engine, &actions);
 	register_helpers(&mut engine, component, hooks);
@@ -253,19 +274,33 @@ fn context_map(component: &ComponentView) -> Map {
 			crate::rhai_rt::toml_value_to_dynamic(toml::Value::Table(table.clone())).expect("valid TOML value"),
 		);
 	}
+	let targets: rhai::Array = component
+		.targets
+		.iter()
+		.map(|table| crate::rhai_rt::toml_value_to_dynamic(toml::Value::Table(table.clone())).expect("valid TOML value"))
+		.collect();
+	ctx.insert("targets".into(), Dynamic::from(targets));
 	ctx
 }
 
 fn profile_to_map(profile: &ProfileView) -> Map {
 	let mut m = Map::new();
 	insert_str(&mut m, "name", &profile.name);
-	m.insert("opt_level".into(), Dynamic::from(profile.opt_level));
-	m.insert("is_debug".into(), Dynamic::from(profile.debug));
-	m.insert("lto".into(), Dynamic::from(profile.lto));
-	m.insert("strip".into(), Dynamic::from(profile.strip));
+	insert_str(&mut m, "opt_level", &profile.opt_level);
+	insert_str(&mut m, "debug", &profile.debug);
+	m.insert("is_debug".into(), Dynamic::from(profile.debug != "none"));
+	insert_str(&mut m, "lto", &profile.lto);
+	insert_str(&mut m, "strip", &profile.strip);
 	m.insert("coverage".into(), Dynamic::from(profile.coverage));
 	insert_list(&mut m, "defines", &profile.defines);
 	insert_list(&mut m, "sanitizers", &profile.sanitizers);
+	m.insert(
+		"options".into(),
+		crate::rhai_rt::toml_value_to_dynamic(toml::Value::Table(profile.options.clone())).expect("valid TOML value"),
+	);
+	if let Some(build) = &profile.build {
+		m.insert("build".into(), Dynamic::from(profile_to_map(build)));
+	}
 	m
 }
 

@@ -49,6 +49,28 @@ pub fn run_forge_rhai_resolving(
 	config: &toml::Table,
 	resolution: &ResolutionContext,
 ) -> Result<ScriptOutput, ForgeDiagnostic> {
+	run_forge_rhai_inner(script, package_dir, platform, config, resolution, None)
+}
+
+pub fn run_forge_rhai_resolve(
+	script: &str,
+	package_dir: &Path,
+	platform: &forge_core::Platform,
+	config: &toml::Table,
+	resolution: &ResolutionContext,
+	targets: &[toml::Table],
+) -> Result<ScriptOutput, ForgeDiagnostic> {
+	run_forge_rhai_inner(script, package_dir, platform, config, resolution, Some(targets))
+}
+
+fn run_forge_rhai_inner(
+	script: &str,
+	package_dir: &Path,
+	platform: &forge_core::Platform,
+	config: &toml::Table,
+	resolution: &ResolutionContext,
+	targets: Option<&[toml::Table]>,
+) -> Result<ScriptOutput, ForgeDiagnostic> {
 	let imported = Rc::new(RefCell::new(None::<String>));
 	let decls: Rc<RefCell<Vec<TargetDecl>>> = Rc::new(RefCell::new(Vec::new()));
 	let dependencies = Rc::new(RefCell::new(Vec::new()));
@@ -56,6 +78,7 @@ pub fn run_forge_rhai_resolving(
 	let candidates = Rc::new(RefCell::new(Vec::new()));
 	let mut engine = rhai::Engine::new();
 	engine.set_max_expr_depths(128, 128);
+	engine.set_max_call_levels(128);
 
 	register_collectors(&mut engine, &decls, &dependencies, &requirements, &candidates);
 	register_glob(&mut engine, package_dir);
@@ -83,6 +106,15 @@ pub fn run_forge_rhai_resolving(
 		"cell_config",
 		toml_value_to_dynamic(toml::Value::Table(config.clone())).map_err(|e| ForgeDiagnostic::error(101, e))?,
 	);
+	if let Some(targets) = targets {
+		let array: rhai::Array = targets
+			.iter()
+			.map(|target| {
+				toml_value_to_dynamic(toml::Value::Table(target.clone())).map_err(|e| ForgeDiagnostic::error(101, e))
+			})
+			.collect::<Result<_, _>>()?;
+		scope.push_dynamic("targets", Dynamic::from(array));
+	}
 	engine
 		.eval_with_scope::<()>(&mut scope, script)
 		.map_err(|e| ForgeDiagnostic::error(101, format!("rhai error: {e}")).with_source("FORGE.rhai", script))?;

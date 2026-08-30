@@ -39,7 +39,16 @@ fn collect_requests(section, requests) {
 
 fn workspace_root_requests(ctx) {
     let requests = #{};
-    if rust_mode(ctx["cell_config"]) == "native" || rust_metadata(ctx)["manifest"] != () {
+    if rust_mode(ctx["cell_config"]) == "native" {
+        for metadata in ctx.targets {
+            let rust = metadata["rust"];
+            if rust == () || rust.type_of() != "map" || rust["manifest"] != () { continue; }
+            let deps = rust["dependencies"];
+            if deps != () { requests = collect_requests(deps, requests); }
+        }
+        return requests;
+    }
+    if rust_metadata(ctx)["manifest"] != () {
         for section in active_dep_sections(ctx, workspace_crate_manifest(ctx)) {
             requests = collect_requests(section, requests);
         }
@@ -173,28 +182,53 @@ fn dependency_artifacts(meta, dep_keys) {
     artifacts
 }
 
-fn build_dependency_externs(meta, manifest) {
+fn build_dependency_externs(ctx, meta, manifest) {
     let externs = [];
-    let section = manifest["build-dependencies"];
-    if section == () { return externs; }
-    for name in section.keys() {
-        let spec = section[name];
-        let package_name = if spec.type_of() == "map" && spec["package"] != () { spec["package"] } else { name };
-        for key in meta.keys() {
-            let src = meta[key]["src"];
-            if meta[key]["active"] == false || src.name != package_name { continue; }
-            let extern_name = name;
-            extern_name.replace("-", "_");
-            let dep_manifest = meta[key]["manifest"];
-            let links = if dep_manifest["package"] == () || dep_manifest["package"]["links"] == () { "" } else { dep_manifest["package"]["links"] };
-            externs.push(#{
-                name: extern_name,
-                path: meta[key]["artifact"],
-                links: links,
-                dir: `forge-out/build/${src.name}-${src.version}`,
-            });
-            break;
+    for section in active_build_sections(ctx, manifest) {
+        for name in section.keys() {
+            let spec = section[name];
+            let package_name = if spec.type_of() == "map" && spec["package"] != () { spec["package"] } else { name };
+            for key in meta.keys() {
+                let src = meta[key]["src"];
+                if meta[key]["active"] == false || src.name != package_name { continue; }
+                let extern_name = name;
+                extern_name.replace("-", "_");
+                let dep_manifest = meta[key]["manifest"];
+                let links = if dep_manifest["package"] == () || dep_manifest["package"]["links"] == () { "" } else { dep_manifest["package"]["links"] };
+                externs.push(#{
+                    name: extern_name,
+                    path: meta[key]["artifact"],
+                    links: links,
+                    dir: `forge-out/build/${src.name}-${src.version}`,
+                });
+                break;
+            }
         }
     }
     externs
+}
+
+fn linked_dependencies(ctx, meta, manifest) {
+    let deps = [];
+    for section in active_dep_sections(ctx, manifest) {
+        for name in section.keys() {
+            let spec = section[name];
+            let package_name = if spec.type_of() == "map" && spec["package"] != () { spec["package"] } else { name };
+            for key in meta.keys() {
+                let src = meta[key]["src"];
+                if meta[key]["active"] == false || src.name != package_name { continue; }
+                let dep_manifest = meta[key]["manifest"];
+                let links = if dep_manifest["package"] == () || dep_manifest["package"]["links"] == () { "" } else { dep_manifest["package"]["links"] };
+                if links != "" {
+                    deps.push(#{
+                        name: name,
+                        links: links,
+                        dir: `forge-out/build/${src.name}-${src.version}`,
+                    });
+                }
+                break;
+            }
+        }
+    }
+    deps
 }

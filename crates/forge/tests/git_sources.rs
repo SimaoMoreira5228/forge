@@ -65,9 +65,9 @@ fn git_dependency_is_fetched_and_patch_git_redirects_it() {
 	)
 	.unwrap();
 	std::fs::write(
-		ws.join("FORGE.rhai"),
+		ws.join("FORGE.toml"),
 		format!(
-			"dependency_git(\"dep\", \"1.0.0\", \"{url_a}\", \"{rev_a}\");\nbinary(\"app\", #{{ srcs: [\"src/main.rs\"] }});\n"
+			"[binary.app]\nsrcs = [\"src/main.rs\"]\n\n[binary.app.metadata.rust.dependencies.dep]\nversion = \"1.0.0\"\ngit = \"{url_a}\"\nrev = \"{rev_a}\"\n"
 		),
 	)
 	.unwrap();

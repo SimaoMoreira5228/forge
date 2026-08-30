@@ -13,7 +13,7 @@ pub use graph::component::{Component, ComponentId, ComponentKind, LinkType, Visi
 pub use graph::edge::{DependencyDecl, DependencyEdge};
 pub use label::Label;
 pub use platform::{ConfigTransition, Platform};
-pub use profile::Profile;
+pub use profile::{DebugInfo, Lto, OptLevel, Profile, Strip};
 pub use resolver::{
 	DependencyRequest, DependencyRequirement, LockedSource, PackageCandidate, ResolveError, ResolvedGraph, ResolvedPackage,
 	Version, VersionRange, solve,

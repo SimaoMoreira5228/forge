@@ -28,9 +28,8 @@ fn local_patch_sources_a_dependency_from_the_workspace() {
 	)
 	.unwrap();
 	std::fs::write(
-		dir.join("FORGE.rhai"),
-		"dependency_require(\"dep\", \"1.0.0\", \"2.0.0\");\n\
-		 binary(\"app\", #{ srcs: [\"src/main.rs\"] });\n",
+		dir.join("FORGE.toml"),
+		"[binary.app]\nsrcs = [\"src/main.rs\"]\n\n[binary.app.metadata.rust.dependencies.dep]\nrange = { min = \"1.0.0\", max = \"2.0.0\" }\n",
 	)
 	.unwrap();
 	std::fs::write(

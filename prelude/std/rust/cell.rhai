@@ -28,22 +28,27 @@ fn build(ctx) {
             let direct = adjacency[key];
             let transitive = graph_transitive(adjacency, key);
             let enabled = features[key];
-            let pkg_name = crate_name(#{ name: src.name });
+            let lib = manifest["lib"];
+            let lib_name = if lib != () && lib["name"] != () { lib["name"] } else { src.name };
+            let pkg_name = crate_name(#{ name: lib_name });
             let source_edition = meta[key]["edition"];
-            let crate_type = if manifest["lib"] != () && manifest["lib"]["proc-macro"] == true { "proc-macro" } else { "lib" };
-            let crate_root = `${src.root}/src/lib.rs`;
+            let crate_type = if lib != () && lib["proc-macro"] == true { "proc-macro" } else { "lib" };
+            let crate_path = if lib != () && lib["path"] != () { lib["path"] } else { "src/lib.rs" };
+            let crate_root = `${src.root}/${crate_path}`;
             let out = meta[key]["artifact"];
             let args = ["--crate-type", crate_type, "--crate-name", pkg_name, "--edition", source_edition, "-C", `metadata=${pkg_name}-${src.version}`, "--remap-path-prefix", "FORGE_EXEC_ROOT=", "-L", "dependency=forge-out/lib/deps"];
             if crate_type == "proc-macro" {
                 args.push("--extern");
                 args.push("proc_macro");
             }
-            args += feature_cfg_args(manifest, enabled);
+            let profile_args = if crate_type == "proc-macro" { rust_crate_profile_args(rust_host_profile(ctx), false) } else { rust_profile_args(ctx) };
+            args += feature_cfg_args(manifest, enabled) + profile_args;
             let package_files = ctx.glob(`${src.root}/**/*`);
             let inputs = package_files + dependency_artifacts(meta, transitive);
             let execution_deps = dependency_artifacts(meta, direct);
-            let build_deps = build_dependency_externs(meta, manifest);
-            let build_output = emit_build_script(ctx, rustc, manifest, enabled, src.root, src.name, src.version, source_edition, build_deps, package_files, dependency_artifacts(meta, transitive));
+            let build_deps = build_dependency_externs(ctx, meta, manifest);
+            let link_deps = linked_dependencies(ctx, meta, manifest);
+            let build_output = emit_build_script(ctx, rustc, manifest, enabled, src.root, src.name, src.version, source_edition, build_deps, link_deps, package_files, dependency_artifacts(meta, transitive));
             if build_output != "" {
                 execution_deps.push(build_output);
             }
@@ -80,16 +85,24 @@ fn build(ctx) {
     }
 
     let crate_manifest = workspace_crate_manifest(ctx);
+    let direct = active_dependency_names(ctx, crate_manifest);
+    let extern_keys = [];
+    for src in ctx.fetched_sources {
+        let key = dependency_key(src);
+        if !direct.contains(src.name) { continue; }
+        if !extern_keys.contains(key) { extern_keys.push(key); }
+        for reached in graph_transitive(info["adjacency"], key) {
+            if !extern_keys.contains(reached) { extern_keys.push(reached); }
+        }
+    }
     let external_inputs = [];
     let external_externs = [];
     let external_names = [];
     for src in ctx.fetched_sources {
         let key = dependency_key(src);
-        if meta[key]["active"] == false { continue; }
+        if !extern_keys.contains(key) { continue; }
         let out = meta[key]["artifact"];
         external_inputs.push(out);
-        let entry = dependency_entry(ctx, crate_manifest, src.name);
-        if rust_mode(ctx["cell_config"]) == "cargo" && entry == () { continue; }
         let crate_n = dependency_crate_name(ctx, crate_manifest, src.name, crate_name(#{ name: src.name }));
         if external_names.contains(crate_n) { throw `multiple locked versions for direct dependency ${crate_n}; select explicitly in a future importer milestone`; }
         external_names.push(crate_n);
@@ -116,7 +129,7 @@ fn build(ctx) {
         if crate_manifest["features"] == () || crate_manifest["features"]["default"] == () { [] } else { crate_manifest["features"]["default"] }
     } else { rust_metadata(ctx)["enabled_features"] });
     let package_files = ctx.srcs + ctx.hdrs;
-    let build_output = emit_build_script(ctx, rustc, crate_manifest, crate_features, crate_root_dir, ctx.name, crate_version, edition, build_dependency_externs(meta, crate_manifest), package_files, ctx.hdrs + external_inputs);
+    let build_output = emit_build_script(ctx, rustc, crate_manifest, crate_features, crate_root_dir, ctx.name, crate_version, edition, build_dependency_externs(ctx, meta, crate_manifest), linked_dependencies(ctx, meta, crate_manifest), package_files, ctx.hdrs + external_inputs);
     if build_output != "" {
         crate_env = merge_env(crate_env, #{ "OUT_DIR": `FORGE_EXEC_ROOT/${build_output}` });
     }
@@ -150,7 +163,7 @@ fn build(ctx) {
         }
         let out = ctx.lib_path(`lib${ctx.name}.rlib`);
         let args = ["--crate-type", "lib", "--crate-name", name, "--edition", edition, "-C", `metadata=${name}-${ctx.profile.name}`, "-L", "dependency=forge-out/lib", "--remap-path-prefix", "FORGE_EXEC_ROOT=", "-L", "dependency=forge-out/lib/deps"];
-        args += dependency_search_args(ctx) + feature_cfg_args(crate_manifest, crate_features) + ctx.flags;
+        args += dependency_search_args(ctx) + feature_cfg_args(crate_manifest, crate_features) + rust_profile_args(ctx) + ctx.flags;
         for dep in ctx.dep_artifacts {
             args.push("--extern");
             args.push(`${workspace_extern_name(ctx, dep[0])}=${dep[1]}`);
@@ -177,7 +190,8 @@ fn build(ctx) {
     let out_dir = if ctx.kind == "test" { "forge-out/test" } else { "forge-out/bin" };
     let exe = `${out_dir}/${ctx.profile.name}/${ctx.name}`;
     let args = ["--crate-type", "bin", "--crate-name", name, "--edition", edition, "-C", `metadata=${name}-${ctx.profile.name}`, "-L", "dependency=forge-out/lib", "--remap-path-prefix", "FORGE_EXEC_ROOT=", "-L", "dependency=forge-out/lib/deps"];
-    args += dependency_search_args(ctx) + feature_cfg_args(crate_manifest, crate_features) + ctx.flags;
+    if ctx.kind == "test" { args.push("--test"); }
+    args += dependency_search_args(ctx) + feature_cfg_args(crate_manifest, crate_features) + rust_profile_args(ctx) + ctx.flags;
     for dep in ctx.dep_artifacts {
         args.push("--extern");
         args.push(`${workspace_extern_name(ctx, dep[0])}=${dep[1]}`);
@@ -205,7 +219,8 @@ fn build(ctx) {
             name: "run " + ctx.label,
             command: outputs[0],
             args: ctx.run_args,
-            inputs: outputs + ctx.data,
+            inputs: ctx.data,
+            execution_deps: outputs,
             outputs: [],
             env: crate_env,
             toolchain_id: "",

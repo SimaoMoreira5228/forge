@@ -45,6 +45,18 @@ fn ar_for(ctx) {
     path;
 }
 
+fn lto_archiver(ctx) {
+    let compiler = if ctx.srcs.len() > 0 { compiler_for(ctx, ctx.srcs[0]) } else { "" };
+    let candidates = if compiler.contains("clang") { ["llvm-ar", "gcc-ar", "ar"] } else { ["gcc-ar", "ar"] };
+    for name in candidates {
+        let path = ctx.bin(name);
+        if path != "" {
+            return path;
+        }
+    }
+    throw `toolchain provides no LTO-capable archiver`;
+}
+
 fn linker_for(ctx) {
     if ctx.linker != "" {
         return ctx.linker;
@@ -69,10 +81,24 @@ fn linker_for(ctx) {
     throw `toolchain provides no linker`;
 }
 
+fn opt_flag(level) {
+    if level == "s" { "-Os" }
+    else if level == "z" { "-Oz" }
+    else { `-O${level}` }
+}
+
+fn debug_flag(info) {
+    if info == "full" { "-g" }
+    else if info == "limited" { "-g1" }
+    else if info == "line-tables-only" { "-gline-tables-only" }
+    else { "" }
+}
+
 fn profile_args(c, llvm) {
-    let args = [`-O${c.profile.opt_level}`, "-ffile-prefix-map=FORGE_EXEC_ROOT=."];
-    if c.profile.is_debug {
-        args.push("-g");
+    let args = [opt_flag(c.profile.opt_level), "-ffile-prefix-map=FORGE_EXEC_ROOT=."];
+    let info = debug_flag(c.profile["debug"]);
+    if info != "" {
+        args.push(info);
     }
     for san in c.profile.sanitizers {
         args.push(`-fsanitize=${san}`);
@@ -85,9 +111,8 @@ fn profile_args(c, llvm) {
             args.push("--coverage");
         }
     }
-    if c.profile.lto {
-        args.push("-flto");
-    }
+    if c.profile.lto == "thin" { args.push("-flto=thin"); }
+    else if c.profile.lto == "fat" { args.push("-flto"); }
     for define in c.profile.defines {
         args.push(`-D${define}`);
     }
@@ -153,10 +178,12 @@ fn compile_one(ctx, src, module_flags) {
 
 fn archive_one(ctx, objs) {
     let out = ctx.lib_path(`lib${ctx.name}.a`);
+    let lto = ctx.profile.lto == "thin" || ctx.profile.lto == "fat";
+    let archiver = if lto { lto_archiver(ctx) } else { ar_for(ctx) };
 
     ctx.action(#{
         name: `archive ${ctx.label}`,
-        command: ar_for(ctx),
+        command: archiver,
         args: ["rcsD", out] + objs,
         inputs: ctx.hdrs,
         execution_deps: objs,

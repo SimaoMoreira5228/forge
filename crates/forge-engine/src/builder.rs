@@ -94,9 +94,9 @@ impl Engine {
 		let LoadedWorkspace {
 			graph,
 			decls,
-			dependencies,
-			requirements,
-			candidates,
+			mut dependencies,
+			mut requirements,
+			mut candidates,
 			imported_lock,
 			mut diagnostics,
 		} = load_workspace_resolving(
@@ -108,6 +108,28 @@ impl Engine {
 			&config.cell,
 			resolution,
 		);
+
+		if imported_lock.is_none() {
+			let targets: Vec<toml::Table> = decls.values().map(|decl| decl.metadata.clone()).collect();
+			for (cell, script) in cells.resolve_scripts() {
+				let cell_config = config.cell.get(cell).cloned().unwrap_or_default();
+				match forge_script::rhai_rt::run_forge_rhai_resolve(
+					script,
+					&self.workspace,
+					&platform,
+					&cell_config,
+					resolution,
+					&targets,
+				) {
+					Ok(output) => {
+						dependencies.extend(output.dependencies);
+						requirements.extend(output.requirements);
+						candidates.extend(output.candidates);
+					}
+					Err(error) => diagnostics.push(error),
+				}
+			}
+		}
 
 		if let Err(visibility_errors) = graph.check_visibility() {
 			diagnostics.extend(visibility_errors);

@@ -226,10 +226,7 @@ fn cargo_workspace_builds_members_with_normal_aliased_path_dependency() {
 
 #[test]
 fn native_dependencies_lock_sync_and_build_without_cargo_metadata() {
-	let dir = workspace(
-		"native-dependencies",
-		"mode = \"native\"\n[cell.rust.dependencies.answer]\nversion = \"1.0.0\"\nsource = \"https://example.invalid/answer.tar.gz\"\nchecksum = \"fixture\"",
-	);
+	let dir = workspace("native-dependencies", "mode = \"native\"");
 	install_toolchain_link(&dir);
 	let root = std::fs::read_to_string(dir.join("FORGE_ROOT")).unwrap();
 	std::fs::write(
@@ -239,7 +236,11 @@ fn native_dependencies_lock_sync_and_build_without_cargo_metadata() {
 	.unwrap();
 	std::fs::create_dir_all(dir.join("vendor/answer/src")).unwrap();
 	std::fs::write(dir.join("vendor/answer/src/lib.rs"), "pub fn answer() -> u32 { 42 }\n").unwrap();
-	std::fs::write(dir.join("FORGE.toml"), "[binary.app]\nsrcs = [\"src/main.rs\"]\n").unwrap();
+	std::fs::write(
+		dir.join("FORGE.toml"),
+		"[binary.app]\nsrcs = [\"src/main.rs\"]\n\n[binary.app.metadata.rust.dependencies.answer]\nversion = \"1.0.0\"\nsource = \"https://example.invalid/answer.tar.gz\"\nchecksum = \"fixture\"\n",
+	)
+	.unwrap();
 	std::fs::write(dir.join("src/main.rs"), "fn main() { println!(\"{}\", answer::answer()); }\n").unwrap();
 	for args in [&["deps", "lock"][..], &["deps", "sync"]] {
 		let (ok, log) = run_forge(&dir, args);
@@ -298,13 +299,100 @@ fn unknown_rust_mode_is_rejected_before_toolchain_resolution() {
 }
 
 #[test]
-fn cargo_mode_rejects_native_dependency_configuration() {
+fn unknown_cell_rust_key_is_rejected() {
 	let dir = workspace("mixed-modes", "mode = \"cargo\"\ndependencies = {}");
 	let (ok, log) = run_forge(&dir, &["build"]);
-	assert!(!ok, "mixed dependency modes must fail: {log}");
+	assert!(!ok, "unknown cell key must fail: {log}");
+	assert!(log.contains("unknown cell.rust key: dependencies"), "wrong diagnostic: {log}");
+	std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_dependency_with_custom_lib_path_builds() {
+	let dir = workspace("custom-lib-path", "mode = \"native\"");
+	install_toolchain_link(&dir);
+	let root = std::fs::read_to_string(dir.join("FORGE_ROOT")).unwrap();
+	std::fs::write(
+		dir.join("FORGE_ROOT"),
+		format!("{root}\n[patch.local.answer]\npath = \"vendor/answer\"\n"),
+	)
+	.unwrap();
+	std::fs::create_dir_all(dir.join("vendor/answer/src")).unwrap();
+	std::fs::write(
+		dir.join("vendor/answer/Cargo.toml"),
+		"[package]\nname = \"answer\"\nversion = \"1.0.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/custom_entry.rs\"\n",
+	)
+	.unwrap();
+	std::fs::write(
+		dir.join("vendor/answer/src/custom_entry.rs"),
+		"pub fn answer() -> u32 { 42 }\n",
+	)
+	.unwrap();
+	std::fs::write(
+		dir.join("FORGE.toml"),
+		"[binary.app]\nsrcs = [\"src/main.rs\"]\n\n[binary.app.metadata.rust.dependencies.answer]\nversion = \"1.0.0\"\nsource = \"https://example.invalid/answer.tar.gz\"\nchecksum = \"fixture\"\n",
+	)
+	.unwrap();
+	std::fs::write(dir.join("src/main.rs"), "fn main() { println!(\"{}\", answer::answer()); }\n").unwrap();
+	for args in [&["deps", "lock"][..], &["deps", "sync"]] {
+		let (ok, log) = run_forge(&dir, args);
+		assert!(ok, "{args:?}: {log}");
+	}
+	build_and_run(&dir, "app", 2, "42\n");
+	std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn build_override_applies_to_build_scripts_but_not_targets() {
+	let dir = workspace("build-override", "mode = \"native\"");
+	install_toolchain_link(&dir);
+	let root = std::fs::read_to_string(dir.join("FORGE_ROOT")).unwrap();
+	std::fs::write(
+		dir.join("FORGE_ROOT"),
+		format!("{root}\n[profile.release.build]\nopt_level = 0\ndebug = 1\n"),
+	)
+	.unwrap();
+	std::fs::write(dir.join("build.rs"), "fn main() {}\n").unwrap();
+	std::fs::write(
+		dir.join("FORGE.toml"),
+		"[binary.app]\nsrcs = [\"src/main.rs\"]\n\n[binary.app.metadata.rust]\nbuild = true\n",
+	)
+	.unwrap();
+	std::fs::write(dir.join("src/main.rs"), "fn main() { println!(\"ok\"); }\n").unwrap();
+
+	let (_, dag) = Engine::open(&dir).plan_dag("release").expect("plan release");
+	let script = dag
+		.specs
+		.iter()
+		.find(|spec| spec.name.starts_with("rustc build script"))
+		.unwrap_or_else(|| {
+			let names: Vec<&str> = dag.specs.iter().map(|spec| spec.name.as_str()).collect();
+			panic!("build script action not found: {names:?}")
+		});
 	assert!(
-		log.contains("cell.rust.dependencies is native-only"),
-		"wrong diagnostic: {log}"
+		script.args.windows(2).any(|args| args == ["-C", "opt-level=0"]),
+		"{:?}",
+		script.args
+	);
+	assert!(
+		script.args.windows(2).any(|args| args == ["-C", "debuginfo=1"]),
+		"{:?}",
+		script.args
+	);
+	let target = dag
+		.specs
+		.iter()
+		.find(|spec| spec.name.starts_with("rustc //:app"))
+		.expect("binary action");
+	assert!(
+		target.args.windows(2).any(|args| args == ["-C", "opt-level=3"]),
+		"{:?}",
+		target.args
+	);
+	assert!(
+		!target.args.windows(2).any(|args| args == ["-C", "debuginfo=1"]),
+		"{:?}",
+		target.args
 	);
 	std::fs::remove_dir_all(dir).unwrap();
 }

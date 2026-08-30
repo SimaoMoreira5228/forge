@@ -66,10 +66,8 @@ fn rust_build_compiles_resolved_source_dependencies_with_rustc() {
 	)
 	.unwrap();
 	std::fs::write(
-		dir.join("FORGE.rhai"),
-		"dependency_require(\"dep\", \"1.0.0\", \"2.0.0\");\n\
-		 dependency_candidate(\"other\", \"1.0.0\", \"https://example.invalid/other.tar\", \"other-sha\", []);\n\
-		 binary(\"app\", #{ srcs: [\"src/main.rs\"] });\n",
+		dir.join("FORGE.toml"),
+		"[binary.app]\nsrcs = [\"src/main.rs\"]\n\n[binary.app.metadata.rust.dependencies.dep]\nrange = { min = \"1.0.0\", max = \"2.0.0\" }\n",
 	)
 	.unwrap();
 	std::fs::write(

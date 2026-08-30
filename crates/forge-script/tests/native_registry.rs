@@ -2,23 +2,47 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
-use forge_script::rhai_rt::{ResolutionContext, run_forge_rhai_configured, run_forge_rhai_resolving};
+use forge_script::rhai_rt::{ResolutionContext, run_forge_rhai_configured, run_forge_rhai_resolve};
+
+fn targets(spec: &str) -> Vec<toml::Table> {
+	vec![toml::from_str(spec).unwrap()]
+}
+
+fn resolve_ok(
+	script: &str,
+	platform: &forge_core::Platform,
+	targets: &[toml::Table],
+	resolution: &ResolutionContext,
+) -> forge_script::rhai_rt::ScriptOutput {
+	run_forge_rhai_resolve(script, Path::new("."), platform, &toml::Table::new(), resolution, targets).unwrap()
+}
+
+fn resolve_err(
+	script: &str,
+	platform: &forge_core::Platform,
+	targets: &[toml::Table],
+	resolution: &ResolutionContext,
+) -> String {
+	run_forge_rhai_resolve(script, Path::new("."), platform, &toml::Table::new(), resolution, targets)
+		.unwrap_err()
+		.to_string()
+}
+
+fn resolved_names(result: &forge_script::rhai_rt::ScriptOutput) -> Vec<String> {
+	let mut names: Vec<String> = result.candidates.iter().map(|candidate| candidate.name.clone()).collect();
+	names.sort();
+	names
+}
 
 #[test]
 fn native_sparse_resolution_and_range_subset() {
 	let script = include_str!("../../../prelude/std/rust/workspace.rhai");
-	let config: toml::Table = toml::from_str(
-		r#"mode = "native"
-[dependencies.demo]
-range = { min = "1.0", max = "2.0" }
-registry = "https://example.invalid/index/"
-"#,
-	)
-	.unwrap();
 	let platform = forge_core::Platform::host();
-	let offline = run_forge_rhai_configured(script, Path::new("."), &platform, &config).unwrap();
-	assert_eq!(offline.requirements.len(), 1);
-	assert!(offline.candidates.is_empty());
+	let demo = targets(
+		"[rust.dependencies.demo]\nrange = { min = \"1.0\", max = \"2.0\" }\nregistry = \"https://example.invalid/index/\"\n",
+	);
+	let offline = run_forge_rhai_configured(script, Path::new("."), &platform, &toml::Table::new()).unwrap();
+	assert!(offline.requirements.is_empty() && offline.candidates.is_empty());
 	let calls = Rc::new(RefCell::new(Vec::new()));
 	let observed = calls.clone();
 	let resolution = ResolutionContext {
@@ -43,7 +67,7 @@ registry = "https://example.invalid/index/"
 			}
 		})),
 	};
-	let result = run_forge_rhai_resolving(script, Path::new("."), &platform, &config, &resolution).unwrap();
+	let result = resolve_ok(script, &platform, &demo, &resolution);
 	assert_eq!(calls.borrow().len(), 5);
 	assert_eq!(calls.borrow()[0], "https://example.invalid/index/config.json");
 	assert_eq!(result.candidates.len(), 4);
@@ -78,7 +102,7 @@ for req in ["*", "1.*", "=1.2.3", ">1", "<=2", "1 || 2", "1.0-pre", "1.0+build",
     if !rejected { throw `accepted unsupported requirement: ${req}`; }
 }
 "#;
-	run_forge_rhai_configured(&format!("{script}\n{checks}"), Path::new("."), &platform, &config).unwrap();
+	run_forge_rhai_configured(&format!("{script}\n{checks}"), Path::new("."), &platform, &toml::Table::new()).unwrap();
 	let invalid = ResolutionContext {
 		http_get: Some(Rc::new(|url| {
 			if url.ends_with("/config.json") {
@@ -88,7 +112,7 @@ for req in ["*", "1.*", "=1.2.3", ">1", "<=2", "1 || 2", "1.0-pre", "1.0+build",
 			}
 		})),
 	};
-	let error = run_forge_rhai_resolving(script, Path::new("."), &platform, &config, &invalid).unwrap_err();
+	let error = resolve_err(script, &platform, &demo, &invalid);
 	assert!(error.to_string().contains("https://example.invalid/index"));
 	assert!(error.to_string().contains("unsupported Rust requirement"));
 }
@@ -117,10 +141,9 @@ fn native_registry_download_templates_and_default() {
 			"http://cdn.example.invalid:8080/de/mo/de/mo/demo/1.2.3/demo-sha/demo.crate",
 		),
 	] {
-		let config = toml::from_str(&format!(
-			"[dependencies.demo]\nrange = {{ min = '1', max = '2' }}\n{registry}"
-		))
-		.unwrap();
+		let demo = targets(&format!(
+			"[rust.dependencies.demo]\nrange = {{ min = '1', max = '2' }}\n{registry}"
+		));
 		let resolution = ResolutionContext {
 			http_get: Some(Rc::new(move |url| {
 				if url == format!("{index}/config.json") {
@@ -132,7 +155,7 @@ fn native_registry_download_templates_and_default() {
 				}
 			})),
 		};
-		let result = run_forge_rhai_resolving(script, Path::new("."), &platform, &config, &resolution).unwrap();
+		let result = resolve_ok(script, &platform, &demo, &resolution);
 		assert_eq!(result.candidates.len(), 1);
 		assert_eq!(result.candidates[0].source.as_deref(), Some(expected));
 		assert_eq!(result.candidates[0].checksum.as_deref(), Some("demo-sha"));
@@ -151,7 +174,7 @@ for sample in [["A", "1", "1"], ["AB", "2", "2"], ["AbC", "3/A", "3/a"], ["AbCdE
 fn native_registry_rejects_invalid_config_and_urls() {
 	let script = include_str!("../../../prelude/std/rust/workspace.rhai");
 	let platform = forge_core::Platform::host();
-	let config = toml::from_str("[dependencies.demo]\nrange = {}\nregistry = 'https://example.invalid/index'").unwrap();
+	let demo = targets("[rust.dependencies.demo]\nrange = {}\nregistry = 'https://example.invalid/index'");
 	for body in [
 		"not json",
 		"[]",
@@ -185,9 +208,7 @@ fn native_registry_rejects_invalid_config_and_urls() {
 				Ok(body.into())
 			})),
 		};
-		let error = run_forge_rhai_resolving(script, Path::new("."), &platform, &config, &resolution)
-			.unwrap_err()
-			.to_string();
+		let error = resolve_err(script, &platform, &demo, &resolution);
 		assert!(error.contains("config.json"), "{body}: {error}");
 		assert!(
 			error.contains("Rust registry https://example.invalid/index, crate demo"),
@@ -205,39 +226,79 @@ for url in ["https://", "http:///index", "https://user:pass@host/index", "https:
 	let missing = ResolutionContext {
 		http_get: Some(Rc::new(|url| Err(format!("not found: {url}")))),
 	};
-	let error = run_forge_rhai_resolving(script, Path::new("."), &platform, &config, &missing)
-		.unwrap_err()
-		.to_string();
+	let error = resolve_err(script, &platform, &demo, &missing);
 	assert!(error.contains("config.json") && error.contains("not found"), "{error}");
 }
 
 #[test]
-fn native_registry_rejects_optional_dependencies_until_features_are_resolved() {
+fn native_registry_activates_optional_dependencies_through_features() {
 	let script = include_str!("../../../prelude/std/rust/workspace.rhai");
-	let config = toml::from_str("[dependencies.demo]\nrange = {}\n").unwrap();
-	let resolution = ResolutionContext {
-		http_get: Some(Rc::new(|url| {
-			if url.ends_with("/config.json") {
-				Ok(r#"{"dl":"https://cdn.invalid"}"#.into())
-			} else {
-				Ok(r#"{"vers":"1.2.3","cksum":"sha","features":{"default":["dep:helper"]},"deps":[{"name":"helper","req":"^1","optional":true}]}"#.into())
-			}
-		})),
+	let platform = forge_core::Platform::host();
+	let demo = targets("[rust.dependencies.demo]\nrange = {}\n");
+	let resolution = |features: &str| {
+		let features = features.to_string();
+		ResolutionContext {
+			http_get: Some(Rc::new(move |url| {
+				if url.ends_with("/config.json") {
+					Ok(r#"{"dl":"https://cdn.invalid"}"#.into())
+				} else if url.ends_with("/de/mo/demo") {
+					Ok(format!(
+						r#"{{"vers":"1.2.3","cksum":"sha","features":{features},"deps":[{{"name":"helper","req":"^1","optional":true}},{{"name":"plain","req":"^1"}}]}}"#
+					))
+				} else if url.ends_with("/he/lp/helper") {
+					Ok(r#"{"vers":"1.0.0","cksum":"h","deps":[]}"#.into())
+				} else if url.ends_with("/pl/ai/plain") {
+					Ok(r#"{"vers":"1.0.0","cksum":"p","deps":[]}"#.into())
+				} else {
+					Err(format!("unexpected request: {url}"))
+				}
+			})),
+		}
 	};
-	let error = run_forge_rhai_resolving(script, Path::new("."), &forge_core::Platform::host(), &config, &resolution)
-		.unwrap_err()
-		.to_string();
-	assert!(
-		error.contains("optional dependency helper requires feature-aware registry resolution"),
-		"{error}"
-	);
+	let activated = resolve_ok(script, &platform, &demo, &resolution(r#"{"default":["dep:helper"]}"#));
+	assert_eq!(resolved_names(&activated), ["demo", "helper", "plain"]);
+	let inactive = resolve_ok(script, &platform, &demo, &resolution(r#"{}"#));
+	assert_eq!(resolved_names(&inactive), ["demo", "plain"]);
+}
+
+#[test]
+fn native_registry_honors_dependency_feature_requests() {
+	let script = include_str!("../../../prelude/std/rust/workspace.rhai");
+	let platform = forge_core::Platform::host();
+	let demo = targets("[rust.dependencies.demo]\nrange = {}\n");
+	let resolution = |features: &str, default_features: bool| {
+		let features = features.to_string();
+		ResolutionContext {
+			http_get: Some(Rc::new(move |url| {
+				if url.ends_with("/config.json") {
+					Ok(r#"{"dl":"https://cdn.invalid"}"#.into())
+				} else if url.ends_with("/de/mo/demo") {
+					Ok(format!(
+						r#"{{"vers":"1.2.3","cksum":"sha","deps":[{{"name":"tool","req":"^1","features":{features},"default_features":{default_features}}}]}}"#
+					))
+				} else if url.ends_with("/to/ol/tool") {
+					Ok(r#"{"vers":"1.0.0","cksum":"t","features":{"default":["dep:extra"]},"features2":{"extras":["dep:extra"]},"deps":[{"name":"extra","req":"^1","optional":true}]}"#.into())
+				} else if url.ends_with("/ex/tr/extra") {
+					Ok(r#"{"vers":"1.0.0","cksum":"e","deps":[]}"#.into())
+				} else {
+					Err(format!("unexpected request: {url}"))
+				}
+			})),
+		}
+	};
+	let default_feature = resolve_ok(script, &platform, &demo, &resolution("[]", true));
+	assert_eq!(resolved_names(&default_feature), ["demo", "extra", "tool"]);
+	let requested = resolve_ok(script, &platform, &demo, &resolution(r#"["extras"]"#, false));
+	assert_eq!(resolved_names(&requested), ["demo", "extra", "tool"]);
+	let inactive = resolve_ok(script, &platform, &demo, &resolution("[]", false));
+	assert_eq!(resolved_names(&inactive), ["demo", "tool"]);
 }
 
 #[test]
 fn native_registry_rejects_cross_registry_dependencies() {
 	let script = include_str!("../../../prelude/std/rust/workspace.rhai");
 	let platform = forge_core::Platform::host();
-	let config = toml::from_str("[dependencies.demo]\nrange = {}\nregistry = 'https://example.invalid/index'").unwrap();
+	let demo = targets("[rust.dependencies.demo]\nrange = {}\nregistry = 'https://example.invalid/index'");
 	let resolution = ResolutionContext {
 		http_get: Some(Rc::new(|url| {
 			match url {
@@ -249,8 +310,6 @@ fn native_registry_rejects_cross_registry_dependencies() {
 			}
 		})),
 	};
-	let error = run_forge_rhai_resolving(script, Path::new("."), &platform, &config, &resolution)
-		.unwrap_err()
-		.to_string();
+	let error = resolve_err(script, &platform, &demo, &resolution);
 	assert!(error.contains("unsupported cross-registry dependency"), "{error}");
 }

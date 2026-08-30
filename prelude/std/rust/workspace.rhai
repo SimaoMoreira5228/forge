@@ -2,11 +2,10 @@ fn rust_mode(config) {
     if config == () { return "native"; }
     if config.type_of() != "map" { throw "cell.rust must be a table"; }
     for key in config.keys() {
-        if !["mode", "dependencies"].contains(key) { throw `unknown cell.rust key: ${key}`; }
+        if !["mode"].contains(key) { throw `unknown cell.rust key: ${key}`; }
     }
     let mode = if config["mode"] == () { "native" } else { config["mode"] };
     if mode != "native" && mode != "cargo" { throw `unknown cell.rust mode: ${mode}`; }
-    if mode == "cargo" && config["dependencies"] != () { throw "cell.rust.dependencies is native-only"; }
     mode
 }
 
@@ -409,115 +408,321 @@ fn rust_registry_requirement(req) {
     rust_registry_range(bounds)
 }
 
+fn rust_registry_within(version, min, max) {
+    if min != "" && rust_registry_before(version, min) { return false; }
+    if max != "" && !rust_registry_before(version, max) { return false; }
+    true
+}
+
+fn rust_registry_release(entry) {
+    if entry.yanked == true { return false; }
+    let version = entry.vers;
+    if version.type_of() != "string" { return false; }
+    if version.contains("-") || version.contains("+") { return false; }
+    rust_registry_version(version);
+    true
+}
+
+fn rust_registry_choose(entries, min, max) {
+    let best = ();
+    for entry in entries {
+        if !rust_registry_release(entry) { continue; }
+        if !rust_registry_within(entry.vers, min, max) { continue; }
+        if best == () || rust_registry_before(best.vers, entry.vers) { best = entry; }
+    }
+    best
+}
+
+fn rust_registry_feature_table(entry) {
+    let table = #{};
+    for source in [entry.features, entry.features2] {
+        if source == () { continue; }
+        if source.type_of() != "map" { throw "invalid sparse index features"; }
+        for key in source.keys() {
+            let members = source[key];
+            if members.type_of() != "array" { throw `invalid sparse index feature ${key}`; }
+            if table[key] == () { table[key] = []; }
+            for member in members {
+                if member.type_of() != "string" { throw `invalid sparse index feature member for ${key}`; }
+                if !table[key].contains(member) { table[key].push(member); }
+            }
+        }
+    }
+    table
+}
+
+fn rust_registry_find_dep(entry, key) {
+    if entry.deps.type_of() != "array" { return (); }
+    for dep in entry.deps {
+        if dep.type_of() == "map" && dep.name == key { return dep; }
+    }
+    ()
+}
+
+fn rust_registry_forwarded(table, features, depkey) {
+    let forwarded = [];
+    for feature in features {
+        let members = table[feature];
+        if members == () { continue; }
+        for member in members {
+            if !member.contains("/") { continue; }
+            let parts = member.split("/");
+            let key = parts[0];
+            if key.ends_with("?") { key = key.sub_string(0, key.len() - 1); }
+            if key != depkey { continue; }
+            if !forwarded.contains(parts[1]) { forwarded.push(parts[1]); }
+        }
+    }
+    forwarded
+}
+
+fn rust_registry_config(registry, downloads) {
+    if downloads[registry] != () { return downloads[registry]; }
+    let config = ();
+    try { config = json_decode(http_get(`${registry}/config.json`)); }
+    catch (error) { throw `config.json: ${error}`; }
+    if config.type_of() != "map" { throw "config.json must be an object"; }
+    if config.contains("auth-required") && config["auth-required"].type_of() != "bool" { throw "config.json auth-required must be a boolean"; }
+    if config["auth-required"] == true { throw "unsupported config.json authentication (auth-required)"; }
+    try { rust_registry_download_url(config.dl, "crate", "1.0.0", "checksum"); }
+    catch (error) { throw `config.json dl: ${error}`; }
+    config.dl
+}
+
+fn rust_registry_index(name, registry) {
+    let lower = name.to_lower();
+    let prefix = rust_registry_prefix(lower);
+    let entries = [];
+    for line in http_get(`${registry}/${prefix}/${lower}`).split("\n") {
+        line.trim();
+        if line == "" { continue; }
+        let entry = json_decode(line);
+        if entry.type_of() != "map" { throw `invalid sparse index entry for ${name}`; }
+        entries.push(entry);
+    }
+    entries
+}
+
 fn rust_registry_candidates(pending) {
     let indexes = #{};
-    let downloads = #{};
     let registries = #{};
-    let emitted = #{};
-    let cursor = 0;
-    while cursor < pending.len() {
-        let request = pending[cursor];
-        cursor += 1;
-        let name = request.name;
-        let registry = request.registry;
-        try {
-            rust_name(name);
-            if registries[name] != () && registries[name] != registry { throw `conflicting registries for ${name}`; }
-            registries[name] = registry;
-            if downloads[registry] == () {
-                let config = ();
-                try { config = json_decode(http_get(`${registry}/config.json`)); }
-                catch (error) { throw `config.json: ${error}`; }
-                if config.type_of() != "map" { throw "config.json must be an object"; }
-                if config.contains("auth-required") && config["auth-required"].type_of() != "bool" { throw "config.json auth-required must be a boolean"; }
-                if config["auth-required"] == true { throw "unsupported config.json authentication (auth-required)"; }
-                try { rust_registry_download_url(config.dl, name, "1.0.0", "checksum"); }
-                catch (error) { throw `config.json dl: ${error}`; }
-                downloads[registry] = config.dl;
-            }
-            if indexes[name] == () {
-                let lower = name.to_lower();
-                let prefix = rust_registry_prefix(lower);
-                let entries = [];
-                for line in http_get(`${registry}/${prefix}/${lower}`).split("\n") {
-                    line.trim();
-                    if line == "" { continue; }
-                    let entry = json_decode(line);
-                    if entry.type_of() != "map" { throw `invalid sparse index entry for ${name}`; }
-                    entries.push(entry);
+    let downloads = #{};
+    let requests = #{};
+    let enabled = #{};
+    let activated = #{};
+
+    for request in pending {
+        rust_name(request.name);
+        requests[request.name] = #{
+            min: request.min,
+            max: request.max,
+            "default": if request["default"] == () { true } else { request["default"] },
+            features: if request.features == () { [] } else { request.features },
+            registry: request.registry,
+        };
+    }
+
+    let stable = false;
+    while !stable {
+        stable = true;
+        for name in requests.keys() {
+            let request = requests[name];
+            try {
+                if registries[name] != () && registries[name] != request.registry { throw `conflicting registries`; }
+                registries[name] = request.registry;
+                downloads[request.registry] = rust_registry_config(request.registry, downloads);
+                if indexes[name] == () {
+                    indexes[name] = rust_registry_index(name, request.registry);
+                    stable = false;
                 }
-                indexes[name] = entries;
-            }
-            for entry in indexes[name] {
-                if entry.yanked == true { continue; }
-                let version = entry.vers;
-                if version.type_of() != "string" { throw `missing sparse index version for ${name}`; }
-                if version.contains("-") || version.contains("+") { continue; }
-                rust_registry_version(version);
-                if request.min != "" && rust_registry_before(version, request.min) { continue; }
-                if request.max != "" && !rust_registry_before(version, request.max) { continue; }
-                let identity = `${name}@${version}`;
-                if emitted.contains(identity) { continue; }
-                let deps = [];
-                if entry.deps.type_of() != "array" { throw `invalid sparse index dependencies for ${identity}`; }
-                for dep in entry.deps {
-                    if dep.type_of() != "map" { throw `invalid sparse index dependency for ${identity}`; }
+
+                let features = if enabled[name] == () { [] } else { enabled[name] };
+                for feature in request.features {
+                    if !features.contains(feature) {
+                        features.push(feature);
+                        stable = false;
+                    }
+                }
+                if request["default"] == true && !features.contains("default") {
+                    features.push("default");
+                    stable = false;
+                }
+                let active = if activated[name] == () { [] } else { activated[name] };
+                let chosen = rust_registry_choose(indexes[name], request.min, request.max);
+                if chosen == () { enabled[name] = features; activated[name] = active; continue; }
+                let table = rust_registry_feature_table(chosen);
+
+                let index = 0;
+                while index < features.len() {
+                    let feature = features[index];
+                    index += 1;
+                    let members = table[feature];
+                    if members == () { continue; }
+                    for member in members {
+                        if member.starts_with("dep:") {
+                            let depkey = member.sub_string(4);
+                            if !active.contains(depkey) { active.push(depkey); stable = false; }
+                        } else if member.contains("/") {
+                            let parts = member.split("/");
+                            let depkey = parts[0];
+                            let weak = depkey.ends_with("?");
+                            if weak { depkey = depkey.sub_string(0, depkey.len() - 1); }
+                            let dep = rust_registry_find_dep(chosen, depkey);
+                            let already = active.contains(depkey) || (dep != () && dep.optional != true);
+                            if !weak || already {
+                                if !active.contains(depkey) { active.push(depkey); stable = false; }
+                            }
+                        } else if table[member] != () {
+                            if !features.contains(member) { features.push(member); stable = false; }
+                        } else {
+                            let dep = rust_registry_find_dep(chosen, member);
+                            if dep != () && dep.optional == true && !active.contains(member) {
+                                active.push(member);
+                                stable = false;
+                            }
+                        }
+                    }
+                }
+                enabled[name] = features;
+                activated[name] = active;
+
+                if chosen.deps.type_of() != "array" { throw `invalid sparse index dependencies`; }
+                for dep in chosen.deps {
+                    if dep.type_of() != "map" { throw `invalid sparse index dependency`; }
                     if dep.kind == "dev" { continue; }
-                    if dep.optional == true { throw `optional dependency ${dep.name} requires feature-aware registry resolution`; }
-                    if dep.registry != () && rust_registry_index_url(dep.registry) != registry { throw `unsupported cross-registry dependency in ${identity}: ${dep.registry}`; }
-                    let child = if dep["package"] == () { dep.name } else { dep["package"] };
+                    let depkey = dep.name;
+                    if dep.optional == true && !active.contains(depkey) { continue; }
+                    let child = if dep["package"] == () { depkey } else { dep["package"] };
                     rust_name(child);
                     child = child.to_lower();
+                    if dep.registry != () && rust_registry_index_url(dep.registry) != request.registry { throw `unsupported cross-registry dependency: ${dep.registry}`; }
+                    let range = rust_registry_requirement(dep.req);
+                    let dep_default = dep.default_features != false;
+                    let forwarded = rust_registry_forwarded(table, features, depkey);
+                    if dep.features != () {
+                        for feature in dep.features {
+                            if !forwarded.contains(feature) { forwarded.push(feature); }
+                        }
+                    }
+                    let merged = rust_registry_merge_request(requests[child], range.min, range.max, dep_default, forwarded, request.registry);
+                    if merged[0] {
+                        stable = false;
+                    }
+                    requests[child] = merged[1];
+                }
+            } catch (error) { throw `Rust registry ${request.registry}, crate ${name}: ${error}`; }
+        }
+    }
+
+    let emitted = #{};
+    for name in indexes.keys() {
+        let request = requests[name];
+        try {
+            for entry in indexes[name] {
+                if !rust_registry_release(entry) { continue; }
+                if !rust_registry_within(entry.vers, request.min, request.max) { continue; }
+                let version = entry.vers;
+                let identity = `${name}@${version}`;
+                if emitted.contains(identity) { continue; }
+                let active = if activated[name] == () { [] } else { activated[name] };
+                let deps = [];
+                if entry.deps.type_of() != "array" { throw `invalid sparse index dependencies`; }
+                for dep in entry.deps {
+                    if dep.type_of() != "map" { throw `invalid sparse index dependency`; }
+                    if dep.kind == "dev" { continue; }
+                    let depkey = dep.name;
+                    if dep.optional == true && !active.contains(depkey) { continue; }
+                    let child = if dep["package"] == () { depkey } else { dep["package"] };
+                    rust_name(child);
+                    child = child.to_lower();
+                    if dep.registry != () && rust_registry_index_url(dep.registry) != request.registry { throw `unsupported cross-registry dependency: ${dep.registry}`; }
                     let range = rust_registry_requirement(dep.req);
                     deps.push(#{ name: child, min: range.min, max: range.max });
-                    pending.push(#{ name: child, min: range.min, max: range.max, registry: registry });
                 }
-                let source = rust_registry_download_url(downloads[registry], name, version, entry.cksum);
+                let source = rust_registry_download_url(downloads[request.registry], name, version, entry.cksum);
                 dependency_candidate(name, version, source, entry.cksum, deps);
                 emitted[identity] = true;
             }
-        } catch (error) { throw `Rust registry ${registry}, crate ${name}: ${error}`; }
+        } catch (error) { throw `Rust registry ${request.registry}, crate ${name}: ${error}`; }
     }
 }
 
-fn rust_workspace(config) { rust_workspace(config, false); }
-
-fn rust_workspace(config, resolving) {
-    let mode = rust_mode(config);
-    if mode == "native" {
-        if config == () { return; }
-        let declarations = config["dependencies"];
-        if declarations == () { return; }
-        if declarations.type_of() != "map" { throw "cell.rust.dependencies must be a table of pins or ranges"; }
-        let pending = [];
-        for alias in declarations.keys() {
-            let spec = declarations[alias];
-            if spec.type_of() != "map" { throw `cell.rust.dependencies.${alias} must be a table`; }
-            for key in spec.keys() {
-                if !["name", "version", "source", "checksum", "dependencies", "range", "registry"].contains(key) { throw `unknown native dependency key: ${key}`; }
-            }
-            let name = if spec["name"] == () { alias } else { spec["name"] };
-            if spec.contains("range") {
-                let registry = rust_registry_index_url(spec.registry);
-                try {
-                    for key in ["version", "source", "checksum", "dependencies"] {
-                        if spec.contains(key) { throw `range cannot be combined with ${key}`; }
-                    }
-                    rust_name(name);
-                    name = name.to_lower();
-                    let range = rust_registry_range(spec.range);
-                    dependency_require(name, range.min, range.max);
-                    pending.push(#{ name: name, min: range.min, max: range.max, registry: registry });
-                } catch (error) { throw `Rust registry ${registry}, dependency ${alias}: ${error}`; }
-            } else {
-                if spec.contains("registry") { throw `native registry requires range: ${spec.registry}`; }
-                let deps = if spec["dependencies"] == () { [] } else { spec["dependencies"] };
-                dependency(name, spec["version"], spec["source"], spec["checksum"], deps);
-            }
-        }
-        if resolving { rust_registry_candidates(pending); }
-        return;
+fn rust_registry_merge_request(existing, min, max, default_feature, forwarded, registry) {
+    if existing == () {
+        return [true, #{ min: min, max: max, "default": default_feature, features: forwarded, registry: registry }];
     }
+    let changed = false;
+    if min != "" && (existing.min == "" || rust_registry_before(existing.min, min)) { existing.min = min; changed = true; }
+    if max != "" && (existing.max == "" || rust_registry_before(max, existing.max)) { existing.max = max; changed = true; }
+    if default_feature && existing["default"] == false { existing["default"] = true; changed = true; }
+    for feature in forwarded {
+        if !existing.features.contains(feature) { existing.features.push(feature); changed = true; }
+    }
+    if existing.registry != registry { throw `conflicting registries`; }
+    [changed, existing]
+}
+
+fn rust_resolve(targets) {
+    let pending = [];
+    for metadata in targets {
+        let rust = metadata["rust"];
+        if rust == () || rust.type_of() != "map" { continue; }
+        if rust["manifest"] != () { continue; }
+        pending += rust_resolve_section(rust["dependencies"]);
+        pending += rust_resolve_section(rust["build-dependencies"]);
+    }
+    if pending.len() > 0 && resolving_dependencies {
+        rust_registry_candidates(pending);
+    }
+}
+
+fn rust_resolve_section(declarations) {
+    let pending = [];
+    if declarations == () { return pending; }
+    if declarations.type_of() != "map" { throw "Rust dependencies must be a table"; }
+    for alias in declarations.keys() {
+        let spec = declarations[alias];
+        if spec.type_of() != "map" { throw `Rust dependency ${alias} must be a table`; }
+        for key in spec.keys() {
+            if !["name", "version", "source", "checksum", "dependencies", "range", "registry", "features", "default-features", "git", "rev"].contains(key) { throw `unknown Rust dependency key: ${key}`; }
+        }
+        let name = if spec["name"] == () { alias } else { spec["name"] };
+        if spec.contains("range") {
+            let registry = rust_registry_index_url(spec.registry);
+            try {
+                for key in ["version", "source", "checksum", "dependencies"] {
+                    if spec.contains(key) { throw `range cannot be combined with ${key}`; }
+                }
+                rust_name(name);
+                name = name.to_lower();
+                if spec["features"] != () && spec["features"].type_of() != "array" { throw "dependency features must be an array"; }
+                let range = rust_registry_range(spec.range);
+                dependency_require(name, range.min, range.max);
+                pending.push(#{
+                    name: name,
+                    min: range.min,
+                    max: range.max,
+                    registry: registry,
+                    features: if spec["features"] == () { [] } else { spec["features"] },
+                    "default": spec["default-features"] != false,
+                });
+            } catch (error) { throw `Rust registry ${registry}, dependency ${alias}: ${error}`; }
+        } else if spec.contains("git") {
+            if spec["version"] == () || spec["rev"] == () { throw `git dependency ${alias} requires version and rev`; }
+            let deps = if spec["dependencies"] == () { [] } else { spec["dependencies"] };
+            dependency_git(name, spec["version"], spec["git"], spec["rev"], deps);
+        } else {
+            if spec.contains("registry") { throw `native registry requires range: ${spec.registry}`; }
+            let deps = if spec["dependencies"] == () { [] } else { spec["dependencies"] };
+            dependency(name, spec["version"], spec["source"], spec["checksum"], deps);
+        }
+    }
+    pending
+}
+
+fn rust_workspace(config) {
+    let mode = rust_mode(config);
+    if mode == "native" { return; }
     if !path_exists("Cargo.toml") { throw "cargo mode requires Cargo.toml"; }
     if !path_exists("Cargo.lock") { throw "cargo mode requires an explicit Cargo.lock; Forge does not run Cargo or solve Cargo versions"; }
     let root = toml_decode(read_file("Cargo.toml"));
@@ -549,6 +754,8 @@ fn rust_workspace(config, resolving) {
     }
 }
 
-if is_def_var("cell_config") {
-    rust_workspace(cell_config, is_def_var("resolving_dependencies") && resolving_dependencies);
+if is_def_var("targets") {
+    rust_resolve(targets);
+} else if is_def_var("cell_config") {
+    rust_workspace(cell_config);
 }

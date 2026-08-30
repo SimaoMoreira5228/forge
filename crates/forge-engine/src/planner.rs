@@ -7,7 +7,7 @@ use forge_core::{
 };
 use forge_diagnostics::{ForgeDiagnostic, codes};
 use forge_script::TargetDecl;
-use forge_script::cells::{ActionDecl, CellHooks, ComponentView, FetchedSource, lower};
+use forge_script::cells::{ActionDecl, CellHooks, ComponentView, FetchedSource, ProfileView, lower};
 
 use crate::hasher;
 use crate::std_cells::StdCells;
@@ -397,6 +397,7 @@ impl<'a> Planner<'a> {
 		let view = ComponentView {
 			metadata: decl.metadata.clone(),
 			cell_config: self.ctx.cell_config.get(&language).cloned().unwrap_or_default(),
+			targets: self.ctx.decls.values().map(|decl| decl.metadata.clone()).collect(),
 			label,
 			name,
 			kind: kind.to_string(),
@@ -433,16 +434,7 @@ impl<'a> Planner<'a> {
 			platform_os: platform.os.clone(),
 			platform_arch: platform.arch.clone(),
 			platform_abi: platform.abi.clone().unwrap_or_default(),
-			profile: forge_script::cells::ProfileView {
-				name: self.ctx.profile.name.clone(),
-				opt_level: i64::from(self.ctx.profile.opt_level),
-				debug: self.ctx.profile.debug,
-				lto: self.ctx.profile.lto,
-				strip: self.ctx.profile.strip,
-				coverage: self.ctx.profile.coverage,
-				defines: self.ctx.profile.defines.clone(),
-				sanitizers: self.ctx.profile.sanitizers.clone(),
-			},
+			profile: ProfileView::from(self.ctx.profile),
 		};
 
 		let actions = lower(script, &view, hooks)?;

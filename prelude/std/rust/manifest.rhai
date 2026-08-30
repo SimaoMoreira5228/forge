@@ -27,6 +27,40 @@ fn workspace_extern_name(ctx, name) {
     rust_name(if aliases != () && aliases[name] != () { aliases[name] } else { name })
 }
 
+fn rust_debuginfo(info) {
+    if info == "limited" { "debuginfo=1" }
+    else if info == "line-tables-only" { "debuginfo=line-tables-only" }
+    else if info == "none" { "debuginfo=0" }
+    else { "debuginfo=2" }
+}
+
+fn rust_option_args(options) {
+    let args = [];
+    if options["codegen-units"] != () { args += ["-C", `codegen-units=${options["codegen-units"]}`]; }
+    if options["panic"] != () && options["panic"] != "unwind" { args += ["-C", `panic=${options["panic"]}`]; }
+    if options["overflow-checks"] != () { args += ["-C", `overflow-checks=${if options["overflow-checks"] { "on" } else { "off" }}`]; }
+    if options["split-debuginfo"] != () { args += ["-C", `split-debuginfo=${options["split-debuginfo"]}`]; }
+    if options["rustflags"] != () {
+        for flag in options["rustflags"] { args.push(flag); }
+    }
+    args
+}
+
+fn rust_crate_profile_args(profile, link) {
+    let args = ["-C", `opt-level=${profile.opt_level}`, "-C", rust_debuginfo(profile["debug"])];
+    if link && profile.lto == "thin" { args += ["-C", "lto=thin"]; }
+    if link && profile.lto == "fat" { args += ["-C", "lto"]; }
+    if link && profile.strip != "none" { args += ["-C", `strip=${profile.strip}`]; }
+    args += rust_option_args(if profile.options == () { #{} } else { profile.options });
+    args
+}
+
+fn rust_profile_args(ctx) { rust_crate_profile_args(ctx.profile, true); }
+
+fn rust_host_profile(ctx) {
+    if ctx.profile.build == () { ctx.profile } else { ctx.profile.build }
+}
+
 fn dependency_search_args(ctx) {
     let directories = [];
     for dep in ctx.dep_artifacts {
@@ -99,6 +133,42 @@ fn active_dep_names(ctx, manifest) {
         names += section_dep_names(section);
     }
     names
+}
+
+fn active_dependency_sections(ctx, manifest) {
+    let sections = [];
+    let deps = manifest["dependencies"];
+    if deps != () { sections.push(deps); }
+    let targets = manifest["target"];
+    if targets != () {
+        for key in targets.keys() {
+            if !rust_cfg_matches(ctx, key) { continue; }
+            let targeted = targets[key]["dependencies"];
+            if targeted != () { sections.push(targeted); }
+        }
+    }
+    sections
+}
+
+fn active_dependency_names(ctx, manifest) {
+    let names = [];
+    for section in active_dependency_sections(ctx, manifest) { names += section_dep_names(section); }
+    names
+}
+
+fn active_build_sections(ctx, manifest) {
+    let sections = [];
+    let build = manifest["build-dependencies"];
+    if build != () { sections.push(build); }
+    let targets = manifest["target"];
+    if targets != () {
+        for key in targets.keys() {
+            if !rust_cfg_matches(ctx, key) { continue; }
+            let targeted_build = targets[key]["build-dependencies"];
+            if targeted_build != () { sections.push(targeted_build); }
+        }
+    }
+    sections
 }
 
 fn dependency_entry(ctx, manifest, package_name) {

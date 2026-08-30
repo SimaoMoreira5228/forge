@@ -123,7 +123,7 @@ impl SandboxRunner {
 		}
 		for file in &spec.environment_files {
 			for (key, value) in read_environment_file(sandbox.join(&file.path), file) {
-				command.env(format!("{}{}", file.key_prefix, key), &value);
+				command.env(metadata_env_name(&file.key_prefix, &key), &value);
 			}
 		}
 		if !spec.env.contains_key("HOME") {
@@ -342,6 +342,10 @@ fn read_environment_file(path: PathBuf, file: &EnvironmentFile) -> Vec<(String, 
 		.collect()
 }
 
+fn metadata_env_name(key_prefix: &str, key: &str) -> String {
+	format!("{key_prefix}{}", key.to_uppercase().replace('-', "_"))
+}
+
 fn read_argument_files(sandbox: &Path, files: &[forge_core::ArgumentFile], exec_root: &Path) -> Vec<String> {
 	let mut arguments = Vec::new();
 	for file in files {
@@ -461,5 +465,34 @@ mod tests {
 			expand_token("FORGE_EXEC_ROOT/forge-out/build/x", Path::new("/exec/abc")),
 			"/exec/abc/forge-out/build/x"
 		);
+	}
+
+	#[test]
+	fn metadata_env_names_follow_the_links_convention() {
+		assert_eq!(
+			metadata_env_name("DEP_AWS_LC_0_45_0_", "include"),
+			"DEP_AWS_LC_0_45_0_INCLUDE"
+		);
+		assert_eq!(metadata_env_name("DEP_FOO_", "rustc-link-lib"), "DEP_FOO_RUSTC_LINK_LIB");
+	}
+
+	#[test]
+	fn environment_files_parse_metadata_and_skip_ignored_keys() {
+		let path = std::env::temp_dir().join(format!("forge-envfile-{}.txt", std::process::id()));
+		std::fs::write(
+			&path,
+			"cargo:include=/out/include\ncargo:rustc-link-lib=static=aws_lc\ncargo:rerun-if-changed=src\nplain line\n",
+		)
+		.unwrap();
+		let file = EnvironmentFile {
+			path: PathBuf::new(),
+			line_prefix: Some("cargo:".into()),
+			key_prefix: "DEP_AWS_LC_0_45_0_".into(),
+			ignored_keys: vec!["rustc-link-lib".into(), "rerun-if-changed".into()],
+		};
+		let parsed = read_environment_file(path.clone(), &file);
+		let _ = std::fs::remove_file(&path);
+		assert_eq!(parsed, vec![("include".to_string(), "/out/include".to_string())]);
+		assert_eq!(metadata_env_name(&file.key_prefix, &parsed[0].0), "DEP_AWS_LC_0_45_0_INCLUDE");
 	}
 }
