@@ -4,6 +4,14 @@ use std::rc::Rc;
 
 use forge_script::rhai_rt::{ResolutionContext, run_forge_rhai_configured, run_forge_rhai_resolve};
 
+fn rust_cell() -> String {
+	format!(
+		"{}\n{}",
+		include_str!("../../../prelude/std/rust/workspace.rhai"),
+		include_str!("../../../prelude/std/rust/dependencies.rhai")
+	)
+}
+
 fn targets(spec: &str) -> Vec<toml::Table> {
 	vec![toml::from_str(spec).unwrap()]
 }
@@ -36,7 +44,7 @@ fn resolved_names(result: &forge_script::rhai_rt::ScriptOutput) -> Vec<String> {
 
 #[test]
 fn native_sparse_resolution_and_range_subset() {
-	let script = include_str!("../../../prelude/std/rust/workspace.rhai");
+	let script = &rust_cell();
 	let platform = forge_core::Platform::host();
 	let demo = targets(
 		"[rust.dependencies.demo]\nrange = { min = \"1.0\", max = \"2.0\" }\nregistry = \"https://example.invalid/index/\"\n",
@@ -119,7 +127,7 @@ for req in ["*", "1.*", "=1.2.3", ">1", "<=2", "1 || 2", "1.0-pre", "1.0+build",
 
 #[test]
 fn native_registry_download_templates_and_default() {
-	let script = include_str!("../../../prelude/std/rust/workspace.rhai");
+	let script = &rust_cell();
 	let platform = forge_core::Platform::host();
 	for (registry, index, dl, expected) in [
 		(
@@ -172,7 +180,7 @@ for sample in [["A", "1", "1"], ["AB", "2", "2"], ["AbC", "3/A", "3/a"], ["AbCdE
 
 #[test]
 fn native_registry_rejects_invalid_config_and_urls() {
-	let script = include_str!("../../../prelude/std/rust/workspace.rhai");
+	let script = &rust_cell();
 	let platform = forge_core::Platform::host();
 	let demo = targets("[rust.dependencies.demo]\nrange = {}\nregistry = 'https://example.invalid/index'");
 	for body in [
@@ -232,7 +240,7 @@ for url in ["https://", "http:///index", "https://user:pass@host/index", "https:
 
 #[test]
 fn native_registry_activates_optional_dependencies_through_features() {
-	let script = include_str!("../../../prelude/std/rust/workspace.rhai");
+	let script = &rust_cell();
 	let platform = forge_core::Platform::host();
 	let demo = targets("[rust.dependencies.demo]\nrange = {}\n");
 	let resolution = |features: &str| {
@@ -263,7 +271,7 @@ fn native_registry_activates_optional_dependencies_through_features() {
 
 #[test]
 fn native_registry_honors_dependency_feature_requests() {
-	let script = include_str!("../../../prelude/std/rust/workspace.rhai");
+	let script = &rust_cell();
 	let platform = forge_core::Platform::host();
 	let demo = targets("[rust.dependencies.demo]\nrange = {}\n");
 	let resolution = |features: &str, default_features: bool| {
@@ -296,7 +304,7 @@ fn native_registry_honors_dependency_feature_requests() {
 
 #[test]
 fn native_registry_rejects_cross_registry_dependencies() {
-	let script = include_str!("../../../prelude/std/rust/workspace.rhai");
+	let script = &rust_cell();
 	let platform = forge_core::Platform::host();
 	let demo = targets("[rust.dependencies.demo]\nrange = {}\nregistry = 'https://example.invalid/index'");
 	let resolution = ResolutionContext {

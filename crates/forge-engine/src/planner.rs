@@ -277,6 +277,7 @@ impl<'a> Planner<'a> {
 		self.emit(ActionSpec {
 			name: format!("rule {label}"),
 			component: label,
+			configuration: self.ctx.graph.component(id).configuration,
 			command,
 			args: decl.args.clone(),
 			inputs: decl.resolved_inputs.clone(),
@@ -341,7 +342,8 @@ impl<'a> Planner<'a> {
 			}
 		}
 
-		let profile = self.ctx.profile.clone();
+		let profile_name = self.ctx.profile.name.clone();
+		let artifact_profile_name = profile_name.clone();
 		let pkg_slug = self.package_slug(id);
 		let name = component.label.name().to_string();
 		let tool = self.tool_for(&decl, &language)?.clone();
@@ -350,17 +352,13 @@ impl<'a> Planner<'a> {
 
 		let hooks = CellHooks {
 			artifact_path: Box::new(move |src, category| {
-				artifact_path(Path::new(src), &profile.name, &artifact_namespace, category)
+				artifact_path(Path::new(src), &artifact_profile_name, &artifact_namespace, category)
 			}),
 			depfile_inputs: {
 				let workspace = self.ctx.workspace.unwrap_or(Path::new(".")).to_path_buf();
 				Box::new(move |path| depfile_inputs(&workspace, Path::new(path)))
 			},
-			lib_path: Box::new(move |filename| {
-				PathBuf::from(format!("forge-out/lib/{pkg_slug}/{filename}"))
-					.to_string_lossy()
-					.into_owned()
-			}),
+			lib_path: Box::new(move |filename| lib_path(&profile_name, &pkg_slug, filename).to_string_lossy().into_owned()),
 			bin: Box::new(move |binary_name| {
 				tool_for_bin
 					.binary(binary_name)
@@ -463,6 +461,7 @@ impl<'a> Planner<'a> {
 			let spec = ActionSpec {
 				name: action.name.clone(),
 				component: label.clone(),
+				configuration: action.configuration,
 				command: action.command.clone(),
 				args: action.args.clone(),
 				inputs: action.inputs.iter().map(PathBuf::from).collect(),
@@ -582,6 +581,16 @@ fn cycle_error(cycles: Vec<Vec<forge_core::Label>>) -> ForgeDiagnostic {
 
 fn tool_id(tool: &ResolvedToolchain) -> String {
 	format!("{}@{}", tool.name, &tool.digest[..12.min(tool.digest.len())])
+}
+
+fn lib_path(profile: &str, package: &str, filename: &str) -> PathBuf {
+	let mut path = PathBuf::from("forge-out/lib");
+	path.push(profile);
+	if !package.is_empty() {
+		path.push(package);
+	}
+	path.push(filename);
+	path
 }
 
 fn artifact_path(source: &Path, profile: &str, namespace: &str, category: &str) -> Result<String, String> {

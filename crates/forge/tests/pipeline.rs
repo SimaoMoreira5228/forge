@@ -673,9 +673,9 @@ fn rust_cell_builds_transitive_dependencies_and_caches() {
 		eprintln!("build log: {log}");
 	}
 	assert!(ok, "rust build failed: {log}");
-	assert!(dir.join("forge-out/lib/modules.a/libgreet.rlib").is_file());
-	assert!(dir.join("forge-out/lib/modules.a/libmessage.rlib").is_file());
-	assert!(!dir.join("forge-out/lib/modules.rlib").exists());
+	assert!(dir.join("forge-out/lib/debug/modules.a/libgreet.rlib").is_file());
+	assert!(dir.join("forge-out/lib/debug/modules.a/libmessage.rlib").is_file());
+	assert!(!dir.join("forge-out/lib/debug/modules.rlib").exists());
 
 	let binary = dir.join("forge-out/bin/debug/app");
 	assert!(binary.exists(), "rust binary not produced");

@@ -71,7 +71,9 @@ ctx.platform_os = "windows";
 if !rust_cfg_matches(ctx, "cfg(all(windows, not(unix), target_family = \"windows\"))") { throw "Windows mapping failed"; }
 ctx.platform_os = "linux";
 let manifest = #{ target: #{ "cfg(windows)": #{ dependencies: #{ win: "1" } }, "cfg(unix)": #{ dependencies: #{ posix: "1" } } } };
-if active_dep_names(ctx, manifest) != ["posix"] { throw "target dependency filtering failed"; }
+if active_dependency_names(ctx, manifest) != ["posix"] { throw "target dependency filtering failed"; }
+let build_manifest = #{ dependencies: #{ posix: "1" }, "build-dependencies": #{ pkg_config: "1" } };
+if active_build_names(ctx, build_manifest) != ["pkg_config"] { throw "build dependency filtering failed"; }
 "#;
 	engine.eval::<()>(&format!("{cell}\n{checks}")).unwrap();
 	let error = lower(
@@ -117,7 +119,7 @@ fn rust_cell_resolves_build_and_linked_dependencies() {
 	engine.set_max_expr_depths(128, 128);
 	engine.set_max_call_levels(128);
 	let checks = r#"
-let ctx = #{ platform_os: "linux", platform_arch: "x86_64", platform_abi: "gnu", profile: #{ is_debug: true } };
+let ctx = #{ platform_os: "linux", platform_arch: "x86_64", platform_abi: "gnu", profile: #{ name: "debug", is_debug: true } };
 let manifest = #{
     "build-dependencies": #{ cc: "1" },
     "target": #{ "cfg(unix)": #{ "build-dependencies": #{ "pkg-config": "1" } } },
@@ -128,21 +130,87 @@ let meta = #{
     "aws-lc-sys@0.45.0": #{
         src: #{ name: "aws-lc-sys", version: "0.45.0" },
         manifest: #{ "package": #{ links: "aws_lc_0_45_0" } },
-        active: true,
-        artifact: "forge-out/lib/deps/libaws_lc_sys.rlib",
+        proc_macro: false,
+        artifacts: #{ host: "forge-out/lib/deps/host/debug/libaws_lc_sys.rlib" },
     },
     "zeroize@1.8.1": #{
         src: #{ name: "zeroize", version: "1.8.1" },
         manifest: #{ "package": #{} },
-        active: true,
-        artifact: "forge-out/lib/deps/libzeroize.rlib",
+        proc_macro: false,
+        artifacts: #{ target: "forge-out/lib/deps/debug/libzeroize.rlib" },
     },
 };
-let dep_manifest = #{ dependencies: #{ "aws-lc-sys": #{ optional: true }, zeroize: "1" } };
-let linked = linked_dependencies(ctx, meta, dep_manifest);
+let dep_manifest = #{ dependencies: #{ "aws-lc-sys": #{ optional: true }, zeroize: "1" }, "build-dependencies": #{ "aws-lc-sys": "1" } };
+let externs = build_dependency_externs(ctx, meta, dep_manifest);
+if externs.len() != 1 { throw `expected 1 build extern, got ${externs.len()}`; }
+if externs[0].path != "forge-out/lib/deps/host/debug/libaws_lc_sys.rlib" { throw `build dependency must link a host unit: ${externs[0].path}`; }
+	let linked = linked_dependencies(ctx, meta, dep_manifest);
 if linked.len() != 1 { throw `expected 1 linked dependency, got ${linked.len()}`; }
 if linked[0].links != "aws_lc_0_45_0" { throw `wrong links: ${linked[0].links}`; }
-if linked[0].dir != "forge-out/build/aws-lc-sys-0.45.0" { throw `wrong dir: ${linked[0].dir}`; }
+if linked[0].dir != "forge-out/build/debug/aws-lc-sys-0.45.0" { throw `wrong dir: ${linked[0].dir}`; }
+"#;
+	engine.eval::<()>(&format!("{cell}\n{checks}")).unwrap();
+}
+
+#[test]
+fn rust_cell_builds_dependencies_for_host_and_target() {
+	let cell = crate::std_cells::cell_script("rust").unwrap();
+	let mut engine = rhai::Engine::new();
+	engine.set_max_expr_depths(128, 128);
+	engine.set_max_call_levels(128);
+	register_graph_ops(&mut engine);
+	let checks = r#"
+let ctx = #{
+    name: "app",
+    metadata: #{ rust: #{ dependencies: #{ helper: "1.0.0", dual: "1.0.0" }, "build-dependencies": #{ cc: "1.0.0", dual: "1.0.0" } } },
+};
+let meta = #{
+    "helper@1.0.0": #{ src: #{ name: "helper", version: "1.0.0" }, manifest: #{}, proc_macro: false },
+    "dual@1.0.0": #{ src: #{ name: "dual", version: "1.0.0" }, manifest: #{}, proc_macro: false },
+    "shared@1.0.0": #{ src: #{ name: "shared", version: "1.0.0" }, manifest: #{}, proc_macro: false },
+    "cc@1.0.0": #{ src: #{ name: "cc", version: "1.0.0" }, manifest: #{}, proc_macro: false },
+    "shlex@1.0.0": #{ src: #{ name: "shlex", version: "1.0.0" }, manifest: #{}, proc_macro: false },
+    "deep@1.0.0": #{ src: #{ name: "deep", version: "1.0.0" }, manifest: #{}, proc_macro: false },
+    "codegen@1.0.0": #{ src: #{ name: "codegen", version: "1.0.0" }, manifest: #{ lib: #{ "proc-macro": true } }, proc_macro: true },
+    "derive@1.0.0": #{ src: #{ name: "derive", version: "1.0.0" }, manifest: #{ lib: #{ "proc-macro": true } }, proc_macro: true },
+    "spare@1.0.0": #{ src: #{ name: "spare", version: "1.0.0" }, manifest: #{}, proc_macro: false },
+};
+let full = #{
+    "helper@1.0.0": ["derive@1.0.0", "shared@1.0.0"], "dual@1.0.0": [], "shared@1.0.0": [],
+    "cc@1.0.0": ["derive@1.0.0", "shlex@1.0.0", "codegen@1.0.0", "shared@1.0.0"],
+    "shlex@1.0.0": ["deep@1.0.0"], "deep@1.0.0": [], "codegen@1.0.0": [], "derive@1.0.0": [],
+    "spare@1.0.0": [],
+};
+let normal_edges = #{
+    "helper@1.0.0": ["derive@1.0.0", "shared@1.0.0"], "dual@1.0.0": [], "shared@1.0.0": [],
+    "cc@1.0.0": ["derive@1.0.0"], "shlex@1.0.0": [], "deep@1.0.0": [], "codegen@1.0.0": [],
+    "derive@1.0.0": [], "spare@1.0.0": [],
+};
+let build_edges = #{
+    "helper@1.0.0": [], "dual@1.0.0": [], "shared@1.0.0": [],
+    "cc@1.0.0": ["shlex@1.0.0", "codegen@1.0.0", "shared@1.0.0"], "shlex@1.0.0": ["deep@1.0.0"],
+    "deep@1.0.0": [], "codegen@1.0.0": [], "derive@1.0.0": [], "spare@1.0.0": [],
+};
+let units = unit_configurations(ctx, meta, full, normal_edges, build_edges);
+if units["helper@1.0.0"] != ["target"] { throw `a normal dependency is a target unit: ${units["helper@1.0.0"]}`; }
+if units["dual@1.0.0"] != ["host", "target"] { throw `a crate that is a normal and a build dependency needs both units: ${units["dual@1.0.0"]}`; }
+if units["cc@1.0.0"] != ["host"] { throw `a build dependency is host only: ${units["cc@1.0.0"]}`; }
+if units["shared@1.0.0"] != ["host", "target"] { throw `a build dependency of a host crate that a target crate also uses needs both units: ${units["shared@1.0.0"]}`; }
+if units["shlex@1.0.0"] != ["host"] { throw `a build dependency of a build dependency is host only: ${units["shlex@1.0.0"]}`; }
+if units["deep@1.0.0"] != ["host"] { throw `a transitive build dependency is host only: ${units["deep@1.0.0"]}`; }
+if units["codegen@1.0.0"] != ["host"] { throw `a build dependency that is a proc macro is host only: ${units["codegen@1.0.0"]}`; }
+if units["derive@1.0.0"] != ["host"] { throw `a proc macro is host only: ${units["derive@1.0.0"]}`; }
+if units["spare@1.0.0"] != ["target"] { throw `a lock root stays a target unit: ${units["spare@1.0.0"]}`; }
+let linked_meta = #{
+    "dual@1.0.0": #{ artifacts: #{ host: "dual-host.rlib", target: "dual-target.rlib" } },
+    "cc@1.0.0": #{ artifacts: #{ host: "cc-host.rlib" } },
+    "derive@1.0.0": #{ artifacts: #{ host: "derive-host.so" }, proc_macro: true },
+};
+if dependency_artifact(linked_meta, "dual@1.0.0", "host") != "dual-host.rlib" { throw "wrong host artifact"; }
+if dependency_artifact(linked_meta, "derive@1.0.0", "target") != "derive-host.so" { throw "a target unit links the host proc macro"; }
+let rejected = false;
+try { dependency_artifact(linked_meta, "cc@1.0.0", "target"); } catch { rejected = true; }
+if !rejected { throw "a host-only dependency must not link into a target unit"; }
 "#;
 	engine.eval::<()>(&format!("{cell}\n{checks}")).unwrap();
 }
@@ -505,6 +573,40 @@ fn c_cell_owns_coverage_directory_and_suffixes() {
 			outputs.into_iter().map(|p| (p, false)).collect::<Vec<_>>()
 		);
 	}
+}
+
+#[test]
+fn c_cell_scopes_module_and_coverage_outputs_by_profile() {
+	let mut view = component();
+	view.kind = "test".into();
+	view.srcs = vec!["lib/core.cppm".into()];
+	view.profile.name = "asan".into();
+	view.profile.coverage = true;
+	let module = "export module math.core;\nexport int add(int a, int b) { return a + b; }\n".to_string();
+	let mut hooks = hooks();
+	hooks.bin = Box::new(|name| {
+		if name.contains("clang") {
+			format!("/tools/bin/{name}")
+		} else {
+			String::new()
+		}
+	});
+	hooks.read_file = Box::new(move |_| Ok(module.clone()));
+	let actions = lower(crate::std_cells::cell_script("c").unwrap(), &view, hooks).unwrap();
+	let precompile = actions
+		.iter()
+		.find(|action| action.name.starts_with("precompile module"))
+		.expect("module interface precompile");
+	assert_eq!(precompile.outputs, [("forge-out/mod/asan/math.core.pcm".into(), false)]);
+	let run = actions
+		.iter()
+		.find(|action| action.name.starts_with("run "))
+		.expect("test run");
+	assert_eq!(run.outputs, [("forge-out/profile/asan".to_string(), true)]);
+	assert_eq!(
+		run.env.get("LLVM_PROFILE_FILE").map(String::as_str),
+		Some("forge-out/profile/asan/%m.profraw")
+	);
 }
 
 #[test]

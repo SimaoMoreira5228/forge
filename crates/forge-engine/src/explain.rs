@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use forge_core::BuildGraph;
+use forge_core::{BuildGraph, ConfigTransition};
 use forge_diagnostics::{ForgeDiagnostic, codes};
 
 use crate::builder::Engine;
@@ -10,6 +10,7 @@ use crate::planner::{PlanContext, build_action_dag};
 pub struct Explanation {
 	pub action: String,
 	pub component: String,
+	pub configuration: ConfigTransition,
 	pub state: ActionState,
 }
 
@@ -96,6 +97,7 @@ impl Engine {
 			explanations.push(Explanation {
 				action: spec.name.clone(),
 				component: component_label.clone(),
+				configuration: spec.configuration,
 				state,
 			});
 		}
@@ -120,16 +122,20 @@ fn resolve_label(graph: &BuildGraph, target: &str) -> Result<forge_core::Compone
 pub fn render(explanations: &[Explanation]) -> String {
 	let mut out = String::new();
 	for explanation in explanations {
+		let action = match explanation.configuration {
+			ConfigTransition::Target => explanation.action.clone(),
+			configuration => format!("{} [{}]", explanation.action, configuration.as_str()),
+		};
 		match &explanation.state {
-			ActionState::NeverBuilt => out.push_str(&format!("{}: never built\n", explanation.action)),
-			ActionState::Fresh => out.push_str(&format!("{}: up to date\n", explanation.action)),
+			ActionState::NeverBuilt => out.push_str(&format!("{action}: never built\n")),
+			ActionState::Fresh => out.push_str(&format!("{action}: up to date\n")),
 			ActionState::Stale {
 				changed,
 				added,
 				removed,
 				reason_unknown,
 			} => {
-				out.push_str(&format!("{}: STALE\n", explanation.action));
+				out.push_str(&format!("{action}: STALE\n"));
 				for path in changed {
 					out.push_str(&format!("  changed:  {path}\n"));
 				}

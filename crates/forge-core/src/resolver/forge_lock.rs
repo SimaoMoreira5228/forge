@@ -155,19 +155,27 @@ impl ForgeLock {
 	}
 
 	pub fn from_requests(requests: impl IntoIterator<Item = DependencyRequest>) -> Self {
-		Self {
-			version: 1,
-			packages: requests
-				.into_iter()
-				.map(|request| LockedPackage {
-					name: request.name,
-					version: request.version,
-					source: Some(request.source),
-					checksum: Some(request.checksum),
-					dependencies: request.dependencies,
-				})
-				.collect(),
+		let mut packages: Vec<LockedPackage> = Vec::new();
+		for request in requests {
+			let package = LockedPackage {
+				name: request.name,
+				version: request.version,
+				source: Some(request.source),
+				checksum: Some(request.checksum),
+				dependencies: request.dependencies,
+			};
+			let requested_again = packages.iter().any(|existing| {
+				existing.name == package.name
+					&& existing.version == package.version
+					&& existing.source == package.source
+					&& existing.checksum == package.checksum
+					&& existing.dependencies == package.dependencies
+			});
+			if !requested_again {
+				packages.push(package);
+			}
 		}
+		Self { version: 1, packages }
 	}
 }
 
@@ -288,6 +296,30 @@ version = "0.8.0"
 			"abc",
 		)]);
 		assert_eq!(lock.sources().unwrap()[0].name, "demo");
+	}
+
+	#[test]
+	fn a_package_requested_by_several_consumers_locks_once() {
+		let request = || {
+			DependencyRequest::new("demo", "1.0.0", "https://example.invalid/demo.tar.gz", "abc")
+				.with_dependencies(["leaf 1.0.0"])
+		};
+		let lock = ForgeLock::from_requests([
+			request(),
+			request(),
+			DependencyRequest::new("leaf", "1.0.0", "https://example.invalid/leaf.tar.gz", "def"),
+		]);
+		assert_eq!(lock.packages.len(), 2);
+		assert!(lock.dependency_order().is_ok());
+		assert!(
+			ForgeLock::from_requests([
+				request(),
+				DependencyRequest::new("demo", "1.0.0", "https://example.invalid/fork.tar.gz", "abc")
+					.with_dependencies(["leaf 1.0.0"]),
+			])
+			.dependency_order()
+			.is_err()
+		);
 	}
 
 	#[test]

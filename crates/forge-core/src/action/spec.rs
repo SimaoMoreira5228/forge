@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use blake3::Hasher;
 use serde::Serialize;
 
+use crate::platform::ConfigTransition;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OutputDeclaration {
 	pub path: PathBuf,
@@ -36,6 +38,7 @@ pub struct ArgumentFile {
 pub struct ActionSpec {
 	pub name: String,
 	pub component: String,
+	pub configuration: ConfigTransition,
 	pub command: String,
 	pub args: Vec<String>,
 	pub inputs: Vec<PathBuf>,
@@ -55,6 +58,7 @@ impl ActionSpec {
 		let mut h = Hasher::new();
 		put(&mut h, &self.name);
 		put(&mut h, &self.component);
+		put(&mut h, self.configuration.as_str());
 		put(&mut h, &self.command);
 		for a in &self.args {
 			put(&mut h, a);
@@ -135,6 +139,7 @@ mod tests {
 		ActionSpec {
 			name: "compile math.c".into(),
 			component: "//lib:math".into(),
+			configuration: ConfigTransition::Target,
 			command: "/toolchains/clang/bin/clang".into(),
 			args: vec!["-c".into(), "math.c".into()],
 			inputs: vec![PathBuf::from("math.c")],
@@ -175,5 +180,9 @@ mod tests {
 		let mut s5 = spec();
 		s5.outputs[0].kind = OutputKind::Directory;
 		assert_ne!(spec().fingerprint(), s5.fingerprint());
+
+		let mut s6 = spec();
+		s6.configuration = ConfigTransition::Host;
+		assert_ne!(spec().fingerprint(), s6.fingerprint());
 	}
 }

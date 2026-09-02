@@ -31,12 +31,21 @@ fn main() {
 			));
 		}
 		generated.push_str("\t)),\n");
-		if let Some(workspace_script) = entry.get("workspace_script").and_then(toml::Value::as_str) {
-			let path = prelude.join(workspace_script);
-			println!("cargo:rerun-if-changed={}", path.display());
-			workspace.push_str(&format!(
-				"\t({name:?}, include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/../../prelude/std/{workspace_script}\"))),\n"
-			));
+		let workspace_scripts: Vec<&str> = entry
+			.get("workspace_scripts")
+			.and_then(toml::Value::as_array)
+			.map(|list| list.iter().filter_map(toml::Value::as_str).collect())
+			.unwrap_or_default();
+		if !workspace_scripts.is_empty() {
+			workspace.push_str(&format!("\t({name:?}, concat!(\n"));
+			for script in &workspace_scripts {
+				let path = prelude.join(script);
+				println!("cargo:rerun-if-changed={}", path.display());
+				workspace.push_str(&format!(
+					"\t\tinclude_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/../../prelude/std/{script}\")), \"\\n\",\n"
+				));
+			}
+			workspace.push_str("\t)),\n");
 		}
 	}
 	generated.push_str("];\n");

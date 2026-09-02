@@ -14,6 +14,10 @@ fn module_name_of(ctx, src) {
     text.split("export module ")[1].split(";")[0];
 }
 
+fn coverage_dir(ctx) {
+    `forge-out/profile/${ctx.profile.name}`
+}
+
 fn compiler_for(ctx, src) {
     if ctx.compiler != "" {
         let selected = ctx.bin(ctx.compiler);
@@ -236,7 +240,7 @@ fn build(ctx) {
         if !compiler.contains("clang") {
             throw `module interface ${src} requires clang, found ${compiler}`;
         }
-        let pcm = `forge-out/mod/${name}.pcm`;
+        let pcm = `forge-out/mod/${ctx.profile.name}/${name}.pcm`;
         let std = if ctx.standard == "" { "c++20" } else { ctx.standard };
         let args = profile_args(ctx, true);
         args.push(`-std=${std}`);
@@ -281,9 +285,9 @@ fn build(ctx) {
         let test_env = ctx.env;
         let test_outputs = [];
         if ctx.profile.coverage {
-            test_outputs.push("forge-out/profile/coverage/");
+            test_outputs.push(`${coverage_dir(ctx)}/`);
             if linker_for(ctx).contains("clang") {
-                test_env["LLVM_PROFILE_FILE"] = "forge-out/profile/coverage/%m.profraw";
+                test_env["LLVM_PROFILE_FILE"] = `${coverage_dir(ctx)}/%m.profraw`;
             }
         }
         ctx.action(#{

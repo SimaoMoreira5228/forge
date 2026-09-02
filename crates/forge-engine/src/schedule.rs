@@ -122,7 +122,7 @@ fn validate_dag(dag: &ActionDag) -> Result<(), ForgeDiagnostic> {
 mod tests {
 	use std::collections::BTreeMap;
 
-	use forge_core::{ActionSpec, OutputDeclaration, OutputKind};
+	use forge_core::{ActionSpec, ConfigTransition, OutputDeclaration, OutputKind};
 
 	use super::*;
 
@@ -130,6 +130,7 @@ mod tests {
 		ActionSpec {
 			name: name.into(),
 			component: name.into(),
+			configuration: ConfigTransition::Target,
 			command: "true".into(),
 			args: Vec::new(),
 			inputs: Vec::new(),

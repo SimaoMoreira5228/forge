@@ -24,6 +24,21 @@ fn artifact_stems_are_generic_stable_and_namespaced() {
 }
 
 #[test]
+fn library_paths_are_profile_distinct_and_outside_the_dependency_registry() {
+	let root = lib_path("debug", "", "libmath.rlib");
+	assert_eq!(root, Path::new("forge-out/lib/debug/libmath.rlib"));
+	assert_eq!(
+		lib_path("release", "modules.a", "libgreet.a"),
+		Path::new("forge-out/lib/release/modules.a/libgreet.a")
+	);
+	assert_ne!(root, lib_path("release", "", "libmath.rlib"));
+	for path in [root, lib_path("release", "modules.a", "libgreet.a")] {
+		assert!(path.starts_with("forge-out/lib"));
+		assert!(!path.starts_with("forge-out/lib/deps"));
+	}
+}
+
+#[test]
 fn depfile_paths_match_both_runner_roots_without_testing_existence() {
 	let workspace = Path::new("/workspace");
 	for path in [

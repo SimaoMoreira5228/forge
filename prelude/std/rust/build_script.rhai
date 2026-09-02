@@ -5,9 +5,9 @@ fn emit_build_script(ctx, rustc, manifest, enabled, root, name, version, edition
     let build_files = ctx.glob(if root == "" { build_name } else { `${root}/${build_name}` });
     if build_files.len() == 0 { return ""; }
     let pkg_name = crate_name(#{ name: name });
-    let build_output = `forge-out/build/${name}-${version}`;
+    let build_output = build_output_dir(ctx, name, version);
     let build_exe = `${build_output}/script`;
-    let build_args = ["--crate-type", "bin", "--crate-name", `${pkg_name}_build`, "--edition", edition, "-C", `metadata=${pkg_name}_build-${version}`, "--remap-path-prefix", "FORGE_EXEC_ROOT=", "-L", "dependency=forge-out/lib/deps"] + feature_cfg_args(manifest, enabled) + rust_crate_profile_args(rust_host_profile(ctx), false);
+    let build_args = ["--crate-type", "bin", "--crate-name", `${pkg_name}_build`, "--edition", edition, "-C", `metadata=${pkg_name}_build-${version}`, "--remap-path-prefix", "FORGE_EXEC_ROOT=", "-L", `dependency=${rust_host_deps_dir(ctx)}`] + feature_cfg_args(manifest, enabled) + rust_crate_profile_args(rust_host_profile(ctx), false);
     let build_inputs = package_files + [build_files[0]] + extra_inputs;
     let build_execution_deps = [];
     let environment_files = #{ };
@@ -42,6 +42,7 @@ fn emit_build_script(ctx, rustc, manifest, enabled, root, name, version, edition
     compile_env["RUSTC"] = rustc;
     ctx.action(#{
         name: "rustc build script " + name + "@" + version,
+        configuration: "host",
         command: rustc,
         args: build_args + ["-o", build_exe, build_files[0]],
         inputs: build_inputs,
@@ -74,6 +75,7 @@ fn emit_build_script(ctx, rustc, manifest, enabled, root, name, version, edition
     run_env["CRUNCHY_LIB_SUFFIX"] = "/lib.rs";
     ctx.action(#{
         name: "run build script " + name + "@" + version,
+        configuration: "host",
         command: `FORGE_EXEC_ROOT/${build_exe}`,
         args: [],
         inputs: package_files + extra_inputs,

@@ -40,10 +40,11 @@ fn collect_requests(section, requests) {
 fn workspace_root_requests(ctx) {
     let requests = #{};
     if rust_mode(ctx["cell_config"]) == "native" {
+        let catalog = ctx["cell_config"]["dependencies"];
         for metadata in ctx.targets {
             let rust = metadata["rust"];
             if rust == () || rust.type_of() != "map" || rust["manifest"] != () { continue; }
-            let deps = rust["dependencies"];
+            let deps = rust_inherited_dependencies(rust["dependencies"], catalog, "cell.rust.dependencies");
             if deps != () { requests = collect_requests(deps, requests); }
         }
         return requests;
@@ -174,10 +175,10 @@ fn feature_env(enabled) {
     env
 }
 
-fn dependency_artifacts(meta, dep_keys) {
+fn dependency_artifacts(meta, dep_keys, transition) {
     let artifacts = [];
     for dep_key in dep_keys {
-        artifacts.push(meta[dep_key]["artifact"]);
+        artifacts.push(dependency_artifact(meta, dep_key, transition));
     }
     artifacts
 }
@@ -188,21 +189,19 @@ fn build_dependency_externs(ctx, meta, manifest) {
         for name in section.keys() {
             let spec = section[name];
             let package_name = if spec.type_of() == "map" && spec["package"] != () { spec["package"] } else { name };
-            for key in meta.keys() {
-                let src = meta[key]["src"];
-                if meta[key]["active"] == false || src.name != package_name { continue; }
-                let extern_name = name;
-                extern_name.replace("-", "_");
-                let dep_manifest = meta[key]["manifest"];
-                let links = if dep_manifest["package"] == () || dep_manifest["package"]["links"] == () { "" } else { dep_manifest["package"]["links"] };
-                externs.push(#{
-                    name: extern_name,
-                    path: meta[key]["artifact"],
-                    links: links,
-                    dir: `forge-out/build/${src.name}-${src.version}`,
-                });
-                break;
-            }
+            let key = source_key(meta, package_name);
+            if key == () { continue; }
+            let extern_name = name;
+            extern_name.replace("-", "_");
+            let dep_manifest = meta[key]["manifest"];
+            let links = if dep_manifest["package"] == () || dep_manifest["package"]["links"] == () { "" } else { dep_manifest["package"]["links"] };
+            let src = meta[key]["src"];
+            externs.push(#{
+                name: extern_name,
+                path: dependency_artifact(meta, key, "host"),
+                links: links,
+                dir: build_output_dir(ctx, src.name, src.version),
+            });
         }
     }
     externs
@@ -214,19 +213,14 @@ fn linked_dependencies(ctx, meta, manifest) {
         for name in section.keys() {
             let spec = section[name];
             let package_name = if spec.type_of() == "map" && spec["package"] != () { spec["package"] } else { name };
-            for key in meta.keys() {
+            let key = source_key(meta, package_name);
+            if key == () { continue; }
+            let dep_manifest = meta[key]["manifest"];
+            let links = if dep_manifest["package"] == () || dep_manifest["package"]["links"] == () { "" } else { dep_manifest["package"]["links"] };
+            if links != "" {
                 let src = meta[key]["src"];
-                if meta[key]["active"] == false || src.name != package_name { continue; }
-                let dep_manifest = meta[key]["manifest"];
-                let links = if dep_manifest["package"] == () || dep_manifest["package"]["links"] == () { "" } else { dep_manifest["package"]["links"] };
-                if links != "" {
-                    deps.push(#{
-                        name: name,
-                        links: links,
-                        dir: `forge-out/build/${src.name}-${src.version}`,
-                    });
-                }
-                break;
+                let dir = build_output_dir(ctx, src.name, src.version);
+                if !deps.contains(#{ name: name, links: links, dir: dir }) { deps.push(#{ name: name, links: links, dir: dir }); }
             }
         }
     }

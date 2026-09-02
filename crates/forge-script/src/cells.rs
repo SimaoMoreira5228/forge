@@ -6,6 +6,7 @@ use rhai::{Dynamic, EvalAltResult, Map};
 #[derive(Debug, Clone)]
 pub struct ActionDecl {
 	pub name: String,
+	pub configuration: forge_core::ConfigTransition,
 	pub command: String,
 	pub args: Vec<String>,
 	pub inputs: Vec<PathBufArg>,
@@ -360,6 +361,15 @@ fn parse_action(spec: Map) -> Result<ActionDecl, Box<EvalAltResult>> {
 		Some(v) if v.is_string() => Some(v.clone().into_string().expect("checked string")),
 		_ => None,
 	};
+	let configuration = match spec.get("configuration") {
+		None => forge_core::ConfigTransition::Target,
+		Some(v) if v.is_string() => {
+			let name = v.clone().into_string().expect("checked string");
+			forge_core::ConfigTransition::parse(&name)
+				.ok_or_else(|| Box::<EvalAltResult>::from(format!("unknown configuration `{name}`")))?
+		}
+		Some(_) => return Err("action `configuration` expects a string".into()),
+	};
 	let workdir = match spec.get("workdir") {
 		Some(v) if v.is_string() => Some(v.clone().into_string().expect("checked string")),
 		_ => None,
@@ -432,6 +442,7 @@ fn parse_action(spec: Map) -> Result<ActionDecl, Box<EvalAltResult>> {
 
 	Ok(ActionDecl {
 		name: string_field("name")?,
+		configuration,
 		command: string_field("command")?,
 		args: list_field("args")?,
 		inputs: list_field("inputs")?,

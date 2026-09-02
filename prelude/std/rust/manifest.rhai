@@ -61,6 +61,14 @@ fn rust_host_profile(ctx) {
     if ctx.profile.build == () { ctx.profile } else { ctx.profile.build }
 }
 
+fn unit_profile(ctx, transition) {
+    if transition == "host" { rust_host_profile(ctx) } else { ctx.profile }
+}
+
+fn unit_profile_args(ctx, transition) {
+    rust_crate_profile_args(unit_profile(ctx, transition), transition == "target");
+}
+
 fn dependency_search_args(ctx) {
     let directories = [];
     for dep in ctx.dep_artifacts {
@@ -82,6 +90,37 @@ fn dependency_search_args(ctx) {
 
 fn dependency_key(src) {
     `${src.name}@${src.version}`
+}
+
+fn rust_lib_dir(ctx) {
+    `forge-out/lib/${ctx.profile.name}`
+}
+
+fn rust_deps_dir(ctx) {
+    `forge-out/lib/deps/${ctx.profile.name}`
+}
+
+fn rust_host_deps_dir(ctx) {
+    `forge-out/lib/deps/host/${ctx.profile.name}`
+}
+
+fn unit_deps_dir(ctx, transition) {
+    if transition == "host" { rust_host_deps_dir(ctx) } else { rust_deps_dir(ctx) }
+}
+
+fn unit_adjacency(info, transition) {
+    if transition == "host" { info["adjacency"] } else { info["normal_edges"] }
+}
+
+fn dependency_artifact(meta, dep_key, transition) {
+    let artifacts = meta[dep_key]["artifacts"];
+    if artifacts[transition] != () { return artifacts[transition]; }
+    if transition == "target" && meta[dep_key]["proc_macro"] { return artifacts["host"]; }
+    throw `dependency ${dep_key} is not compiled for the ${transition} configuration`;
+}
+
+fn build_output_dir(ctx, name, version) {
+    `forge-out/build/${ctx.profile.name}/${name}-${version}`
 }
 
 fn proc_macro_dylib_suffix(ctx) {
@@ -127,14 +166,6 @@ fn active_dep_sections(ctx, manifest) {
     sections
 }
 
-fn active_dep_names(ctx, manifest) {
-    let names = [];
-    for section in active_dep_sections(ctx, manifest) {
-        names += section_dep_names(section);
-    }
-    names
-}
-
 fn active_dependency_sections(ctx, manifest) {
     let sections = [];
     let deps = manifest["dependencies"];
@@ -171,6 +202,12 @@ fn active_build_sections(ctx, manifest) {
     sections
 }
 
+fn active_build_names(ctx, manifest) {
+    let names = [];
+    for section in active_build_sections(ctx, manifest) { names += section_dep_names(section); }
+    names
+}
+
 fn dependency_entry(ctx, manifest, package_name) {
     for section in active_dep_sections(ctx, manifest) {
         for dependency_name in section.keys() {
@@ -199,9 +236,27 @@ fn edition_of(manifest) {
     if edition == () || edition == "" { "2015" } else { edition }
 }
 
+fn source_key(meta, package_name) {
+    for key in meta.keys() {
+        if meta[key]["src"].name == package_name { return key; }
+    }
+    ()
+}
+
+fn source_keys(meta, package_names) {
+    let found = [];
+    for package_name in package_names {
+        let key = source_key(meta, package_name);
+        if key != () && !found.contains(key) { found.push(key); }
+    }
+    found
+}
+
 fn source_meta(ctx) {
     let meta = #{};
     let adjacency = #{};
+    let normal_adjacency = #{};
+    let build_adjacency = #{};
     let full_adjacency = #{};
     let keys = [];
     for src in ctx.fetched_sources {
@@ -212,23 +267,21 @@ fn source_meta(ctx) {
             toml_decode(ctx.read_file(`${src.root}/Cargo.toml`))
         };
         let lib = manifest["lib"];
-        let proc_macro = lib != () && lib["proc-macro"] == true;
-        let suffix = if proc_macro { proc_macro_dylib_suffix(ctx) } else { "rlib" };
-        let crate = src.name;
-        crate.replace("-", "_");
         meta[key] = #{
             src: src,
             manifest: manifest,
             edition: edition_of(manifest),
-            artifact: `forge-out/lib/deps/lib${crate}-${src.version}.${suffix}`,
-            active: true,
+            proc_macro: lib != () && lib["proc-macro"] == true,
         };
         keys.push(key);
     }
     for key in keys {
         let src = meta[key]["src"];
-        let names = active_dep_names(ctx, meta[key]["manifest"]);
+        let normal_names = active_dependency_names(ctx, meta[key]["manifest"]);
+        let build_names = active_build_names(ctx, meta[key]["manifest"]);
         let deps = [];
+        let normal = [];
+        let build = [];
         let full = [];
         for dep_str in src.dependencies {
             let dep_name = dep_str.split(" ")[0];
@@ -242,15 +295,68 @@ fn source_meta(ctx) {
                 if candidate.name == package_name && (dep_version == "" || candidate.version == dep_version) {
                     let dep_key = dependency_key(candidate);
                     full.push(dep_key);
-                    if names.len() == 0 || names.contains(package_name) {
-                        deps.push(dep_key);
-                    }
+                    if normal_names.len() == 0 || normal_names.contains(package_name) { normal.push(dep_key); }
+                    if build_names.len() == 0 || build_names.contains(package_name) { build.push(dep_key); }
+                    if normal.contains(dep_key) || build.contains(dep_key) { deps.push(dep_key); }
                     break;
                 }
             }
         }
         adjacency[key] = deps;
+        normal_adjacency[key] = normal;
+        build_adjacency[key] = build;
         full_adjacency[key] = full;
     }
-    #{ meta: meta, adjacency: adjacency, full: full_adjacency, keys: keys }
+    let configurations = unit_configurations(ctx, meta, full_adjacency, normal_adjacency, build_adjacency);
+    for key in keys {
+        let entry = meta[key];
+        let crate = entry["src"].name;
+        crate.replace("-", "_");
+        let suffix = if entry["proc_macro"] { proc_macro_dylib_suffix(ctx) } else { "rlib" };
+        let artifacts = #{};
+        for transition in configurations[key] {
+            artifacts[transition] = `${unit_deps_dir(ctx, transition)}/lib${crate}-${entry["src"].version}.${suffix}`;
+        }
+        entry["artifacts"] = artifacts;
+        entry["configurations"] = configurations[key];
+        meta[key] = entry;
+    }
+    #{ meta: meta, adjacency: adjacency, normal_edges: normal_adjacency, build_edges: build_adjacency }
+}
+
+fn unit_configurations(ctx, meta, full, normal_edges, build_edges) {
+    let crate_manifest = workspace_crate_manifest(ctx);
+    let host = graph_reachable(full, source_keys(meta, active_build_names(ctx, crate_manifest)));
+    let target_seeds = [];
+    for key in graph_roots(full) {
+        if !host.contains(key) { target_seeds.push(key); }
+    }
+    for key in source_keys(meta, active_dependency_names(ctx, crate_manifest)) {
+        if !target_seeds.contains(key) { target_seeds.push(key); }
+    }
+    let target = graph_reachable(normal_edges, target_seeds);
+    let host_roots = [];
+    for key in target {
+        for dep_key in build_edges[key] {
+            if !host.contains(dep_key) { host_roots.push(dep_key); }
+        }
+        if meta[key]["proc_macro"] && !host.contains(key) { host_roots.push(key); }
+    }
+    for key in graph_reachable(full, host_roots) {
+        if !host.contains(key) { host.push(key); }
+    }
+    let configurations = #{};
+    for key in meta.keys() { configurations[key] = []; }
+    for key in host {
+        let units = configurations[key];
+        units.push("host");
+        configurations[key] = units;
+    }
+    for key in target {
+        if meta[key]["proc_macro"] { continue; }
+        let units = configurations[key];
+        units.push("target");
+        configurations[key] = units;
+    }
+    configurations
 }

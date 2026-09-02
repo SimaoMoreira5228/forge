@@ -2,7 +2,7 @@ fn rust_mode(config) {
     if config == () { return "native"; }
     if config.type_of() != "map" { throw "cell.rust must be a table"; }
     for key in config.keys() {
-        if !["mode"].contains(key) { throw `unknown cell.rust key: ${key}`; }
+        if !["mode", "dependencies"].contains(key) { throw `unknown cell.rust key: ${key}`; }
     }
     let mode = if config["mode"] == () { "native" } else { config["mode"] };
     if mode != "native" && mode != "cargo" { throw `unknown cell.rust mode: ${mode}`; }
@@ -40,41 +40,6 @@ fn rust_path(root, path) {
         joined += part;
     }
     joined
-}
-
-fn cargo_inherit(manifest, workspace) {
-    let pkg = manifest["package"];
-    if pkg == () { throw "Cargo package manifest requires [package]"; }
-    for key in pkg.keys() {
-        if key == "metadata" || pkg[key].type_of() != "map" { continue; }
-        if pkg[key]["workspace"] != true || workspace["package"] == () || workspace["package"][key] == () {
-            throw `unsupported or missing workspace.package.${key} inheritance`;
-        }
-        pkg[key] = workspace["package"][key];
-    }
-    manifest["package"] = pkg;
-    for section_name in ["dependencies", "build-dependencies", "dev-dependencies"] {
-        let section = manifest[section_name];
-        if section == () { continue; }
-        for name in section.keys() {
-            let spec = section[name];
-            if spec.type_of() != "map" || spec["workspace"] != true { continue; }
-            if workspace["dependencies"] == () || workspace["dependencies"][name] == () {
-                throw `missing workspace.dependencies.${name}`;
-            }
-            let inherited = workspace["dependencies"][name];
-            if inherited.type_of() == "string" { inherited = #{ version: inherited }; }
-            if inherited["path"] != () { inherited["forge-workspace-path"] = true; }
-            for key in spec.keys() {
-                if key == "workspace" { continue; }
-                if key == "features" && inherited[key] != () { inherited[key] += spec[key]; }
-                else { inherited[key] = spec[key]; }
-            }
-            section[name] = inherited;
-        }
-        manifest[section_name] = section;
-    }
-    manifest
 }
 
 fn cargo_glob(pattern) {
@@ -662,64 +627,6 @@ fn rust_registry_merge_request(existing, min, max, default_feature, forwarded, r
     [changed, existing]
 }
 
-fn rust_resolve(targets) {
-    let pending = [];
-    for metadata in targets {
-        let rust = metadata["rust"];
-        if rust == () || rust.type_of() != "map" { continue; }
-        if rust["manifest"] != () { continue; }
-        pending += rust_resolve_section(rust["dependencies"]);
-        pending += rust_resolve_section(rust["build-dependencies"]);
-    }
-    if pending.len() > 0 && resolving_dependencies {
-        rust_registry_candidates(pending);
-    }
-}
-
-fn rust_resolve_section(declarations) {
-    let pending = [];
-    if declarations == () { return pending; }
-    if declarations.type_of() != "map" { throw "Rust dependencies must be a table"; }
-    for alias in declarations.keys() {
-        let spec = declarations[alias];
-        if spec.type_of() != "map" { throw `Rust dependency ${alias} must be a table`; }
-        for key in spec.keys() {
-            if !["name", "version", "source", "checksum", "dependencies", "range", "registry", "features", "default-features", "git", "rev"].contains(key) { throw `unknown Rust dependency key: ${key}`; }
-        }
-        let name = if spec["name"] == () { alias } else { spec["name"] };
-        if spec.contains("range") {
-            let registry = rust_registry_index_url(spec.registry);
-            try {
-                for key in ["version", "source", "checksum", "dependencies"] {
-                    if spec.contains(key) { throw `range cannot be combined with ${key}`; }
-                }
-                rust_name(name);
-                name = name.to_lower();
-                if spec["features"] != () && spec["features"].type_of() != "array" { throw "dependency features must be an array"; }
-                let range = rust_registry_range(spec.range);
-                dependency_require(name, range.min, range.max);
-                pending.push(#{
-                    name: name,
-                    min: range.min,
-                    max: range.max,
-                    registry: registry,
-                    features: if spec["features"] == () { [] } else { spec["features"] },
-                    "default": spec["default-features"] != false,
-                });
-            } catch (error) { throw `Rust registry ${registry}, dependency ${alias}: ${error}`; }
-        } else if spec.contains("git") {
-            if spec["version"] == () || spec["rev"] == () { throw `git dependency ${alias} requires version and rev`; }
-            let deps = if spec["dependencies"] == () { [] } else { spec["dependencies"] };
-            dependency_git(name, spec["version"], spec["git"], spec["rev"], deps);
-        } else {
-            if spec.contains("registry") { throw `native registry requires range: ${spec.registry}`; }
-            let deps = if spec["dependencies"] == () { [] } else { spec["dependencies"] };
-            dependency(name, spec["version"], spec["source"], spec["checksum"], deps);
-        }
-    }
-    pending
-}
-
 fn rust_workspace(config) {
     let mode = rust_mode(config);
     if mode == "native" { return; }
@@ -752,10 +659,4 @@ fn rust_workspace(config) {
     if !path_exists("FORGE.toml") && !path_exists("FORGE.rhai") {
         cargo_import_targets(root, lock);
     }
-}
-
-if is_def_var("targets") {
-    rust_resolve(targets);
-} else if is_def_var("cell_config") {
-    rust_workspace(cell_config);
 }

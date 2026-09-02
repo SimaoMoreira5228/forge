@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub fn have_rustc() -> bool {
@@ -56,6 +56,52 @@ pub fn run_forge(dir: &Path, args: &[&str]) -> (bool, String) {
 			String::from_utf8_lossy(&out.stderr)
 		),
 	)
+}
+
+pub fn rust_workspace(name: &str, rust_config: &str) -> PathBuf {
+	let dir = std::env::temp_dir().join(format!("forge-rust-{name}-{}", std::process::id()));
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(dir.join("src")).unwrap();
+	std::fs::write(
+		dir.join("FORGE_ROOT"),
+		format!(
+			"[project]\nname = \"rust_workspace\"\n\n[discovery]\ninclude = [\".\"]\n\n[toolchains.rust]\nfrom = \"version\"\nversion = \"1.98.0\"\n\n[cell.rust]\n{rust_config}\n"
+		),
+	)
+	.unwrap();
+	dir
+}
+
+pub fn install_rust_toolchain(dir: &Path) {
+	assert!(have_rustc(), "Rust mode execution tests require an installed rustc");
+	if link_rust_toolchain(dir) {
+		return;
+	}
+	let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+	let source = root.join(".forge/toolchains/rust/1.98.0");
+	assert!(
+		source.exists(),
+		"Rust mode execution tests require the installed Rust 1.98.0 toolchain"
+	);
+	let link = dir.join(".forge/toolchains/rust/1.98.0");
+	std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+	#[cfg(unix)]
+	std::os::unix::fs::symlink(source, link).unwrap();
+	#[cfg(not(unix))]
+	panic!("Rust integration test requires a workspace toolchain symlink");
+}
+
+pub fn build_and_run_rust(dir: &Path, binary: &str, executed: usize, expected: &str) {
+	let (ok, log) = run_forge(dir, &["build"]);
+	assert!(ok, "Rust build failed in {}: {log}", dir.display());
+	assert!(
+		log.contains(&format!("{executed} executed")),
+		"expected actual compilation: {log}"
+	);
+	let path = dir.join(format!("forge-out/bin/debug/{binary}"));
+	let output = Command::new(&path).output().expect("execute the Forge-built Rust binary");
+	assert!(output.status.success(), "{} failed: {output:?}", path.display());
+	assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
 }
 
 pub fn link_rust_toolchain(dir: &Path) -> bool {

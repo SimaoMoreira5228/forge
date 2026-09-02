@@ -90,14 +90,16 @@ impl WorkspaceConfig {
 			#[serde(default)]
 			build: Option<RawBuild>,
 			#[serde(default)]
-			deps: Option<RawDeps>,
+			resolution: Option<RawResolution>,
+			#[serde(default)]
+			deps: Option<toml::Value>,
 			#[serde(default)]
 			cell: BTreeMap<String, toml::Table>,
 		}
 
 		#[derive(Deserialize, Default)]
 		#[serde(deny_unknown_fields)]
-		struct RawDeps {
+		struct RawResolution {
 			#[serde(default)]
 			max_response_bytes: Option<u64>,
 			#[serde(default)]
@@ -375,17 +377,23 @@ impl WorkspaceConfig {
 		let target_platform = raw.build.and_then(|b| b.target);
 
 		let registry_url = raw.registry.map(|registry| registry.url);
+		if raw.deps.is_some() {
+			return Err(ForgeDiagnostic::error(
+				codes::script::UNKNOWN_KEY,
+				"FORGE_ROOT section [deps] was renamed to [resolution]",
+			));
+		}
 		let defaults = ResolutionLimits::default();
-		let deps = raw.deps.unwrap_or_default();
+		let resolution = raw.resolution.unwrap_or_default();
 		let resolution = ResolutionLimits {
-			max_response_bytes: deps.max_response_bytes.unwrap_or(defaults.max_response_bytes),
-			timeout_secs: deps.timeout_secs.unwrap_or(defaults.timeout_secs),
-			max_requests: deps.max_requests.unwrap_or(defaults.max_requests),
+			max_response_bytes: resolution.max_response_bytes.unwrap_or(defaults.max_response_bytes),
+			timeout_secs: resolution.timeout_secs.unwrap_or(defaults.timeout_secs),
+			max_requests: resolution.max_requests.unwrap_or(defaults.max_requests),
 		};
 		if resolution.max_response_bytes == 0 || resolution.timeout_secs == 0 || resolution.max_requests == 0 {
 			return Err(ForgeDiagnostic::error(
 				codes::script::WRONG_TYPE,
-				"[deps] limits must be positive",
+				"[resolution] limits must be positive",
 			));
 		}
 
@@ -486,7 +494,7 @@ mod tests {
 
 		assert_eq!(WorkspaceConfig::parse("").unwrap().resolution, ResolutionLimits::default());
 		let config =
-			WorkspaceConfig::parse("[deps]\nmax_response_bytes = 32\ntimeout_secs = 1\nmax_requests = 2\n").unwrap();
+			WorkspaceConfig::parse("[resolution]\nmax_response_bytes = 32\ntimeout_secs = 1\nmax_requests = 2\n").unwrap();
 		assert_eq!(
 			config.resolution,
 			ResolutionLimits {
@@ -495,15 +503,22 @@ mod tests {
 				max_requests: 2
 			}
 		);
-		let partial = WorkspaceConfig::parse("[deps]\nmax_requests = 17\n").unwrap();
+		let partial = WorkspaceConfig::parse("[resolution]\nmax_requests = 17\n").unwrap();
 		assert_eq!(partial.resolution.timeout_secs, 20);
 		assert_eq!(partial.resolution.max_requests, 17);
 		for key in ["max_response_bytes", "timeout_secs", "max_requests"] {
 			for value in ["0", "-1", "1.5", "\"unlimited\""] {
-				assert!(WorkspaceConfig::parse(&format!("[deps]\n{key} = {value}\n")).is_err());
+				assert!(WorkspaceConfig::parse(&format!("[resolution]\n{key} = {value}\n")).is_err());
 			}
 		}
-		assert!(WorkspaceConfig::parse("[deps]\nmax_request = 20\n").is_err());
+		assert!(WorkspaceConfig::parse("[resolution]\nmax_request = 20\n").is_err());
+		assert!(
+			WorkspaceConfig::parse("[deps]\nmax_requests = 2\n")
+				.unwrap_err()
+				.to_string()
+				.contains("renamed to [resolution]"),
+			"the resolution limits section must not keep its old name"
+		);
 	}
 
 	#[test]

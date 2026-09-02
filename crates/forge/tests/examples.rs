@@ -89,7 +89,7 @@ fn rust_native_example_builds_runs_and_tests_without_cargo() {
 	let (ok, log) = run_forge(&dir, &["build"]);
 	assert!(ok, "rust-native build failed: {log}");
 	assert!(dir.join("forge-out/bin/debug/app").is_file(), "{log}");
-	assert!(dir.join("forge-out/lib/libmath.rlib").is_file(), "{log}");
+	assert!(dir.join("forge-out/lib/debug/libmath.rlib").is_file(), "{log}");
 
 	let (ok, log) = run_forge(&dir, &["run", "app"]);
 	assert!(ok, "rust-native run failed: {log}");
