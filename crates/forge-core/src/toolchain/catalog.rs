@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use forge_diagnostics::{ForgeDiagnostic, codes};
 use serde::Deserialize;
 
+use crate::worker::WorkerProgram;
+
 #[derive(Debug, Default, Clone)]
 pub struct Catalog {
 	entries: BTreeMap<String, ToolchainEntry>,
@@ -17,6 +19,7 @@ pub struct ToolchainEntry {
 	pub install: Option<InstallScript>,
 	pub bin_aliases: Vec<BinAlias>,
 	pub coverage: Option<CoverageBackend>,
+	pub worker: Option<WorkerProgram>,
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +103,9 @@ impl ToolchainEntry {
 		if override_entry.install.is_some() {
 			self.install = override_entry.install.clone();
 		}
+		if override_entry.worker.is_some() {
+			self.worker = override_entry.worker.clone();
+		}
 	}
 }
 
@@ -177,6 +183,14 @@ impl Catalog {
 			#[serde(default)]
 			bin_aliases: Vec<RawBinAlias>,
 			coverage: Option<RawCoverage>,
+			worker: Option<RawWorker>,
+		}
+
+		#[derive(Deserialize)]
+		struct RawWorker {
+			command: String,
+			#[serde(default)]
+			variants: Vec<String>,
 		}
 
 		#[derive(Deserialize)]
@@ -231,6 +245,10 @@ impl Catalog {
 							})
 							.collect(),
 						coverage: parse_coverage(e.coverage)?,
+						worker: e.worker.map(|worker| WorkerProgram {
+							command: worker.command,
+							variants: worker.variants,
+						}),
 					},
 				))
 			})
@@ -326,6 +344,33 @@ commands = [
 	assert_eq!(backend.format, CoverageFormat::Lcov);
 	assert_eq!(backend.commands.len(), 2);
 	assert_eq!(backend.commands[1].stdout.as_deref(), Some("{work}/coverage.info"));
+}
+
+#[test]
+fn worker_declarations_come_from_the_catalog() {
+	let cat = Catalog::parse(
+		r#"
+[toolchains.scala]
+default_version = "1"
+
+[toolchains.scala.worker]
+command = "scala-worker"
+variants = ["batch"]
+
+[toolchains.gcc]
+default_version = "14"
+
+[toolchains.gcc.worker]
+command = "gcc-batch"
+"#,
+	)
+	.unwrap();
+	let scala = cat.get("scala").unwrap().worker.as_ref().unwrap();
+	assert_eq!(scala.command, "scala-worker");
+	assert!(scala.accepts("batch") && !scala.accepts("incremental"));
+	let gcc = cat.get("gcc").unwrap().worker.as_ref().unwrap();
+	assert!(gcc.accepts("anything"), "an unlisted variant list accepts every variant");
+	assert!(cat.get("rust").is_none());
 }
 
 #[test]

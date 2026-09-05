@@ -6,6 +6,7 @@ pub mod platform;
 pub mod profile;
 pub mod resolver;
 pub mod toolchain;
+pub mod worker;
 
 pub use action::spec::{ActionSpec, ArgumentFile, EnvironmentFile, OutputDeclaration, OutputKind};
 pub use graph::build_graph::BuildGraph;
@@ -20,3 +21,4 @@ pub use resolver::{
 };
 pub use toolchain::Catalog;
 pub use toolchain::catalog::TargetUrl;
+pub use worker::{Confinement, WorkRequest, WorkResponse, WorkerBinding, WorkerMount, WorkerProgram};

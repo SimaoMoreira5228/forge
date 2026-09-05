@@ -56,6 +56,7 @@ enum Command {
 		#[arg(long, default_value = "10")]
 		limit: usize,
 	},
+	Confine,
 	Coverage {
 		target: Option<String>,
 		#[arg(long)]
@@ -109,6 +110,7 @@ enum Command {
 		#[command(subcommand)]
 		action: DepsAction,
 	},
+	Worker,
 }
 
 #[derive(Subcommand)]
@@ -289,6 +291,11 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 			if slowest.is_empty() && rates.is_empty() {
 				println!("no telemetry recorded yet — run a build first");
 			}
+			Ok(())
+		}
+
+		Command::Confine => {
+			print!("{}", forge_engine::confine::active().renders());
 			Ok(())
 		}
 
@@ -476,6 +483,12 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 				);
 			}
 			Ok(())
+		}
+
+		Command::Worker => {
+			let stdin = std::io::stdin();
+			let mut stdout = std::io::stdout();
+			forge_engine::worker::serve(&mut stdin.lock(), &mut stdout).map_err(|e| ForgeDiagnostic::error(8, e))
 		}
 	}
 }

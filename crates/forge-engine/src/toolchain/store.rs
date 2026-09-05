@@ -18,10 +18,36 @@ pub enum CatalogOrigin {
 #[derive(Debug, Clone)]
 pub struct ResolvedToolchain {
 	pub name: String,
+	pub root: PathBuf,
 	pub bin_dir: PathBuf,
 	pub path_dirs: Vec<PathBuf>,
 	pub digest: String,
 	pub coverage: Option<forge_core::toolchain::catalog::CoverageBackend>,
+	pub worker: Option<forge_core::worker::WorkerProgram>,
+}
+
+#[derive(Default)]
+pub struct ToolchainPaths {
+	pub bin: Vec<PathBuf>,
+	pub read_only: Vec<PathBuf>,
+}
+
+impl ToolchainPaths {
+	pub fn of(toolchains: &BTreeMap<String, ResolvedToolchain>) -> Self {
+		let mut paths = Self {
+			bin: toolchains.values().flat_map(|t| t.path_dirs.iter().cloned()).collect(),
+			read_only: toolchains.values().map(|t| t.root.clone()).collect(),
+		};
+		paths.bin.sort();
+		paths.bin.dedup();
+		paths.read_only.sort();
+		paths.read_only.dedup();
+		paths
+	}
+
+	pub fn bin_refs(&self) -> Vec<&Path> {
+		self.bin.iter().map(PathBuf::as_path).collect()
+	}
 }
 
 impl ResolvedToolchain {
@@ -144,6 +170,7 @@ impl ToolchainStore {
 				}
 				let mut tool = Self::finish(name, &bin_dir, bin_dir.clone());
 				tool.coverage = self.catalog.get(name).and_then(|entry| entry.coverage.clone());
+				tool.worker = self.catalog.get(name).and_then(|entry| entry.worker.clone());
 				Ok(tool)
 			}
 			ToolchainSelection::Version { version } => {
@@ -151,6 +178,7 @@ impl ToolchainStore {
 				let dir = self.install_dir(&resolved.name, &resolved.version);
 				let mut tool = self.synced_root(name, version, &dir)?;
 				tool.coverage = resolved.entry.coverage.clone();
+				tool.worker = resolved.entry.worker.clone();
 				Ok(tool)
 			}
 			ToolchainSelection::Url { url, .. } => {
@@ -180,10 +208,12 @@ impl ToolchainStore {
 		let digest = directory_digest(root, &path_dirs);
 		ResolvedToolchain {
 			name: name.to_string(),
+			root: root.to_path_buf(),
 			bin_dir,
 			path_dirs,
 			digest,
 			coverage: None,
+			worker: None,
 		}
 	}
 }

@@ -5,6 +5,7 @@ use blake3::Hasher;
 use serde::Serialize;
 
 use crate::platform::ConfigTransition;
+use crate::worker::WorkerBinding;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OutputDeclaration {
@@ -51,6 +52,7 @@ pub struct ActionSpec {
 	pub argument_files: Vec<ArgumentFile>,
 	pub env: BTreeMap<String, String>,
 	pub toolchain_id: Option<String>,
+	pub worker: Option<WorkerBinding>,
 }
 
 impl ActionSpec {
@@ -105,6 +107,12 @@ impl ActionSpec {
 			put(&mut h, v);
 		}
 		put_opt(&mut h, self.toolchain_id.as_deref());
+		if let Some(binding) = &self.worker {
+			put(&mut h, &binding.program);
+			put(&mut h, &binding.variant);
+		} else {
+			h.update(&[0u8]);
+		}
 		h.finalize().into()
 	}
 
@@ -155,6 +163,7 @@ mod tests {
 			argument_files: Vec::new(),
 			env: BTreeMap::from([("CFLAGS".into(), "-O2".into())]),
 			toolchain_id: Some("clang@19.1.7".into()),
+			worker: None,
 		}
 	}
 
@@ -184,5 +193,12 @@ mod tests {
 		let mut s6 = spec();
 		s6.configuration = ConfigTransition::Host;
 		assert_ne!(spec().fingerprint(), s6.fingerprint());
+
+		let mut s7 = spec();
+		s7.worker = Some(crate::worker::WorkerBinding {
+			program: "/bin/w".into(),
+			variant: "release".into(),
+		});
+		assert_ne!(spec().fingerprint(), s7.fingerprint());
 	}
 }

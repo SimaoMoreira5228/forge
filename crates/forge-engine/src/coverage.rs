@@ -298,10 +298,12 @@ mod tests {
 			"fake".to_string(),
 			ResolvedToolchain {
 				name: "fake".into(),
+				root: bin.clone(),
 				bin_dir: bin.clone(),
 				path_dirs: vec![bin],
 				digest: "deadbeef".into(),
 				coverage: Some(backend),
+				worker: None,
 			},
 		)]);
 

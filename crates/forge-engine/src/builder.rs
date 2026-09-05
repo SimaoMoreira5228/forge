@@ -15,7 +15,8 @@ use crate::lock::FileLock;
 use crate::planner::{ActionDag, PlanContext, build_action_dag};
 use crate::runner::SandboxRunner;
 use crate::schedule::execute_dag;
-use crate::toolchain::{ResolvedToolchain, ToolchainStore};
+use crate::toolchain::{ResolvedToolchain, ToolchainPaths, ToolchainStore};
+use crate::worker::WorkerPool;
 
 pub struct Engine {
 	pub(crate) workspace: PathBuf,
@@ -285,6 +286,13 @@ impl Engine {
 		selection: Option<&str>,
 		force: bool,
 	) -> Result<BuildOutcome, ForgeDiagnostic> {
+		let confinement = crate::confine::active();
+		if !confinement.gates_paths {
+			eprintln!(
+				"confinement: {} — run `forge confine` for the full report",
+				confinement.backend.name()
+			);
+		}
 		let mut progress = crate::progress::Progress::new(0, profile_name);
 		progress.header(env!("CARGO_PKG_VERSION"));
 		progress.phase("Loading workspace...");
@@ -306,6 +314,8 @@ impl Engine {
 		if !dynamic_components(&prepared.decls).is_empty() {
 			progress.phase("Running dynamic actions...");
 			let dynamic = dynamic_components(&prepared.decls);
+			let toolchains_paths = ToolchainPaths::of(&toolchains);
+			let discovery_workers = WorkerPool::new(&runner, &toolchains_paths);
 			let discovery = ExecContext {
 				run_tests: false,
 				discovery: true,
@@ -319,6 +329,8 @@ impl Engine {
 				cas: &cas,
 				db: &db,
 				runner: &runner,
+				workers: &discovery_workers,
+				toolchains_paths: &toolchains_paths,
 				toolchains: &toolchains,
 				profile_fingerprint: profile.fingerprint(),
 				outcome: parking_lot::Mutex::new(BuildOutcome::default()),
@@ -344,6 +356,8 @@ impl Engine {
 		db.replace_graph(&prepared.graph.node_rows(), &prepared.graph.edge_rows());
 
 		let dynamic = dynamic_components(&prepared.decls);
+		let toolchains_paths = ToolchainPaths::of(&toolchains);
+		let workers = WorkerPool::new(&runner, &toolchains_paths);
 		let exec = ExecContext {
 			run_tests,
 			discovery: false,
@@ -357,6 +371,8 @@ impl Engine {
 			cas: &cas,
 			db: &db,
 			runner: &runner,
+			workers: &workers,
+			toolchains_paths: &toolchains_paths,
 			toolchains: &toolchains,
 			profile_fingerprint: profile.fingerprint(),
 			outcome: parking_lot::Mutex::new(BuildOutcome::default()),
@@ -422,6 +438,8 @@ struct ExecContext<'a> {
 	cas: &'a Cas,
 	db: &'a CacheDb,
 	runner: &'a SandboxRunner,
+	workers: &'a WorkerPool<'a>,
+	toolchains_paths: &'a ToolchainPaths,
 	toolchains: &'a BTreeMap<String, ResolvedToolchain>,
 	profile_fingerprint: String,
 	outcome: parking_lot::Mutex<BuildOutcome>,
@@ -498,14 +516,10 @@ impl ExecContext<'_> {
 		}
 
 		let sandbox = self.runner.prepare(&key, spec)?;
-		let mut bins: Vec<&Path> = self
-			.toolchains
-			.values()
-			.flat_map(|t| t.path_dirs.iter().map(|p| p.as_path()))
-			.collect();
-		bins.sort();
-		bins.dedup();
-		let report = self.runner.execute(spec, &sandbox, &bins);
+		let report = match &spec.worker {
+			Some(binding) => self.workers.execute(spec, binding, &sandbox),
+			None => self.runner.execute(spec, &sandbox, self.toolchains_paths),
+		};
 
 		if !report.success {
 			if is_test_run {

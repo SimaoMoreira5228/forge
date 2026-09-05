@@ -146,6 +146,7 @@ mod tests {
 			argument_files: Vec::new(),
 			env: BTreeMap::new(),
 			toolchain_id: None,
+			worker: None,
 		}
 	}
 

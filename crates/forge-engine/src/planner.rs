@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use forge_core::{
 	ActionSpec, ArgumentFile, BuildGraph, ComponentId, ComponentKind, EnvironmentFile, OutputDeclaration, OutputKind,
-	Platform, Profile,
+	Platform, Profile, WorkerBinding,
 };
 use forge_diagnostics::{ForgeDiagnostic, codes};
 use forge_script::TargetDecl;
@@ -238,6 +238,43 @@ impl<'a> Planner<'a> {
 		.with_help("add a [toolchains.<name>] section to FORGE_ROOT"))
 	}
 
+	fn worker_binding(
+		&self,
+		subject: &str,
+		variant: &str,
+		toolchain: Option<&ResolvedToolchain>,
+	) -> Result<WorkerBinding, ForgeDiagnostic> {
+		let Some(toolchain) = toolchain else {
+			return Err(ForgeDiagnostic::error(
+				codes::hermetic::TOOLCHAIN_MISMATCH,
+				format!("`{subject}` requests worker variant `{variant}` but names no toolchain"),
+			)
+			.with_help("a worker belongs to a toolchain: add `compiler = \"<toolchain>\"`"));
+		};
+		let Some(program) = &toolchain.worker else {
+			return Err(ForgeDiagnostic::error(
+				codes::hermetic::TOOLCHAIN_MISMATCH,
+				format!(
+					"`{subject}` requests worker variant `{variant}` but toolchain `{}` declares no worker",
+					toolchain.name
+				),
+			)
+			.with_help("declare `[toolchains.<name>.worker]` in the toolchain catalog, or drop `worker`"));
+		};
+		if !program.accepts(variant) {
+			return Err(ForgeDiagnostic::error(
+				codes::hermetic::TOOLCHAIN_MISMATCH,
+				format!("toolchain `{}` does not declare worker variant `{variant}`", toolchain.name),
+			)
+			.with_help(format!("declared variants: {}", program.variants.join(", "))));
+		}
+		let program = crate::toolchain::resolve_tool_path(self.ctx.toolchains, &program.command)?;
+		Ok(WorkerBinding {
+			program: program.to_string_lossy().into_owned(),
+			variant: variant.to_string(),
+		})
+	}
+
 	fn plan_rule(&mut self, id: ComponentId) -> Result<(), ForgeDiagnostic> {
 		let label = self.ctx.graph.component(id).label.to_string();
 		let decl = self.decl_for(id)?.clone();
@@ -248,18 +285,22 @@ impl<'a> Planner<'a> {
 			));
 		}
 		let command = decl.command.expect("checked above");
-		let command = if command.contains('/') {
+		let command = if Path::new(&command)
+			.parent()
+			.is_some_and(|parent| !parent.as_os_str().is_empty())
+		{
 			command
 		} else {
 			crate::toolchain::resolve_tool_path(self.ctx.toolchains, &command)?
 				.to_string_lossy()
 				.into_owned()
 		};
-		let toolchain_id = decl
-			.compiler
-			.as_deref()
-			.and_then(|name| self.ctx.toolchains.get(name))
-			.map(tool_id);
+		let toolchain = decl.compiler.as_deref().and_then(|name| self.ctx.toolchains.get(name));
+		let toolchain_id = toolchain.map(tool_id);
+		let worker = match &decl.worker {
+			Some(variant) => Some(self.worker_binding(&label, variant, toolchain)?),
+			None => None,
+		};
 		let outputs = match &decl.output_dir {
 			Some(dir) => vec![OutputDeclaration {
 				path: PathBuf::from(dir),
@@ -290,6 +331,7 @@ impl<'a> Planner<'a> {
 			argument_files: Vec::new(),
 			env: decl.env.clone(),
 			toolchain_id,
+			worker,
 		});
 		Ok(())
 	}
@@ -347,6 +389,10 @@ impl<'a> Planner<'a> {
 		let pkg_slug = self.package_slug(id);
 		let name = component.label.name().to_string();
 		let tool = self.tool_for(&decl, &language)?.clone();
+		let worker = match &decl.worker {
+			Some(variant) => Some(self.worker_binding(&label, variant, Some(&tool))?),
+			None => None,
+		};
 		let tool_for_bin = tool.clone();
 		let tool_digest = tool_id(&tool);
 
@@ -436,7 +482,7 @@ impl<'a> Planner<'a> {
 		};
 
 		let actions = lower(script, &view, hooks)?;
-		self.register_cell_actions(actions, id, kind)
+		self.register_cell_actions(actions, id, kind, worker)
 	}
 
 	fn register_cell_actions(
@@ -444,6 +490,7 @@ impl<'a> Planner<'a> {
 		actions: Vec<ActionDecl>,
 		id: ComponentId,
 		kind: &'static str,
+		worker: Option<WorkerBinding>,
 	) -> Result<(), ForgeDiagnostic> {
 		let label = self.ctx.graph.component(id).label.to_string();
 		let mut archive_path: Option<PathBuf> = None;
@@ -499,6 +546,9 @@ impl<'a> Planner<'a> {
 					.collect(),
 				env: action.env.clone(),
 				toolchain_id: action.toolchain_id.clone(),
+				worker: worker
+					.clone()
+					.filter(|_| action.toolchain_id.as_ref().is_some_and(|id| !id.is_empty())),
 			};
 			self.emit(spec);
 		}

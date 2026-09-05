@@ -1,18 +1,34 @@
-use std::ffi::CString;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::process::CommandExt;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::Instant;
 
-use forge_core::{ActionSpec, EnvironmentFile, OutputKind};
+use forge_core::{ActionSpec, Confinement, EnvironmentFile, OutputKind, WorkRequest, WorkerMount};
 use forge_diagnostics::{ForgeDiagnostic, codes};
+
+use crate::confine::Policy;
+use crate::toolchain::ToolchainPaths;
 
 pub struct SandboxRunner {
 	workspace: PathBuf,
 	out_prefix: Option<PathBuf>,
 	sandbox_root: PathBuf,
 	exec_root: PathBuf,
+	isolated: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct Launch {
+	pub program: String,
+	pub args: Vec<String>,
+	pub env: BTreeMap<String, String>,
+	pub workdir: PathBuf,
+}
+
+struct Execution {
+	launch: Launch,
+	mount: Option<WorkerMount>,
+	confinement: Confinement,
 }
 
 pub struct ExecReport {
@@ -24,15 +40,20 @@ pub struct ExecReport {
 
 const TAIL_BYTES: usize = 4000;
 const RUNNER_LANG_ENV: [(&str, &str); 2] = [("LANG", "C.UTF-8"), ("LC_ALL", "C.UTF-8")];
+// PERF: ext4 reports ETXTBSY when a hardlinked input was closed by the very process now execing it.
+const ETXTBSY: i32 = 26;
 
 impl SandboxRunner {
 	pub fn new(workspace: &Path, out_dir: &Path) -> Self {
 		let exec_root = out_dir.join("exec");
 		let _ = std::fs::create_dir_all(&exec_root);
+		let sandbox_root = out_dir.join("sandbox");
+		let _ = std::fs::create_dir_all(&sandbox_root);
 		Self {
 			workspace: workspace.to_path_buf(),
 			out_prefix: out_dir.strip_prefix(workspace).ok().map(Path::to_path_buf),
-			sandbox_root: out_dir.join("sandbox"),
+			isolated: crate::confine::mounts_sandbox(),
+			sandbox_root,
 			exec_root,
 		}
 	}
@@ -79,167 +100,102 @@ impl SandboxRunner {
 		Ok(dir)
 	}
 
-	pub fn execute(&self, spec: &ActionSpec, sandbox: &Path, toolchain_bins: &[&Path]) -> ExecReport {
-		#[cfg(target_os = "linux")]
-		if should_use_namespaces()
-			&& let Ok(report) = self.execute_namespaced(spec, sandbox, toolchain_bins)
-		{
-			return report;
-		}
-		self.execute_plain(spec, sandbox, toolchain_bins)
+	pub fn execute(&self, spec: &ActionSpec, sandbox: &Path, toolchains: &ToolchainPaths) -> ExecReport {
+		let execution = self.execution_for(spec, sandbox, toolchains);
+		let started = Instant::now();
+		let output = self.spawn(&execution);
+		let duration = started.elapsed();
+		self.report(spec, sandbox, output, duration)
 	}
 
-	fn command_for(
-		&self,
-		spec: &ActionSpec,
-		sandbox: &Path,
-		exec_root: &Path,
-		toolchain_bins: &[&Path],
-		argument_files: &[String],
-	) -> Command {
-		let mut command = Command::new(expand_token(&spec.command, exec_root));
-		for argument in &spec.args {
-			command.arg(expand_token(argument, exec_root));
+	fn spawn(&self, execution: &Execution) -> std::io::Result<Output> {
+		let policy = Policy::of(&execution.confinement, execution.mount.as_ref(), &execution.launch.program);
+		spawn(&execution.launch, execution.mount.as_ref(), &policy)
+	}
+
+	pub fn work_request(&self, spec: &ActionSpec, sandbox: &Path, toolchains: &ToolchainPaths) -> WorkRequest {
+		let execution = self.execution_for(spec, sandbox, toolchains);
+		WorkRequest {
+			program: execution.launch.program,
+			args: execution.launch.args,
+			env: execution.launch.env,
+			workdir: execution.launch.workdir,
+			mount: execution.mount,
+			confinement: Some(execution.confinement),
+			outputs: spec.output_paths().map(Path::to_path_buf).collect(),
 		}
-		command.stdout(Stdio::piped()).stderr(Stdio::piped());
-		command.env_clear();
-		for (k, v) in RUNNER_LANG_ENV {
-			command.env(k, v);
+	}
+
+	pub fn record_stdout(&self, spec: &ActionSpec, sandbox: &Path, bytes: &[u8]) {
+		if let Some(path) = &spec.stdout {
+			let _ = std::fs::write(sandbox.join(path), bytes);
 		}
-		if !toolchain_bins.is_empty() {
-			let mut joined = toolchain_bins
-				.iter()
-				.map(|p| p.to_string_lossy().into_owned())
-				.collect::<Vec<_>>()
-				.join(":");
-			joined.push(':');
-			joined.push_str(&fallback_path());
-			command.env("PATH", joined);
+	}
+
+	fn execution_for(&self, spec: &ActionSpec, sandbox: &Path, toolchains: &ToolchainPaths) -> Execution {
+		let (root, mount) = if self.isolated {
+			(
+				self.exec_root.clone(),
+				Some(WorkerMount {
+					source: sandbox.to_path_buf(),
+					target: self.exec_root.clone(),
+				}),
+			)
 		} else {
-			command.env("PATH", fallback_path());
+			(sandbox.to_path_buf(), None)
+		};
+		Execution {
+			launch: self.launch_for(spec, sandbox, &root, &toolchains.bin_refs()),
+			confinement: Confinement::new(root, toolchains.read_only.clone()),
+			mount,
 		}
+	}
+
+	fn launch_for(&self, spec: &ActionSpec, sandbox: &Path, root: &Path, toolchain_bins: &[&Path]) -> Launch {
+		let mut env: BTreeMap<String, String> =
+			RUNNER_LANG_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+		env.insert("PATH".into(), toolchain_path(toolchain_bins));
 		for (k, v) in &spec.env {
-			command.env(k, expand_token(v, exec_root));
+			env.insert(k.clone(), expand_token(v, root));
 		}
 		for file in &spec.environment_files {
 			for (key, value) in read_environment_file(sandbox.join(&file.path), file) {
-				command.env(metadata_env_name(&file.key_prefix, &key), &value);
+				env.insert(metadata_env_name(&file.key_prefix, &key), value);
 			}
 		}
 		if !spec.env.contains_key("HOME") {
-			command.env("HOME", &self.workspace);
+			env.insert("HOME".into(), self.workspace.to_string_lossy().into_owned());
 		}
 		if !spec.env.contains_key("TMPDIR") {
-			command.env("TMPDIR", exec_root.join("tmp"));
+			env.insert("TMPDIR".into(), root.join("tmp").to_string_lossy().into_owned());
 		}
-		for argument in argument_files {
-			command.arg(argument);
+		let mut args: Vec<String> = spec.args.iter().map(|argument| expand_token(argument, root)).collect();
+		args.extend(read_argument_files(sandbox, &spec.argument_files, root));
+		Launch {
+			program: expand_token(&spec.command, root),
+			args,
+			env,
+			workdir: spec
+				.workdir
+				.as_ref()
+				.map_or_else(|| root.to_path_buf(), |path| root.join(path)),
 		}
-		command
 	}
 
-	#[cfg(target_os = "linux")]
-	fn execute_namespaced(
+	fn report(
 		&self,
 		spec: &ActionSpec,
 		sandbox: &Path,
-		toolchain_bins: &[&Path],
-	) -> Result<ExecReport, std::io::Error> {
-		let exec_root = &self.exec_root;
-		let workdir = spec
-			.workdir
-			.as_ref()
-			.map_or_else(|| exec_root.clone(), |path| exec_root.join(path));
-		let argument_files = read_argument_files(sandbox, &spec.argument_files, exec_root);
-		let mut command = self.command_for(spec, sandbox, exec_root, toolchain_bins, &argument_files);
-		let sandbox_c = CString::new(sandbox.as_os_str().as_bytes()).map_err(io_other)?;
-		let exec_root_c = CString::new(exec_root.as_os_str().as_bytes()).map_err(io_other)?;
-		let workdir_c = CString::new(workdir.as_os_str().as_bytes()).map_err(io_other)?;
-		unsafe {
-			command.pre_exec(move || {
-				if libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) != 0 {
-					return Err(std::io::Error::last_os_error());
-				}
-				let _ = std::fs::write("/proc/self/setgroups", b"deny");
-				let _ = std::fs::write("/proc/self/uid_map", format!("0 {} 1", libc::getuid()));
-				let _ = std::fs::write("/proc/self/gid_map", format!("0 {} 1", libc::getgid()));
-				if libc::mount(
-					std::ptr::null(),
-					c"/".as_ptr(),
-					std::ptr::null(),
-					libc::MS_REC | libc::MS_PRIVATE,
-					std::ptr::null(),
-				) != 0
-				{
-					return Err(std::io::Error::last_os_error());
-				}
-				if libc::mount(
-					sandbox_c.as_ptr(),
-					exec_root_c.as_ptr(),
-					std::ptr::null(),
-					libc::MS_BIND | libc::MS_REC,
-					std::ptr::null(),
-				) != 0
-				{
-					return Err(std::io::Error::last_os_error());
-				}
-				if libc::chdir(workdir_c.as_ptr()) != 0 {
-					return Err(std::io::Error::last_os_error());
-				}
-				Ok(())
-			});
-		}
-
-		let started = Instant::now();
-		let output = command.output();
-		let duration = started.elapsed();
-		let output = output?;
-		if let Some(path) = &spec.stdout {
-			let _ = std::fs::write(sandbox.join(path), &output.stdout);
-		}
-		Ok(ExecReport {
-			success: output.status.success(),
-			stdout_tail: tail(&output.stdout),
-			stderr_tail: tail(&output.stderr),
-			duration,
-		})
-	}
-
-	fn execute_plain(&self, spec: &ActionSpec, sandbox: &Path, toolchain_bins: &[&Path]) -> ExecReport {
-		let workdir = spec
-			.workdir
-			.as_ref()
-			.map_or_else(|| sandbox.to_path_buf(), |path| sandbox.join(path));
-		let argument_files = read_argument_files(sandbox, &spec.argument_files, sandbox);
-		let build = || {
-			let mut command = self.command_for(spec, sandbox, sandbox, toolchain_bins, &argument_files);
-			command.current_dir(&workdir);
-			command
-		};
-
-		let started = Instant::now();
-		let mut output = build().output();
-		// NOTE: ext4 can transiently report ETXTBSY when a file was just closed by a
-
-		let mut attempts = 0;
-		while let Err(e) = &output {
-			if e.raw_os_error() != Some(26) || attempts >= 100 {
-				break;
-			}
-			attempts += 1;
-			std::thread::sleep(std::time::Duration::from_millis(20));
-			output = build().output();
-		}
-		let duration = started.elapsed();
+		output: std::io::Result<Output>,
+		duration: std::time::Duration,
+	) -> ExecReport {
 		match output {
 			Ok(out) => {
-				if let Some(path) = &spec.stdout {
-					let _ = std::fs::write(sandbox.join(path), &out.stdout);
-				}
+				self.record_stdout(spec, sandbox, &out.stdout);
 				ExecReport {
 					success: out.status.success(),
-					stdout_tail: tail(&out.stdout),
-					stderr_tail: tail(&out.stderr),
+					stdout_tail: output_tail(&out.stdout),
+					stderr_tail: output_tail(&out.stderr),
 					duration,
 				}
 			}
@@ -306,18 +262,66 @@ impl SandboxRunner {
 	}
 }
 
-#[cfg(target_os = "linux")]
-fn should_use_namespaces() -> bool {
-	std::env::var("FORGE_NO_NS").is_err()
+pub fn spawn(launch: &Launch, mount: Option<&WorkerMount>, policy: &Policy) -> std::io::Result<Output> {
+	#[cfg(not(target_os = "linux"))]
+	let _ = mount;
+	// SECURITY: the match is total on purpose. A backend added without an arm here would silently
+	// SECURITY: fall through to an unconfined spawn, which is how a backend can claim enforcement
+	// SECURITY: it never applies.
+	match crate::confine::active().backend {
+		crate::confine::Backend::CopySandbox => spawn_plain(launch),
+		#[cfg(target_os = "linux")]
+		crate::confine::Backend::Landlock => crate::namespace::spawn_landlocked(launch, mount, policy),
+		#[cfg(target_os = "linux")]
+		crate::confine::Backend::Namespaces => match mount {
+			Some(mount) => crate::namespace::spawn_mounted(launch, mount),
+			None => spawn_plain(launch),
+		},
+		crate::confine::Backend::Seatbelt => crate::seatbelt::spawn(launch, policy),
+		#[cfg(target_os = "windows")]
+		crate::confine::Backend::JobObjects => crate::job_object::spawn(launch, policy),
+		#[cfg(not(target_os = "linux"))]
+		crate::confine::Backend::Landlock | crate::confine::Backend::Namespaces => {
+			unreachable!("landlock and namespaces are only ever detected on linux")
+		}
+		#[cfg(not(target_os = "windows"))]
+		crate::confine::Backend::JobObjects => unreachable!("job objects are only ever detected on windows"),
+	}
 }
 
-#[cfg(not(target_os = "linux"))]
-fn should_use_namespaces() -> bool {
-	false
+fn spawn_plain(launch: &Launch) -> std::io::Result<Output> {
+	let build = || {
+		let mut command = base_command(launch);
+		command.current_dir(&launch.workdir);
+		command
+	};
+	let mut attempts = 0;
+	loop {
+		match build().output() {
+			Err(e) if cfg!(target_os = "linux") && e.raw_os_error() == Some(ETXTBSY) && attempts < 100 => {
+				attempts += 1;
+				std::thread::sleep(std::time::Duration::from_millis(20));
+			}
+			outcome => return outcome,
+		}
+	}
 }
 
-fn io_other(error: std::ffi::NulError) -> std::io::Error {
-	std::io::Error::new(std::io::ErrorKind::InvalidInput, error)
+pub(crate) fn base_command(launch: &Launch) -> Command {
+	let mut command = Command::new(&launch.program);
+	command.args(&launch.args);
+	command.stdout(Stdio::piped()).stderr(Stdio::piped());
+	command.env_clear();
+	command.envs(&launch.env);
+	command
+}
+
+fn toolchain_path(toolchain_bins: &[&Path]) -> String {
+	let mut dirs: Vec<PathBuf> = toolchain_bins.iter().map(|dir| dir.to_path_buf()).collect();
+	dirs.extend(fallback_path_dirs());
+	std::env::join_paths(dirs)
+		.map(|joined| joined.to_string_lossy().into_owned())
+		.unwrap_or_default()
 }
 
 fn short_key(cache_key: &str) -> String {
@@ -382,7 +386,7 @@ fn reanchor(value: &str, marker: &str, exec_root: &Path) -> String {
 	let mut result = String::with_capacity(value.len() + 64);
 	result.push_str(&value[..path_start]);
 	result.push_str(&exec_root.to_string_lossy());
-	result.push('/');
+	result.push(std::path::MAIN_SEPARATOR);
 	result.push_str(&value[index..]);
 	result
 }
@@ -411,7 +415,7 @@ fn link_tree(src: &Path, dst: &Path, hardlink: bool) -> Result<(), ForgeDiagnost
 	Ok(())
 }
 
-fn tail(bytes: &[u8]) -> String {
+pub fn output_tail(bytes: &[u8]) -> String {
 	let text = String::from_utf8_lossy(bytes);
 	let len = text.len();
 	let start = len.saturating_sub(TAIL_BYTES);
@@ -430,11 +434,19 @@ fn io_err(stage: &str, path: &Path, e: std::io::Error) -> ForgeDiagnostic {
 	)
 }
 
-fn fallback_path() -> String {
+fn fallback_path_dirs() -> Vec<PathBuf> {
 	match std::env::consts::OS {
-		"macos" => "/usr/bin:/bin:/usr/sbin:/sbin".to_string(),
-		"windows" => std::env::var("PATH").unwrap_or_default(),
-		_ => "/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
+		"macos" => ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+			.into_iter()
+			.map(PathBuf::from)
+			.collect(),
+		"windows" => std::env::var_os("PATH")
+			.map(|host| std::env::split_paths(&host).collect())
+			.unwrap_or_default(),
+		_ => ["/usr/sbin", "/usr/bin", "/sbin", "/bin"]
+			.into_iter()
+			.map(PathBuf::from)
+			.collect(),
 	}
 }
 

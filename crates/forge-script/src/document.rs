@@ -68,6 +68,7 @@ impl TargetKind {
 				"link_flags",
 				"env",
 				"metadata",
+				"worker",
 			],
 			TargetKind::Test => &[
 				"visibility",
@@ -82,11 +83,13 @@ impl TargetKind {
 				"link_flags",
 				"env",
 				"metadata",
+				"worker",
 			],
 			TargetKind::Rule => &[
 				"visibility",
 				"compatible_with",
 				"command",
+				"compiler",
 				"args",
 				"inputs",
 				"outputs",
@@ -94,6 +97,7 @@ impl TargetKind {
 				"deps",
 				"env",
 				"metadata",
+				"worker",
 			],
 		}
 	}
@@ -141,6 +145,7 @@ pub struct TargetDecl {
 	pub metadata: toml::Table,
 	pub timeout_secs: u64,
 	pub data: Vec<PathBuf>,
+	pub worker: Option<String>,
 	pub fields_set: std::collections::BTreeSet<String>,
 }
 
@@ -188,6 +193,9 @@ impl TargetDecl {
 		}
 		if set("command") {
 			self.command = overlay.command.clone();
+		}
+		if set("worker") {
+			self.worker = overlay.worker.clone();
 		}
 		if set("args") {
 			self.args = overlay.args.clone();
@@ -264,6 +272,7 @@ impl TargetDecl {
 			metadata: toml::Table::new(),
 			timeout_secs: 60,
 			data: vec![],
+			worker: None,
 			fields_set: Default::default(),
 		}
 	}
@@ -348,6 +357,7 @@ impl FieldsBuilder {
 			"standard" => decl.standard = Some(value),
 			"linker" => decl.linker = Some(value),
 			"command" => decl.command = Some(value),
+			"worker" => decl.worker = Some(value),
 			"output_dir" => decl.output_dir = Some(value.trim_end_matches('/').to_string()),
 			_ => unreachable!("string on unexpected key"),
 		}
