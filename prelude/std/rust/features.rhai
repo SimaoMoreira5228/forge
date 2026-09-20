@@ -55,19 +55,7 @@ fn workspace_root_requests(ctx) {
         }
         return requests;
     }
-    let root = toml_decode(ctx.read_file("Cargo.toml"));
-    let workspace = if root["workspace"] == () { #{} } else { root["workspace"] };
-    let paths = if root["package"] == () { [] } else { ["Cargo.toml"] };
-    let excluded = [];
-    if workspace["exclude"] != () {
-        for member in workspace["exclude"] { excluded += ctx.glob(rust_path(member, "Cargo.toml")); }
-    }
-    if workspace["members"] != () {
-        for member in workspace["members"] { paths += ctx.glob(rust_path(member, "Cargo.toml")); }
-    }
-    for path in paths {
-        if excluded.contains(path) { continue; }
-        let manifest = cargo_inherit(toml_decode(ctx.read_file(path)), workspace);
+    for manifest in cargo_member_manifests(ctx) {
         for section in active_dep_sections(ctx, manifest) { requests = collect_requests(section, requests); }
     }
     requests
@@ -183,43 +171,49 @@ fn dependency_artifacts(meta, dep_keys, transition) {
     artifacts
 }
 
-fn build_dependency_externs(ctx, meta, manifest) {
+fn declared_locked_dep(meta, info, parent, section, name) {
+    let spec = section[name];
+    let package_name = if spec.type_of() == "map" && spec["package"] != () { spec["package"] } else { name };
+    let key = source_key(meta, package_name);
+    if key == () { return (); }
+    if parent != () && !info["adjacency"][parent].contains(key) { return (); }
+    #{ key: key, name: name, manifest: meta[key]["manifest"], src: meta[key]["src"] }
+}
+
+fn build_dependency_externs(ctx, meta, info, parent, manifest) {
     let externs = [];
     for section in active_build_sections(ctx, manifest) {
         for name in section.keys() {
-            let spec = section[name];
-            let package_name = if spec.type_of() == "map" && spec["package"] != () { spec["package"] } else { name };
-            let key = source_key(meta, package_name);
-            if key == () { continue; }
+            let dep = declared_locked_dep(meta, info, parent, section, name);
+            if dep == () { continue; }
             let extern_name = name;
             extern_name.replace("-", "_");
-            let dep_manifest = meta[key]["manifest"];
-            let links = if dep_manifest["package"] == () || dep_manifest["package"]["links"] == () { "" } else { dep_manifest["package"]["links"] };
-            let src = meta[key]["src"];
+            let links = if dep["manifest"]["package"] == () || dep["manifest"]["package"]["links"] == () { "" } else { dep["manifest"]["package"]["links"] };
+            let keys = [dep["key"]];
+            for reached in graph_transitive(info["adjacency"], dep["key"]) {
+                if !keys.contains(reached) { keys.push(reached); }
+            }
             externs.push(#{
                 name: extern_name,
-                path: dependency_artifact(meta, key, "host"),
+                path: dependency_artifact(meta, dep["key"], "host"),
+                closure: dependency_artifacts(meta, keys, "host"),
                 links: links,
-                dir: build_output_dir(ctx, src.name, src.version),
+                dir: build_output_dir(ctx, dep["src"].name, dep["src"].version),
             });
         }
     }
     externs
 }
 
-fn linked_dependencies(ctx, meta, manifest) {
+fn linked_dependencies(ctx, meta, info, parent, manifest) {
     let deps = [];
     for section in active_dep_sections(ctx, manifest) {
         for name in section.keys() {
-            let spec = section[name];
-            let package_name = if spec.type_of() == "map" && spec["package"] != () { spec["package"] } else { name };
-            let key = source_key(meta, package_name);
-            if key == () { continue; }
-            let dep_manifest = meta[key]["manifest"];
-            let links = if dep_manifest["package"] == () || dep_manifest["package"]["links"] == () { "" } else { dep_manifest["package"]["links"] };
+            let dep = declared_locked_dep(meta, info, parent, section, name);
+            if dep == () { continue; }
+            let links = if dep["manifest"]["package"] == () || dep["manifest"]["package"]["links"] == () { "" } else { dep["manifest"]["package"]["links"] };
             if links != "" {
-                let src = meta[key]["src"];
-                let dir = build_output_dir(ctx, src.name, src.version);
+                let dir = build_output_dir(ctx, dep["src"].name, dep["src"].version);
                 if !deps.contains(#{ name: name, links: links, dir: dir }) { deps.push(#{ name: name, links: links, dir: dir }); }
             }
         }

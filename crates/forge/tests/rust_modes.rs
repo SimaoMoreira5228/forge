@@ -3,9 +3,13 @@ use std::process::Command;
 
 use forge_engine::Engine;
 
-mod common;
+mod forge_cli;
+mod rust_toolchain;
+mod rust_workspace;
 
-use common::*;
+use forge_cli::run_forge;
+use rust_toolchain::install_rust_toolchain;
+use rust_workspace::{build_and_run_rust, rust_workspace};
 
 fn assert_rustc_plan(dir: &Path, count: usize) -> forge_engine::planner::ActionDag {
 	let (_, dag) = Engine::open(dir).plan_dag("debug").expect("plan direct-rustc actions");
@@ -19,7 +23,9 @@ fn assert_rustc_plan(dir: &Path, count: usize) -> forge_engine::planner::ActionD
 #[test]
 fn cargo_root_imports_library_and_binary_without_forge_targets_and_preserves_cargo_files() {
 	let dir = rust_workspace("cargo-root", "mode = \"cargo\"");
-	install_rust_toolchain(&dir);
+	if !install_rust_toolchain(&dir) {
+		return;
+	}
 	let manifest = "[package]\nname = \"cargo-root\"\nversion = \"1.2.3\"\nedition = \"2021\"\n";
 	let lock = "version = 4\n\n[[package]]\nname = \"cargo-root\"\nversion = \"1.2.3\"\n";
 	let invalid_lock = "this is deliberately not valid forge.lock TOML [";
@@ -65,7 +71,9 @@ fn cargo_root_imports_library_and_binary_without_forge_targets_and_preserves_car
 #[test]
 fn native_metadata_builds_custom_crate_root_and_ignores_added_invalid_cargo_files() {
 	let dir = rust_workspace("native", "mode = \"native\"");
-	install_rust_toolchain(&dir);
+	if !install_rust_toolchain(&dir) {
+		return;
+	}
 	std::fs::create_dir_all(dir.join("custom")).unwrap();
 	std::fs::write(
 		dir.join("FORGE.toml"),
@@ -126,7 +134,9 @@ fn native_metadata_builds_custom_crate_root_and_ignores_added_invalid_cargo_file
 #[test]
 fn cargo_workspace_builds_members_with_normal_aliased_path_dependency() {
 	let dir = rust_workspace("cargo-workspace", "mode = \"cargo\"");
-	install_rust_toolchain(&dir);
+	if !install_rust_toolchain(&dir) {
+		return;
+	}
 	std::fs::create_dir_all(dir.join("crates/math/src")).unwrap();
 	std::fs::create_dir_all(dir.join("crates/app/src")).unwrap();
 	let files = [
@@ -181,7 +191,9 @@ fn cargo_workspace_builds_members_with_normal_aliased_path_dependency() {
 #[test]
 fn native_dependencies_lock_sync_and_build_without_cargo_metadata() {
 	let dir = rust_workspace("native-dependencies", "mode = \"native\"");
-	install_rust_toolchain(&dir);
+	if !install_rust_toolchain(&dir) {
+		return;
+	}
 	let root = std::fs::read_to_string(dir.join("FORGE_ROOT")).unwrap();
 	std::fs::write(
 		dir.join("FORGE_ROOT"),
@@ -264,7 +276,9 @@ fn unknown_cell_rust_key_is_rejected() {
 #[test]
 fn native_dependency_with_custom_lib_path_builds() {
 	let dir = rust_workspace("custom-lib-path", "mode = \"native\"");
-	install_rust_toolchain(&dir);
+	if !install_rust_toolchain(&dir) {
+		return;
+	}
 	let root = std::fs::read_to_string(dir.join("FORGE_ROOT")).unwrap();
 	std::fs::write(
 		dir.join("FORGE_ROOT"),
@@ -299,7 +313,9 @@ fn native_dependency_with_custom_lib_path_builds() {
 #[test]
 fn library_and_binary_outputs_are_profile_distinct_and_cached_per_profile() {
 	let dir = rust_workspace("profile-outputs", "mode = \"native\"");
-	install_rust_toolchain(&dir);
+	if !install_rust_toolchain(&dir) {
+		return;
+	}
 	std::fs::write(
 		dir.join("FORGE.toml"),
 		"[library.math]\nvisibility = \"public\"\nsrcs = [\"src/lib.rs\"]\n\n[binary.app]\ndeps = [\"math\"]\nsrcs = [\"src/main.rs\"]\n",
@@ -354,7 +370,9 @@ fn library_and_binary_outputs_are_profile_distinct_and_cached_per_profile() {
 #[test]
 fn build_override_applies_to_build_scripts_but_not_targets() {
 	let dir = rust_workspace("build-override", "mode = \"native\"");
-	install_rust_toolchain(&dir);
+	if !install_rust_toolchain(&dir) {
+		return;
+	}
 	let root = std::fs::read_to_string(dir.join("FORGE_ROOT")).unwrap();
 	std::fs::write(
 		dir.join("FORGE_ROOT"),

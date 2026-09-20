@@ -3,9 +3,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-mod common;
+mod c_workspace;
+mod forge_cli;
 
-use common::*;
+use c_workspace::have_compiler;
+use forge_cli::{forge_bin, run_forge};
 
 fn worker_workspace(name: &str) -> PathBuf {
 	let dir = std::env::temp_dir().join(format!("forge-iworker-{name}-{}", std::process::id()));

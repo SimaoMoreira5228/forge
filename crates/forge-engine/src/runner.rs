@@ -40,7 +40,6 @@ pub struct ExecReport {
 
 const TAIL_BYTES: usize = 4000;
 const RUNNER_LANG_ENV: [(&str, &str); 2] = [("LANG", "C.UTF-8"), ("LC_ALL", "C.UTF-8")];
-// PERF: ext4 reports ETXTBSY when a hardlinked input was closed by the very process now execing it.
 const ETXTBSY: i32 = 26;
 
 impl SandboxRunner {
@@ -263,11 +262,21 @@ impl SandboxRunner {
 }
 
 pub fn spawn(launch: &Launch, mount: Option<&WorkerMount>, policy: &Policy) -> std::io::Result<Output> {
+	let mut attempts = 0;
+	loop {
+		match spawn_once(launch, mount, policy) {
+			Err(e) if e.raw_os_error() == Some(ETXTBSY) && attempts < 100 => {
+				attempts += 1;
+				std::thread::sleep(std::time::Duration::from_millis(20));
+			}
+			outcome => return outcome,
+		}
+	}
+}
+
+fn spawn_once(launch: &Launch, mount: Option<&WorkerMount>, policy: &Policy) -> std::io::Result<Output> {
 	#[cfg(not(target_os = "linux"))]
 	let _ = mount;
-	// SECURITY: the match is total on purpose. A backend added without an arm here would silently
-	// SECURITY: fall through to an unconfined spawn, which is how a backend can claim enforcement
-	// SECURITY: it never applies.
 	match crate::confine::active().backend {
 		crate::confine::Backend::CopySandbox => spawn_plain(launch),
 		#[cfg(target_os = "linux")]
@@ -290,21 +299,9 @@ pub fn spawn(launch: &Launch, mount: Option<&WorkerMount>, policy: &Policy) -> s
 }
 
 fn spawn_plain(launch: &Launch) -> std::io::Result<Output> {
-	let build = || {
-		let mut command = base_command(launch);
-		command.current_dir(&launch.workdir);
-		command
-	};
-	let mut attempts = 0;
-	loop {
-		match build().output() {
-			Err(e) if cfg!(target_os = "linux") && e.raw_os_error() == Some(ETXTBSY) && attempts < 100 => {
-				attempts += 1;
-				std::thread::sleep(std::time::Duration::from_millis(20));
-			}
-			outcome => return outcome,
-		}
-	}
+	let mut command = base_command(launch);
+	command.current_dir(&launch.workdir);
+	command.output()
 }
 
 pub(crate) fn base_command(launch: &Launch) -> Command {

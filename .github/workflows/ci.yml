@@ -1,0 +1,148 @@
+name: CI
+
+on:
+  push:
+    branches: [v2]
+  pull_request:
+
+env:
+  FORGE_RUST_VERSION: "1.98.0"
+  FORGE_NIGHTLY: nightly-2025-12-05
+
+  FORGE_STORE_DIR: ${{ github.workspace }}/.forge-store
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.FORGE_RUST_VERSION }} and pinned nightly
+        run: |
+          rustup toolchain install "$FORGE_RUST_VERSION" --profile minimal --no-self-update
+          rustup toolchain install "$FORGE_NIGHTLY" --profile minimal --component rustfmt --no-self-update
+          rustup default set "$FORGE_RUST_VERSION"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.FORGE_STORE_DIR }}
+          key: forge-store-${{ runner.os }}-${{ env.FORGE_RUST_VERSION }}-${{ hashFiles('FORGE_ROOT', 'prelude/toolchains/catalog.toml') }}
+
+      - name: fmt
+        run: cargo +${{ env.FORGE_NIGHTLY }} fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --all-features --all-targets -- -D warnings
+
+      - name: warm the Forge store with the pinned toolchains
+        run: cargo run --release -p forge -- toolchains sync
+
+      - name: test
+        run: cargo test --workspace --all-features
+
+      - name: build
+        run: cargo build --workspace --all-features
+
+      - name: no tracked file was modified
+        run: git diff --check && git diff --exit-code
+
+  cross:
+    name: cross
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.FORGE_RUST_VERSION }}
+        run: rustup toolchain install "$FORGE_RUST_VERSION" --profile minimal --no-self-update
+
+      - name: install cross targets
+        run: |
+          rustup target add x86_64-pc-windows-gnu
+          rustup target add x86_64-unknown-freebsd
+          rustup target add x86_64-unknown-netbsd
+          rustup target add x86_64-apple-darwin
+
+      - name: windows-gnu
+        run: cargo check --workspace --all-features --all-targets --target x86_64-pc-windows-gnu
+
+      - name: freebsd
+        run: cargo check --workspace --all-features --all-targets --target x86_64-unknown-freebsd
+
+      - name: netbsd
+        env:
+          CC_x86_64_unknown_netbsd: gcc
+        run: cargo check --workspace --all-features --all-targets --target x86_64-unknown-netbsd
+
+      - name: darwin (forge-core, forge-script, forge-diagnostics)
+        env:
+          CC_x86_64_apple_darwin: clang
+          AR_x86_64_apple_darwin: llvm-ar
+        run: cargo check -p forge-core -p forge-script -p forge-diagnostics --all-features --target x86_64-apple-darwin
+
+  examples:
+    name: examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.FORGE_RUST_VERSION }}
+        run: rustup toolchain install "$FORGE_RUST_VERSION" --profile minimal --no-self-update
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.FORGE_STORE_DIR }}
+          key: forge-store-${{ runner.os }}-${{ env.FORGE_RUST_VERSION }}-${{ hashFiles('FORGE_ROOT', 'prelude/toolchains/catalog.toml') }}
+
+      - name: warm the Forge store with the pinned toolchains
+        run: cargo run --release -p forge -- toolchains sync
+
+      - name: examples against a live registry
+        env:
+          FORGE_EXAMPLE_DEPS: "1"
+        run: cargo test -p forge --test examples
+
+  self-host:
+    name: self-host
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.FORGE_RUST_VERSION }}
+        run: rustup toolchain install "$FORGE_RUST_VERSION" --profile minimal --no-self-update
+
+      - name: build Forge with Forge
+        env:
+          FORGE_SELF_HOST: "1"
+        run: cargo test -p forge --test self_host
+
+  windows:
+    name: windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.FORGE_RUST_VERSION }}
+        run: rustup toolchain install "$env:FORGE_RUST_VERSION" --profile minimal --no-self-update
+
+      - name: build
+        run: cargo build --workspace --all-features
+
+      - name: test
+        run: cargo test --workspace --all-features
+
+  macos:
+    name: macos
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.FORGE_RUST_VERSION }}
+        run: rustup toolchain install "$env:FORGE_RUST_VERSION" --profile minimal --no-self-update
+
+      - name: build
+        run: cargo build --workspace --all-features
+
+      - name: test
+        run: cargo test --workspace --all-features

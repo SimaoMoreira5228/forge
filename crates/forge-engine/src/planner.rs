@@ -86,6 +86,7 @@ pub fn build_action_dag(ctx: &PlanContext<'_>) -> Result<ActionDag, ForgeDiagnos
 		}
 	}
 	planner.link_component_edges()?;
+	planner.adopt_component_inputs();
 	planner.link_execution_edges()?;
 	planner.validate_action_dag()?;
 	Ok(planner.dag)
@@ -132,6 +133,33 @@ impl<'a> Planner<'a> {
 			}
 		}
 		Ok(())
+	}
+
+	fn adopt_component_inputs(&mut self) {
+		let mut queue: Vec<usize> = (0..self.dag.specs.len()).rev().collect();
+		while let Some(index) = queue.pop() {
+			let component = self.dag.specs[index].component.clone();
+			let producers: Vec<usize> = self.dag.specs[index]
+				.execution_deps
+				.iter()
+				.filter_map(|path| self.producer_of.get(path).copied())
+				.filter(|&producer| self.dag.specs[producer].component != component)
+				.collect();
+			for producer in producers {
+				let inherited = self.dag.specs[producer].execution_deps.clone();
+				let mut added = false;
+				for path in inherited {
+					if !self.dag.specs[index].execution_deps.contains(&path) {
+						self.dag.specs[index].execution_deps.push(path);
+						added = true;
+					}
+				}
+				if added {
+					queue.push(producer);
+					queue.push(index);
+				}
+			}
+		}
 	}
 
 	fn link_execution_edges(&mut self) -> Result<(), ForgeDiagnostic> {
@@ -493,18 +521,13 @@ impl<'a> Planner<'a> {
 		worker: Option<WorkerBinding>,
 	) -> Result<(), ForgeDiagnostic> {
 		let label = self.ctx.graph.component(id).label.to_string();
-		let mut archive_path: Option<PathBuf> = None;
+		let archive_path: Option<PathBuf> = actions
+			.iter()
+			.find(|action| action.artifact.is_some())
+			.and_then(|action| action.artifact.clone())
+			.map(PathBuf::from);
 
 		for action in actions {
-			if kind == "library" && archive_path.is_none() {
-				for (out, _) in &action.outputs {
-					let p = PathBuf::from(out);
-					if p.starts_with("forge-out/lib") && !p.starts_with("forge-out/lib/deps") {
-						archive_path = Some(p);
-						break;
-					}
-				}
-			}
 			let spec = ActionSpec {
 				name: action.name.clone(),
 				component: label.clone(),
@@ -557,7 +580,7 @@ impl<'a> Planner<'a> {
 			let Some(archive) = archive_path else {
 				return Err(ForgeDiagnostic::error(
 					codes::script::WRONG_TYPE,
-					format!("cell for `{label}` did not declare any output under `forge-out/lib`"),
+					format!("cell for library `{label}` declared no `artifact`"),
 				));
 			};
 			self.archive_of.insert(label, archive);

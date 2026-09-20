@@ -12,6 +12,7 @@ pub struct ActionDecl {
 	pub inputs: Vec<PathBufArg>,
 	pub execution_deps: Vec<PathBufArg>,
 	pub outputs: Vec<(PathBufArg, bool)>,
+	pub artifact: Option<String>,
 	pub workdir: Option<String>,
 	pub stdout: Option<String>,
 	pub environment_files: Vec<(String, String, Option<String>, Vec<String>)>,
@@ -375,6 +376,11 @@ fn parse_action(spec: Map) -> Result<ActionDecl, Box<EvalAltResult>> {
 		_ => None,
 	};
 	let stdout = spec.get("stdout").and_then(|v| v.clone().into_string().ok());
+	let artifact = match spec.get("artifact") {
+		Some(v) if v.is_string() => Some(v.clone().into_string().expect("checked string")),
+		Some(_) => return Err("action `artifact` expects a string".into()),
+		None => None,
+	};
 	let mut environment_files = Vec::new();
 	if let Some(value) = spec.get("environment_files") {
 		let map = value.clone().try_cast::<Map>().ok_or("`environment_files` expects a map")?;
@@ -448,6 +454,7 @@ fn parse_action(spec: Map) -> Result<ActionDecl, Box<EvalAltResult>> {
 		inputs: list_field("inputs")?,
 		execution_deps,
 		outputs,
+		artifact,
 		workdir,
 		stdout,
 		environment_files,

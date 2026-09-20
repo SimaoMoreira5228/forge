@@ -144,8 +144,6 @@ impl WorkerProcess {
 		for (key, value) in LANGUAGE_ENV {
 			command.env(key, value);
 		}
-		// SECURITY: a worker outlives every sandbox it serves, so forge confines only
-		// SECURITY: the child it spawns per request, never the worker process itself.
 		let mut child = command
 			.spawn()
 			.map_err(|e| format!("launching `{}` for action `{}` failed: {e}", program.display(), spec.name))?;

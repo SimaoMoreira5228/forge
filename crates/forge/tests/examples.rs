@@ -1,9 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-mod common;
+mod forge_cli;
+mod rust_toolchain;
 
-use common::*;
+use forge_cli::run_forge;
+use rust_toolchain::link_rust_toolchain;
 
 fn copy_tree(source: &Path, destination: &Path) {
 	std::fs::create_dir_all(destination).unwrap();

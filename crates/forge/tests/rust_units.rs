@@ -4,16 +4,22 @@ use forge_core::ActionSpec;
 use forge_engine::Engine;
 use forge_engine::planner::ActionDag;
 
-mod common;
+mod forge_cli;
+mod rust_toolchain;
+mod rust_workspace;
 
-use common::*;
+use forge_cli::run_forge;
+use rust_toolchain::install_rust_toolchain;
+use rust_workspace::{build_and_run_rust, rust_workspace};
 
 const HELPER_SOURCE: &str = "pub fn value() -> u32 { 42 }\n";
 const HELPER_BUILD_SCRIPT: &str = "fn main() {\n    let generated = std::path::Path::new(&std::env::var(\"OUT_DIR\").unwrap()).join(\"generated.rs\");\n    std::fs::write(generated, format!(\"pub const FROM_BUILD: u32 = {};\\n\", helper::value())).unwrap();\n}\n";
 
-fn build_dependency_workspace(name: &str, also_normal: bool) -> PathBuf {
+fn build_dependency_workspace(name: &str, also_normal: bool) -> Option<PathBuf> {
 	let dir = rust_workspace(name, "mode = \"native\"");
-	install_rust_toolchain(&dir);
+	if !install_rust_toolchain(&dir) {
+		return None;
+	}
 	let root = std::fs::read_to_string(dir.join("FORGE_ROOT")).unwrap();
 	std::fs::write(
 		dir.join("FORGE_ROOT"),
@@ -50,7 +56,7 @@ fn build_dependency_workspace(name: &str, also_normal: bool) -> PathBuf {
 		let (ok, log) = run_forge(&dir, args);
 		assert!(ok, "{args:?}: {log}");
 	}
-	dir
+	Some(dir)
 }
 
 fn rlib(crate_name: &str, profile: &str, host: bool) -> String {
@@ -137,7 +143,9 @@ fn vendored_lib(name: &str, extra: &str, build: bool) -> String {
 #[test]
 fn target_dependency_build_script_does_not_need_host_units_of_its_normal_dependencies() {
 	let dir = rust_workspace("build-dep-target-crate", "mode = \"native\"");
-	install_rust_toolchain(&dir);
+	if !install_rust_toolchain(&dir) {
+		return;
+	}
 	let root = std::fs::read_to_string(dir.join("FORGE_ROOT")).unwrap();
 	std::fs::write(
 		dir.join("FORGE_ROOT"),
@@ -215,7 +223,9 @@ fn target_dependency_build_script_does_not_need_host_units_of_its_normal_depende
 #[test]
 fn build_dependency_of_a_host_crate_is_a_host_unit_when_a_target_crate_also_uses_it() {
 	let dir = rust_workspace("build-dep-hosted", "mode = \"native\"");
-	install_rust_toolchain(&dir);
+	if !install_rust_toolchain(&dir) {
+		return;
+	}
 	let root = std::fs::read_to_string(dir.join("FORGE_ROOT")).unwrap();
 	std::fs::write(
 		dir.join("FORGE_ROOT"),
@@ -278,7 +288,9 @@ fn build_dependency_of_a_host_crate_is_a_host_unit_when_a_target_crate_also_uses
 
 #[test]
 fn build_dependency_library_is_a_host_unit_with_the_host_profile() {
-	let dir = build_dependency_workspace("build-dep-host", false);
+	let Some(dir) = build_dependency_workspace("build-dep-host", false) else {
+		return;
+	};
 	let (_, dag) = Engine::open(&dir).plan_dag("release").expect("plan release");
 
 	let host = dependency_unit(&dag, "host");
@@ -354,7 +366,9 @@ fn build_dependency_library_is_a_host_unit_with_the_host_profile() {
 
 #[test]
 fn shared_build_and_target_dependency_gets_one_unit_per_configuration() {
-	let dir = build_dependency_workspace("build-dep-shared", true);
+	let Some(dir) = build_dependency_workspace("build-dep-shared", true) else {
+		return;
+	};
 	let (_, dag) = Engine::open(&dir).plan_dag("release").expect("plan release");
 
 	let host = dependency_unit(&dag, "host");

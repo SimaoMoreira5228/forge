@@ -26,9 +26,6 @@ const IOCTL_DEV: u64 = 1 << 15;
 
 const READ: u64 = READ_FILE | READ_DIR;
 const DEVICE: u64 = READ_FILE | WRITE_FILE | TRUNCATE;
-// SECURITY: REFER is not optional. The kernel gates a reparenting rename on it and answers EXDEV
-// SECURITY: rather than EACCES, so a missing REFER reads as a filesystem fault, not a policy denial.
-// SECURITY: It cannot widen reach: it only authorizes reparenting between paths that already grant it.
 const MUTATE: u64 = WRITE_FILE
 	| REMOVE_DIR
 	| REMOVE_FILE
@@ -86,7 +83,6 @@ pub struct Rules {
 pub fn abi() -> Option<u32> {
 	static ABI: OnceLock<Option<u32>> = OnceLock::new();
 	*ABI.get_or_init(|| {
-		// SAFETY: the documented version query takes a null attribute and a zero size.
 		let version = unsafe {
 			libc::syscall(
 				libc::SYS_landlock_create_ruleset,
@@ -99,8 +95,6 @@ pub fn abi() -> Option<u32> {
 	})
 }
 
-// SECURITY: the kernel rejects a ruleset whose handled mask names a right the running ABI does not
-// SECURITY: define (EINVAL), and the backend then degrades to namespaces without saying so.
 const DESIRED: u64 = EXECUTE | READ | MUTATE | IOCTL_DEV;
 
 const LAST: [(u64, u32); 4] = [(MAKE_SYM, 1), (REFER, 2), (TRUNCATE, 3), (IOCTL_DEV, 5)];
@@ -143,14 +137,10 @@ pub fn rules(policy: &Policy) -> Option<Rules> {
 }
 
 fn push(rules: &mut Vec<Rule>, path: &str, access: u64, handled: u64) {
-	// NOTE: a system path this host does not have cannot be read by anyone, so a missing one is
-	// NOTE: skipped rather than failing the ruleset; a later build picks it up if it appears.
 	let path = Path::new(path);
 	if !path.exists() {
 		return;
 	}
-	// NOTE: the kernel rejects a rule that grants a directory right to a device node, so a
-	// NOTE: non-directory only ever receives the file rights.
 	let access = if path.is_dir() { access } else { DEVICE };
 	if let Ok(bytes) = CString::new(path.to_string_lossy().as_bytes()) {
 		rules.push(Rule {
@@ -161,13 +151,10 @@ fn push(rules: &mut Vec<Rule>, path: &str, access: u64, handled: u64) {
 }
 
 impl Rules {
-	// SAFETY: the forked child runs only syscalls before it execs the action.
 	pub unsafe fn apply(&self) -> std::io::Result<()> {
-		// SAFETY: a documented prctl with no pointer arguments.
 		if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
 			return Err(std::io::Error::last_os_error());
 		}
-		// SAFETY: `self.ruleset` is a live, fully initialized attribute.
 		let set = unsafe {
 			libc::syscall(
 				libc::SYS_landlock_create_ruleset,
@@ -185,7 +172,6 @@ impl Rules {
 			.iter()
 			.try_for_each(|rule| unsafe { add_rule(set, rule) })
 			.and_then(|()| {
-				// SAFETY: `set` is a live ruleset descriptor.
 				let restricted = unsafe { libc::syscall(libc::SYS_landlock_restrict_self, set, 0u32) };
 				if restricted < 0 {
 					Err(std::io::Error::last_os_error())
@@ -198,9 +184,7 @@ impl Rules {
 	}
 }
 
-// SAFETY: `set` is a live landlock ruleset descriptor and `rule` outlives the call.
 unsafe fn add_rule(set: i32, rule: &Rule) -> std::io::Result<()> {
-	// SAFETY: `rule.path` is a NUL-terminated string.
 	let fd = unsafe { libc::open(rule.path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
 	if fd < 0 {
 		return Err(std::io::Error::last_os_error());
@@ -209,7 +193,6 @@ unsafe fn add_rule(set: i32, rule: &Rule) -> std::io::Result<()> {
 		allowed_access: rule.access,
 		parent_fd: fd,
 	};
-	// SAFETY: `beneath` is a live, fully initialized rule attribute.
 	let added = unsafe { libc::syscall(libc::SYS_landlock_add_rule, set, RULE_PATH_BENEATH, &beneath, 0u32) };
 	unsafe { libc::close(fd) };
 	if added < 0 {
@@ -239,7 +222,6 @@ pub fn probe() -> Option<u32> {
 		let Some(rules) = rules(&policy) else {
 			return false;
 		};
-		// SAFETY: the probe child only issues syscalls before it exits.
 		unsafe { rules.apply() }.is_ok() && std::fs::write(scratch.join("inside"), b"ok").is_ok() && escapes_denied(&secret)
 	});
 	let _ = std::fs::remove_dir_all(&scratch);
@@ -248,7 +230,6 @@ pub fn probe() -> Option<u32> {
 }
 
 fn fork_probe(body: impl FnOnce() -> bool) -> bool {
-	// SAFETY: the forked child runs only syscalls and _exit.
 	unsafe {
 		let pid = libc::fork();
 		if pid == 0 {
@@ -341,7 +322,6 @@ mod tests {
 			handled_access_net: 0,
 			scoped: 0,
 		};
-		// SAFETY: `attr` is a live, fully initialized attribute of the declared size.
 		let set = unsafe {
 			libc::syscall(
 				libc::SYS_landlock_create_ruleset,
@@ -353,7 +333,6 @@ mod tests {
 		if set < 0 {
 			return Err(std::io::Error::last_os_error());
 		}
-		// SAFETY: `set` is a live ruleset descriptor this test never restricts itself with.
 		unsafe { libc::close(set as i32) };
 		Ok(())
 	}
@@ -400,20 +379,19 @@ mod tests {
 			readable: Vec::new(),
 		};
 
-		let staged = staging.join("librust_cargo.rlib.0");
+		let staged = staging.join("archive.tmp");
 		let reparented_inside = fork_probe(|| {
 			let Some(rules) = rules(&policy) else {
 				return false;
 			};
-			// SAFETY: the child only issues syscalls and touches the paths this test created.
 			unsafe { rules.apply() }.is_ok()
 				&& std::fs::write(&staged, b"archive").is_ok()
-				&& std::fs::rename(&staged, output.join("librust_cargo.rlib")).is_ok()
+				&& std::fs::rename(&staged, output.join("libarchive.a")).is_ok()
 		});
 		assert!(
 			reparented_inside,
 			"an action could not move a file it wrote from one directory of its own sandbox to another; \
-			 a backend that breaks rustc's rlib write is worse than no backend"
+			 a backend that breaks that write is worse than no backend"
 		);
 
 		let escape = root.join("escape-me");
@@ -422,7 +400,6 @@ mod tests {
 			let Some(rules) = rules(&policy) else {
 				return false;
 			};
-			// SAFETY: the child only issues syscalls and touches the paths this test created.
 			unsafe { rules.apply() }.is_ok()
 				&& std::fs::write(&escape, b"x").is_ok()
 				&& std::fs::rename(&escape, outside.join("stolen")).is_ok()
@@ -436,7 +413,6 @@ mod tests {
 			let Some(rules) = rules(&policy) else {
 				return false;
 			};
-			// SAFETY: the child only issues syscalls and reads the path this test created.
 			unsafe { rules.apply() }.is_ok() && std::fs::read(&secret).is_err()
 		});
 		assert!(

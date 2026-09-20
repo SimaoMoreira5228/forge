@@ -12,8 +12,6 @@ fn temp_sibling(target: &Path) -> PathBuf {
 	target.with_file_name(format!(".{name}.forge-tmp-{}-{sequence}", std::process::id()))
 }
 
-// NOTE: outputs are published via temp file + rename so a reader holding a hardlink
-
 pub fn publish_file(from: &Path, to: &Path) -> std::io::Result<()> {
 	if let Some(parent) = to.parent() {
 		std::fs::create_dir_all(parent)?;

@@ -1,6 +1,6 @@
-mod common;
+mod forge_cli;
 
-use common::*;
+use forge_cli::run_forge;
 
 #[test]
 fn clang_cxx_modules_precompile_and_link() {

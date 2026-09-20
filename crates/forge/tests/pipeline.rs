@@ -3,9 +3,13 @@ use std::process::Command;
 
 use forge_engine::Engine;
 
-mod common;
+mod c_workspace;
+mod forge_cli;
+mod rust_toolchain;
 
-use common::*;
+use c_workspace::{have_compiler, write_workspace};
+use forge_cli::run_forge;
+use rust_toolchain::{have_rustc, link_rust_toolchain};
 
 #[test]
 fn dependency_lock_resolves_rhai_candidates_through_engine() {

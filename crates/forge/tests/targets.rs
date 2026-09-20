@@ -1,6 +1,8 @@
-mod common;
+mod c_workspace;
+mod forge_cli;
 
-use common::*;
+use c_workspace::have_compiler;
+use forge_cli::run_forge;
 
 fn write_two_binaries(dir: &std::path::Path) {
 	std::fs::create_dir_all(dir.join("lib")).unwrap();

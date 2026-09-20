@@ -1,6 +1,8 @@
-mod common;
+mod c_workspace;
+mod forge_cli;
 
-use common::*;
+use c_workspace::{have_compiler, write_workspace};
+use forge_cli::run_forge;
 
 #[test]
 fn proof_records_and_verifies_a_build() {

@@ -58,12 +58,10 @@ unsafe extern "system" {
 
 struct Job(*mut c_void);
 
-// SAFETY: the handle is created, owned, and closed by exactly one Job value.
 unsafe impl Send for Job {}
 
 impl Job {
 	fn new() -> std::io::Result<Self> {
-		// SAFETY: a null name and null attributes ask for an unnamed job with default security.
 		let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
 		if handle.is_null() {
 			return Err(std::io::Error::last_os_error());
@@ -71,7 +69,6 @@ impl Job {
 		let mut limits = JobObjectExtendedLimitInformation::default();
 		limits.basic_limit_information.limit_flags =
 			JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
-		// SAFETY: `limits` is a live, fully initialized information buffer of the declared length.
 		let set = unsafe {
 			SetInformationJobObject(
 				handle,
@@ -89,7 +86,6 @@ impl Job {
 	}
 
 	fn adopt(&self, child: &Child) -> std::io::Result<()> {
-		// SAFETY: the child handle is live for as long as the Child value is borrowed.
 		let assigned = unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle()) };
 		if assigned == 0 {
 			return Err(std::io::Error::last_os_error());
@@ -100,8 +96,6 @@ impl Job {
 
 impl Drop for Job {
 	fn drop(&mut self) {
-		// SAFETY: the handle is live and owned by this value, and closing it kills every
-		// SAFETY: process still in the job, which is what a finished action must not leave behind.
 		unsafe { CloseHandle(self.0) };
 	}
 }
@@ -109,9 +103,6 @@ impl Drop for Job {
 pub fn spawn(launch: &Launch, _policy: &Policy) -> std::io::Result<Output> {
 	let job = Job::new()?;
 	let child = command_for(launch).spawn()?;
-	// SECURITY: std exposes no primary thread handle, so the process runs for the microseconds
-	// SECURITY: between spawn and adoption; what the job guarantees is that no action outlives
-	// SECURITY: its own build, and that no descendant can break away.
 	job.adopt(&child)?;
 	child.wait_with_output()
 }
@@ -165,7 +156,6 @@ mod tests {
 		assert_eq!(offset_of!(JobObjectExtendedLimitInformation, job_memory_limit), 120);
 		assert_eq!(offset_of!(JobObjectExtendedLimitInformation, peak_process_memory_used), 128);
 		assert_eq!(offset_of!(JobObjectExtendedLimitInformation, peak_job_memory_used), 136);
-		// SECURITY: a wrong order keeps the size at 144 and still corrupts the kernel's flags word.
 		assert_eq!(basic.affinity, 0);
 		assert_eq!(extended.peak_job_memory_used, 0);
 	}

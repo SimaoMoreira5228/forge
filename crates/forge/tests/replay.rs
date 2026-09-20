@@ -1,6 +1,8 @@
-mod common;
+mod c_workspace;
+mod forge_cli;
 
-use common::*;
+use c_workspace::{have_compiler, write_workspace};
+use forge_cli::run_forge;
 
 #[test]
 fn replay_reproduces_a_build_and_reports_divergence() {

@@ -104,7 +104,6 @@ impl SourceStore {
 		Ok(view)
 	}
 
-	// NOTE: git sources use the host `git` rather than a catalog toolchain.
 	fn canonical_git(&self, package: &SourcePackage, revision: &str) -> Result<PathBuf, ForgeDiagnostic> {
 		let digest = blake3::hash(format!("{}@{}", package.url, revision).as_bytes())
 			.to_hex()

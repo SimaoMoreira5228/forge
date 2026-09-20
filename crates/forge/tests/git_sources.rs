@@ -1,6 +1,8 @@
-mod common;
+mod forge_cli;
+mod rust_toolchain;
 
-use common::*;
+use forge_cli::run_forge;
+use rust_toolchain::{have_rustc, link_rust_toolchain};
 
 fn git(dir: &std::path::Path, args: &[&str]) -> String {
 	let output = std::process::Command::new("git")

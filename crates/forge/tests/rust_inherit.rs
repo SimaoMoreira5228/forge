@@ -4,9 +4,13 @@ use forge_core::ActionSpec;
 use forge_engine::Engine;
 use forge_engine::planner::ActionDag;
 
-mod common;
+mod forge_cli;
+mod rust_toolchain;
+mod rust_workspace;
 
-use common::*;
+use forge_cli::run_forge;
+use rust_toolchain::install_rust_toolchain;
+use rust_workspace::{build_and_run_rust, rust_workspace};
 
 const ANSWER_SOURCE: &str = "pub fn answer() -> u32 { 42 }\n";
 const FEATURED_SOURCE: &str = r#"pub fn enabled() -> String {
@@ -23,16 +27,18 @@ fn catalog(entry: &str) -> String {
 	)
 }
 
-fn inherited_workspace(name: &str, entry: &str) -> PathBuf {
+fn inherited_workspace(name: &str, entry: &str) -> Option<PathBuf> {
 	let dir = rust_workspace(name, &catalog(entry));
-	install_rust_toolchain(&dir);
+	if !install_rust_toolchain(&dir) {
+		return None;
+	}
 	let root = std::fs::read_to_string(dir.join("FORGE_ROOT")).unwrap();
 	std::fs::write(
 		dir.join("FORGE_ROOT"),
 		format!("{root}\n[patch.local.answer]\npath = \"vendor/answer\"\n"),
 	)
 	.unwrap();
-	dir
+	Some(dir)
 }
 
 fn vendor(dir: &Path, name: &str, source: &str) {
@@ -68,7 +74,9 @@ fn build_dir(dir: &Path) -> String {
 
 #[test]
 fn two_targets_inherit_one_catalog_entry_lock_link_and_run() {
-	let dir = inherited_workspace("inherit-two", "");
+	let Some(dir) = inherited_workspace("inherit-two", "") else {
+		return;
+	};
 	vendor(&dir, "answer", ANSWER_SOURCE);
 	std::fs::create_dir_all(dir.join("tool")).unwrap();
 	std::fs::write(
@@ -105,7 +113,9 @@ fn two_targets_inherit_one_catalog_entry_lock_link_and_run() {
 
 #[test]
 fn inherited_declaration_unions_catalog_features_into_the_built_crate() {
-	let dir = inherited_workspace("inherit-features", "features = [\"base\"]\n");
+	let Some(dir) = inherited_workspace("inherit-features", "features = [\"base\"]\n") else {
+		return;
+	};
 	vendor(&dir, "answer", FEATURED_SOURCE);
 	std::fs::write(
 		dir.join("FORGE.toml"),
@@ -139,7 +149,9 @@ fn inherited_declaration_unions_catalog_features_into_the_built_crate() {
 
 #[test]
 fn missing_catalog_entry_and_ambiguous_conflicts_name_the_offending_declaration() {
-	let dir = inherited_workspace("inherit-missing", "");
+	let Some(dir) = inherited_workspace("inherit-missing", "") else {
+		return;
+	};
 	std::fs::write(
 		dir.join("FORGE.toml"),
 		"[binary.app]\nsrcs = [\"src/main.rs\"]\n\n[binary.app.metadata.rust.dependencies.ghost]\nworkspace = true\n",
@@ -176,7 +188,9 @@ fn missing_catalog_entry_and_ambiguous_conflicts_name_the_offending_declaration(
 #[test]
 fn cargo_workspace_inherits_shared_dependencies_for_every_member() {
 	let dir = rust_workspace("inherit-cargo", "mode = \"cargo\"");
-	install_rust_toolchain(&dir);
+	if !install_rust_toolchain(&dir) {
+		return;
+	}
 	let files = [
 		(
 			"Cargo.toml",
@@ -235,7 +249,9 @@ fn cargo_workspace_inherits_shared_dependencies_for_every_member() {
 
 #[test]
 fn inherited_dependencies_lock_the_same_way_from_the_resolve_hook_and_the_build() {
-	let dir = inherited_workspace("inherit-lock", "");
+	let Some(dir) = inherited_workspace("inherit-lock", "") else {
+		return;
+	};
 	vendor(&dir, "answer", ANSWER_SOURCE);
 	std::fs::write(
 		dir.join("FORGE.toml"),

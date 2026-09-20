@@ -1,6 +1,8 @@
-mod common;
+mod forge_cli;
+mod rust_toolchain;
 
-use common::*;
+use forge_cli::run_forge;
+use rust_toolchain::{have_rustc, link_rust_toolchain};
 
 #[test]
 fn local_patch_sources_a_dependency_from_the_workspace() {

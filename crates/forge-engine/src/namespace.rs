@@ -11,7 +11,6 @@ use crate::runner::{Launch, base_command};
 pub fn spawn_mounted(launch: &Launch, mount: &WorkerMount) -> std::io::Result<Output> {
 	let mut command = base_command(launch);
 	let call = call_for(launch, mount)?;
-	// SAFETY: apply only issues syscalls before the child execs the action.
 	unsafe {
 		command.pre_exec(move || call.apply());
 	}
@@ -25,7 +24,6 @@ pub fn spawn_landlocked(launch: &Launch, mount: Option<&WorkerMount>, policy: &P
 		None => None,
 	};
 	let mut command = base_command(launch);
-	// SAFETY: apply only issues syscalls before the child execs the action.
 	unsafe {
 		command.pre_exec(move || {
 			if let Some(call) = &call {
@@ -60,7 +58,6 @@ pub fn probe(root: &Path, workdir: &Path) -> bool {
 	let Some(call) = SandboxCall::new(Some(root), root, workdir) else {
 		return false;
 	};
-	// SAFETY: the forked child runs only async-signal-safe syscalls and _exit.
 	unsafe {
 		let pid = libc::fork();
 		if pid == 0 {

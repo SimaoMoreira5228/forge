@@ -118,6 +118,7 @@ fn rust_cell_resolves_build_and_linked_dependencies() {
 	let mut engine = rhai::Engine::new();
 	engine.set_max_expr_depths(128, 128);
 	engine.set_max_call_levels(128);
+	register_graph_ops(&mut engine);
 	let checks = r#"
 let ctx = #{ platform_os: "linux", platform_arch: "x86_64", platform_abi: "gnu", profile: #{ name: "debug", is_debug: true } };
 let manifest = #{
@@ -141,10 +142,12 @@ let meta = #{
     },
 };
 let dep_manifest = #{ dependencies: #{ "aws-lc-sys": #{ optional: true }, zeroize: "1" }, "build-dependencies": #{ "aws-lc-sys": "1" } };
-let externs = build_dependency_externs(ctx, meta, dep_manifest);
+let info = #{ adjacency: #{} };
+let externs = build_dependency_externs(ctx, meta, info, (), dep_manifest);
 if externs.len() != 1 { throw `expected 1 build extern, got ${externs.len()}`; }
 if externs[0].path != "forge-out/lib/deps/host/debug/libaws_lc_sys.rlib" { throw `build dependency must link a host unit: ${externs[0].path}`; }
-	let linked = linked_dependencies(ctx, meta, dep_manifest);
+if externs[0].closure != ["forge-out/lib/deps/host/debug/libaws_lc_sys.rlib"] { throw `the build script sandbox must carry the build dependency: ${externs[0].closure}`; }
+let linked = linked_dependencies(ctx, meta, info, (), dep_manifest);
 if linked.len() != 1 { throw `expected 1 linked dependency, got ${linked.len()}`; }
 if linked[0].links != "aws_lc_0_45_0" { throw `wrong links: ${linked[0].links}`; }
 if linked[0].dir != "forge-out/build/debug/aws-lc-sys-0.45.0" { throw `wrong dir: ${linked[0].dir}`; }
@@ -211,6 +214,13 @@ if dependency_artifact(linked_meta, "derive@1.0.0", "target") != "derive-host.so
 let rejected = false;
 try { dependency_artifact(linked_meta, "cc@1.0.0", "target"); } catch { rejected = true; }
 if !rejected { throw "a host-only dependency must not link into a target unit"; }
+let gated = #{ "target": #{ "cfg(windows)": #{ dependencies: #{ "windows-sys": "1" } } } };
+if !manifest_declares_dependencies(gated) { throw "a manifest whose only dependencies are target gated still declares them"; }
+if manifest_declares_dependencies(#{ "dependencies": #{ shlex: "1" } }) != true { throw "a manifest with dependencies declares them"; }
+if manifest_declares_dependencies(#{}) { throw "a manifest without dependencies does not declare them"; }
+let renamed = #{ manifest: #{ lib: #{ name: "webpki" } }, src: #{ name: "rustls-webpki", version: "0.103.15" } };
+if unit_crate_name(renamed) != "webpki" { throw `a renamed lib must name its artifact after the crate rustc sees: ${unit_crate_name(renamed)}`; }
+if unit_crate_name(#{ manifest: #{}, src: #{ name: "rustls-webpki", version: "0.103.15" } }) != "rustls_webpki" { throw "a package without a lib name uses its own"; }
 "#;
 	engine.eval::<()>(&format!("{cell}\n{checks}")).unwrap();
 }

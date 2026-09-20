@@ -193,10 +193,10 @@ mod tests {
 
 	#[test]
 	fn generated_inputs_are_not_reverified() {
-		let produced = ["forge-out/build/x", "forge-out/lib/a.rlib"];
+		let produced = ["forge-out/build/x", "forge-out/lib/a.a"];
 		assert!(is_generated("forge-out/build/x", &produced));
 		assert!(is_generated("forge-out/build/x/output", &produced));
 		assert!(!is_generated("forge-out/build/xy", &produced));
-		assert!(!is_generated("crates/forge/src/main.rs", &produced));
+		assert!(!is_generated("workspace/src/main.c", &produced));
 	}
 }

@@ -36,14 +36,18 @@ fn build(ctx) {
     let external_names = [];
     for src in ctx.fetched_sources {
         let key = dependency_key(src);
-        if !extern_keys.contains(key) { continue; }
+        if !extern_keys.contains(key) || !meta[key]["configurations"].contains("target") { continue; }
         let out = dependency_artifact(meta, key, "target");
         external_inputs.push(out);
+        if !direct.contains(src.name) { continue; }
         let crate_n = dependency_crate_name(ctx, crate_manifest, src.name, crate_name(#{ name: src.name }));
         if external_names.contains(crate_n) { throw `multiple locked versions for direct dependency ${crate_n}; select explicitly in a future importer milestone`; }
         external_names.push(crate_n);
         external_externs.push(`${crate_n}=${out}`);
     }
+    let proc_macros = proc_macro_keys(meta, extern_keys);
+    let host_macros = proc_macro_host_artifacts(meta, info, proc_macros);
+    for artifact in host_macros { external_inputs.push(artifact); }
 
     let crate_env = workspace_crate_env(ctx);
     let crate_root_dir = workspace_crate_root(ctx);
@@ -65,7 +69,10 @@ fn build(ctx) {
         if crate_manifest["features"] == () || crate_manifest["features"]["default"] == () { [] } else { crate_manifest["features"]["default"] }
     } else { rust_metadata(ctx)["enabled_features"] });
     let package_files = ctx.srcs + ctx.hdrs;
-    let build_output = emit_build_script(ctx, rustc, crate_manifest, crate_features, crate_root_dir, ctx.name, crate_version, edition, build_dependency_externs(ctx, meta, crate_manifest), linked_dependencies(ctx, meta, crate_manifest), package_files, ctx.hdrs);
+    let build_deps = build_dependency_externs(ctx, meta, info, (), crate_manifest);
+    let build_script_files = ctx.hdrs;
+    for dep in build_deps { build_script_files += dep["closure"]; }
+    let build_output = emit_build_script(ctx, rustc, crate_manifest, crate_features, crate_root_dir, ctx.name, crate_version, edition, build_deps, linked_dependencies(ctx, meta, info, (), crate_manifest), package_files, build_script_files);
     if build_output != "" {
         crate_env = merge_env(crate_env, #{ "OUT_DIR": `FORGE_EXEC_ROOT/${build_output}` });
     }
@@ -99,6 +106,7 @@ fn build(ctx) {
         }
         let out = ctx.lib_path(`lib${ctx.name}.rlib`);
         let args = ["--crate-type", "lib", "--crate-name", name, "--edition", edition, "-C", `metadata=${name}-${ctx.profile.name}`, "-L", `dependency=${rust_lib_dir(ctx)}`, "--remap-path-prefix", "FORGE_EXEC_ROOT=", "-L", `dependency=${rust_deps_dir(ctx)}`];
+        if proc_macros.len() > 0 { args += ["-L", `dependency=${rust_host_deps_dir(ctx)}`]; }
         args += dependency_search_args(ctx) + feature_cfg_args(crate_manifest, crate_features) + rust_profile_args(ctx) + ctx.flags;
         for dep in ctx.dep_artifacts {
             args.push("--extern");
@@ -116,6 +124,7 @@ fn build(ctx) {
             inputs: dep_inputs,
             execution_deps: execution_deps,
             outputs: [out],
+            artifact: out,
             argument_files: crate_argument_files,
             env: crate_env,
             toolchain_id: ctx.tool_id(),
@@ -126,6 +135,7 @@ fn build(ctx) {
     let out_dir = if ctx.kind == "test" { "forge-out/test" } else { "forge-out/bin" };
     let exe = `${out_dir}/${ctx.profile.name}/${ctx.name}`;
     let args = ["--crate-type", "bin", "--crate-name", name, "--edition", edition, "-C", `metadata=${name}-${ctx.profile.name}`, "-L", `dependency=${rust_lib_dir(ctx)}`, "--remap-path-prefix", "FORGE_EXEC_ROOT=", "-L", `dependency=${rust_deps_dir(ctx)}`];
+    if proc_macros.len() > 0 { args += ["-L", `dependency=${rust_host_deps_dir(ctx)}`]; }
     if ctx.kind == "test" { args.push("--test"); }
     args += dependency_search_args(ctx) + feature_cfg_args(crate_manifest, crate_features) + rust_profile_args(ctx) + ctx.flags;
     for dep in ctx.dep_artifacts {
@@ -166,12 +176,15 @@ fn build(ctx) {
 
 fn emit_dependency_build_script(ctx, meta, info, key, rustc, features) {
     let src = meta[key]["src"];
+    let deps = build_dependency_externs(ctx, meta, info, key, meta[key]["manifest"]);
+    let closure = [];
+    for dep in deps { closure += dep["closure"]; }
     emit_build_script(
         ctx, rustc, meta[key]["manifest"], features[key], src.root, src.name, src.version, meta[key]["edition"],
-        build_dependency_externs(ctx, meta, meta[key]["manifest"]),
-        linked_dependencies(ctx, meta, meta[key]["manifest"]),
+        deps,
+        linked_dependencies(ctx, meta, info, key, meta[key]["manifest"]),
         ctx.glob(`${src.root}/**/*`),
-        dependency_artifacts(meta, graph_transitive(info["build_edges"], key), "host"),
+        closure,
     )
 }
 
@@ -180,8 +193,7 @@ fn emit_dependency_unit(ctx, meta, info, key, transition, rustc, features, build
     let manifest = meta[key]["manifest"];
     let enabled = features[key];
     let lib = manifest["lib"];
-    let lib_name = if lib != () && lib["name"] != () { lib["name"] } else { src.name };
-    let pkg_name = crate_name(#{ name: lib_name });
+    let pkg_name = unit_crate_name(meta[key]);
     let edition = meta[key]["edition"];
     let crate_type = if meta[key]["proc_macro"] { "proc-macro" } else { "lib" };
     let crate_path = if lib != () && lib["path"] != () { lib["path"] } else { "src/lib.rs" };
@@ -194,15 +206,16 @@ fn emit_dependency_unit(ctx, meta, info, key, transition, rustc, features, build
     let unit_graph = unit_adjacency(info, transition);
     let direct = unit_graph[key];
     let transitive = graph_transitive(unit_graph, key);
-    let inputs = package_files + dependency_artifacts(meta, transitive, transition);
-    let execution_deps = dependency_artifacts(meta, direct, transition);
+    let macros = if transition == "host" { [] } else { proc_macro_keys(meta, transitive) };
+    if macros.len() > 0 { args += ["-L", `dependency=${rust_host_deps_dir(ctx)}`]; }
+    let inputs = package_files + dependency_artifacts(meta, transitive, transition) + proc_macro_host_artifacts(meta, info, macros);
+    let execution_deps = dependency_artifacts(meta, transitive, transition) + proc_macro_host_artifacts(meta, info, macros);
     if build_output != "" { execution_deps.push(build_output); }
     for dep_key in direct {
         let dep_src = meta[dep_key]["src"];
         let dep_out = dependency_artifact(meta, dep_key, transition);
         let dep_crate = dependency_crate_name(ctx, manifest, dep_src.name, crate_name(#{ name: dep_src.name }));
         args += ["--extern", `${dep_crate}=${dep_out}`];
-        execution_deps.push(dep_out);
     }
     let dep_env = merge_env(string_env(ctx.env), cargo_pkg_env(manifest, src.name, src.version));
     dep_env["CARGO_CRATE_NAME"] = pkg_name;

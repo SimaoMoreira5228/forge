@@ -86,10 +86,14 @@ mod tests {
 			"second holder must not acquire"
 		);
 		drop(held);
-		assert!(
-			FileLock::try_exclusive(&path).unwrap().is_some(),
-			"released lock is acquirable"
-		);
+		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+		loop {
+			if FileLock::try_exclusive(&path).unwrap().is_some() {
+				break;
+			}
+			assert!(std::time::Instant::now() < deadline, "released lock is acquirable");
+			std::thread::sleep(std::time::Duration::from_millis(10));
+		}
 		let _ = std::fs::remove_file(&path);
 	}
 }

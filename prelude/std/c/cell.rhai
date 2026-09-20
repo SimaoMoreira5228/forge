@@ -192,6 +192,7 @@ fn archive_one(ctx, objs) {
         inputs: ctx.hdrs,
         execution_deps: objs,
         outputs: [out],
+        artifact: out,
         env: #{},
         toolchain_id: ctx.tool_id(),
     });

@@ -1,6 +1,8 @@
-mod common;
+mod c_workspace;
+mod forge_cli;
 
-use common::*;
+use c_workspace::{have_compiler, write_workspace};
+use forge_cli::forge_bin;
 
 fn build_in(dir: &std::path::Path, store: &std::path::Path) -> (bool, String) {
 	let out = std::process::Command::new(forge_bin())

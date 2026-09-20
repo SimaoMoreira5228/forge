@@ -237,6 +237,25 @@ fn cargo_import_targets(root, lock) {
     }
 }
 
+fn cargo_member_manifests(ctx) {
+    let root = toml_decode(ctx.read_file("Cargo.toml"));
+    let workspace = if root["workspace"] == () { #{} } else { root["workspace"] };
+    let excluded = [];
+    if workspace["exclude"] != () {
+        for member in workspace["exclude"] { excluded += ctx.glob(rust_path(member, "Cargo.toml")); }
+    }
+    let paths = if root["package"] == () { [] } else { ["Cargo.toml"] };
+    if workspace["members"] != () {
+        for member in workspace["members"] { paths += ctx.glob(rust_path(member, "Cargo.toml")); }
+    }
+    let manifests = [];
+    for path in paths {
+        if excluded.contains(path) { continue; }
+        manifests.push(cargo_inherit(toml_decode(ctx.read_file(path)), workspace));
+    }
+    manifests
+}
+
 fn rust_registry_http_url(url) {
     if url.type_of() != "string" || (!url.starts_with("https://") && !url.starts_with("http://")) { throw "expected HTTP(S) Rust registry URL"; }
     for ch in url.chars() {

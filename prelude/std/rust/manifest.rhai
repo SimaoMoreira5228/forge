@@ -252,6 +252,41 @@ fn source_keys(meta, package_names) {
     found
 }
 
+fn unit_crate_name(entry) {
+    let lib = entry["manifest"]["lib"];
+    let name = if lib != () && lib["name"] != () { lib["name"] } else { entry["src"].name };
+    rust_name(name)
+}
+
+fn proc_macro_keys(meta, keys) {
+    let found = [];
+    for key in keys {
+        if meta[key]["proc_macro"] && !found.contains(key) { found.push(key); }
+    }
+    found
+}
+
+fn proc_macro_host_artifacts(meta, info, keys) {
+    let artifacts = [];
+    for key in keys {
+        for reached in graph_reachable(info["adjacency"], [key]) {
+            let out = dependency_artifact(meta, reached, "host");
+            if !artifacts.contains(out) { artifacts.push(out); }
+        }
+    }
+    artifacts
+}
+
+fn manifest_declares_dependencies(manifest) {
+    if manifest["dependencies"] != () { return true; }
+    let targets = manifest["target"];
+    if targets == () { return false; }
+    for key in targets.keys() {
+        if targets[key]["dependencies"] != () || targets[key]["build-dependencies"] != () { return true; }
+    }
+    false
+}
+
 fn source_meta(ctx) {
     let meta = #{};
     let adjacency = #{};
@@ -277,6 +312,7 @@ fn source_meta(ctx) {
     }
     for key in keys {
         let src = meta[key]["src"];
+        let declared = manifest_declares_dependencies(meta[key]["manifest"]);
         let normal_names = active_dependency_names(ctx, meta[key]["manifest"]);
         let build_names = active_build_names(ctx, meta[key]["manifest"]);
         let deps = [];
@@ -294,10 +330,12 @@ fn source_meta(ctx) {
             for candidate in ctx.fetched_sources {
                 if candidate.name == package_name && (dep_version == "" || candidate.version == dep_version) {
                     let dep_key = dependency_key(candidate);
-                    full.push(dep_key);
-                    if normal_names.len() == 0 || normal_names.contains(package_name) { normal.push(dep_key); }
-                    if build_names.len() == 0 || build_names.contains(package_name) { build.push(dep_key); }
-                    if normal.contains(dep_key) || build.contains(dep_key) { deps.push(dep_key); }
+                    if !declared || normal_names.contains(package_name) { normal.push(dep_key); }
+                    if !declared || build_names.contains(package_name) { build.push(dep_key); }
+                    if normal.contains(dep_key) || build.contains(dep_key) {
+                        deps.push(dep_key);
+                        full.push(dep_key);
+                    }
                     break;
                 }
             }
@@ -310,8 +348,7 @@ fn source_meta(ctx) {
     let configurations = unit_configurations(ctx, meta, full_adjacency, normal_adjacency, build_adjacency);
     for key in keys {
         let entry = meta[key];
-        let crate = entry["src"].name;
-        crate.replace("-", "_");
+        let crate = unit_crate_name(entry);
         let suffix = if entry["proc_macro"] { proc_macro_dylib_suffix(ctx) } else { "rlib" };
         let artifacts = #{};
         for transition in configurations[key] {
@@ -324,14 +361,47 @@ fn source_meta(ctx) {
     #{ meta: meta, adjacency: adjacency, normal_edges: normal_adjacency, build_edges: build_adjacency }
 }
 
+fn workspace_dependency_names(ctx, build) {
+    if rust_metadata(ctx)["manifest"] != () {
+        let manifest = workspace_crate_manifest(ctx);
+        return if build { active_build_names(ctx, manifest) } else { active_dependency_names(ctx, manifest) };
+    }
+    if rust_mode(ctx["cell_config"]) == "native" {
+        let own = workspace_crate_manifest(ctx);
+        let names = if build { active_build_names(ctx, own) } else { active_dependency_names(ctx, own) };
+        let cell_config = ctx["cell_config"];
+        let catalog = if cell_config == () { () } else { cell_config["dependencies"] };
+        if ctx.contains("targets") {
+            for metadata in ctx.targets {
+                let rust = metadata["rust"];
+                if rust == () || rust.type_of() != "map" { continue; }
+                if build {
+                    if rust["build-dependencies"] != () { names += section_dep_names(rust["build-dependencies"]); }
+                } else {
+                    let deps = rust_inherited_dependencies(rust["dependencies"], catalog, "cell.rust.dependencies");
+                    if deps != () { names += section_dep_names(deps); }
+                }
+            }
+        }
+        return names;
+    }
+    let names = [];
+    for manifest in cargo_member_manifests(ctx) {
+        names += if build { active_build_names(ctx, manifest) } else { active_dependency_names(ctx, manifest) };
+    }
+    names
+}
+
 fn unit_configurations(ctx, meta, full, normal_edges, build_edges) {
     let crate_manifest = workspace_crate_manifest(ctx);
-    let host = graph_reachable(full, source_keys(meta, active_build_names(ctx, crate_manifest)));
+    let host = graph_reachable(full, source_keys(meta, workspace_dependency_names(ctx, true)));
     let target_seeds = [];
-    for key in graph_roots(full) {
-        if !host.contains(key) { target_seeds.push(key); }
+    if rust_mode(ctx["cell_config"]) == "native" {
+        for key in graph_roots(full) {
+            if !host.contains(key) { target_seeds.push(key); }
+        }
     }
-    for key in source_keys(meta, active_dependency_names(ctx, crate_manifest)) {
+    for key in source_keys(meta, workspace_dependency_names(ctx, false)) {
         if !target_seeds.contains(key) { target_seeds.push(key); }
     }
     let target = graph_reachable(normal_edges, target_seeds);

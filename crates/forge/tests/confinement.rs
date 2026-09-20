@@ -18,8 +18,6 @@ fn scratch(name: &str) -> PathBuf {
 	dir
 }
 
-/// Runs a real action through the runner and reports whether it reached a path outside its own
-/// sandbox root.
 #[cfg(unix)]
 fn reach_outside() -> bool {
 	let root = scratch("root");
