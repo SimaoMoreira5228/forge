@@ -46,7 +46,18 @@ pub fn sync_all(store: &ToolchainStore, only: Option<&str>) -> Result<Vec<(Strin
 }
 
 fn platform_key() -> String {
-	format!("{}-{}", std::env::consts::OS, normalize_arch(std::env::consts::ARCH))
+	platform_key_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+fn platform_key_for(os: &str, arch: &str) -> String {
+	format!("{}-{}", catalog_os(os), normalize_arch(arch))
+}
+
+fn catalog_os(os: &str) -> &str {
+	match os {
+		"macos" | "ios" => "darwin",
+		other => other,
+	}
 }
 
 fn normalize_arch(arch: &str) -> String {
@@ -73,7 +84,7 @@ fn sync_one(
 		eprintln!("warning: `{config_name}` has no sha256 pin; downloads cannot be verified (reproducibility at risk)");
 	}
 
-	let archive = fetch_blob(&store.store, &target.url, target.sha256.as_deref())?;
+	let archive = fetch_blob(&store.store, &target.url, target.sha256.as_deref(), false)?;
 
 	let staging = store.store.staging(catalog_name);
 	std::fs::create_dir_all(&staging).map_err(|e| io_err("create", &staging, e))?;
@@ -129,6 +140,7 @@ pub(crate) fn fetch_blob(
 	store: &crate::store::Store,
 	url: &str,
 	sha256: Option<&str>,
+	offline: bool,
 ) -> Result<std::path::PathBuf, ForgeDiagnostic> {
 	let key = match sha256 {
 		Some(expected) => expected.to_ascii_lowercase(),
@@ -137,6 +149,13 @@ pub(crate) fn fetch_blob(
 	let blob = store.blob(&key);
 	if blob.is_file() {
 		return Ok(blob);
+	}
+	if offline {
+		return Err(ForgeDiagnostic::error(
+			codes::hermetic::TOOLCHAIN_MISMATCH,
+			format!("offline: the global store does not hold `{url}`"),
+		)
+		.with_help("re-run without `--offline` to fetch it"));
 	}
 	std::fs::create_dir_all(store.blobs()).map_err(|e| io_err("create", &store.blobs(), e))?;
 	let staged = store.staging("blob");
@@ -156,7 +175,7 @@ pub(crate) fn fetch_blob(
 	}
 	{
 		let _publish = store.lock("store")?;
-		std::fs::rename(&staged, &blob).map_err(|e| io_err("publish blob", &blob, e))?;
+		store.publish_file(&staged, &blob)?;
 	}
 	Ok(blob)
 }
@@ -365,7 +384,101 @@ fn io_err(stage: &str, path: &Path, e: std::io::Error) -> ForgeDiagnostic {
 
 #[cfg(test)]
 mod tests {
+	use std::collections::BTreeSet;
+
+	use forge_core::Catalog;
+
 	use super::*;
+	use crate::toolchain::store::EMBEDDED_CATALOG;
+
+	const CELL_TOOLCHAINS_PER_HOST: &[(&str, &str, &[&str])] = &[
+		("linux", "x86_64", &["clang", "rust"]),
+		("linux", "aarch64", &["clang", "rust"]),
+		("macos", "aarch64", &["clang", "rust"]),
+		("macos", "x86_64", &["rust"]),
+		("windows", "x86_64", &["clang", "rust"]),
+		("windows", "aarch64", &["clang", "rust"]),
+	];
+
+	fn bundled_catalog() -> Catalog {
+		Catalog::parse(EMBEDDED_CATALOG).expect("bundled catalog must parse")
+	}
+
+	fn http_status(url: &str) -> u16 {
+		match ureq::head(url).call() {
+			Ok(response) => response.status().as_u16(),
+			Err(ureq::Error::StatusCode(405)) | Err(ureq::Error::StatusCode(501)) => first_byte_status(url),
+			Err(ureq::Error::StatusCode(code)) => code,
+			Err(e) => panic!("{url}: {e}"),
+		}
+	}
+
+	fn first_byte_status(url: &str) -> u16 {
+		match ureq::get(url).header("Range", "bytes=0-0").call() {
+			Ok(response) => response.status().as_u16(),
+			Err(ureq::Error::StatusCode(code)) => code,
+			Err(e) => panic!("{url}: {e}"),
+		}
+	}
+
+	#[test]
+	fn catalog_serves_the_platform_key_of_every_host_the_std_cells_need() {
+		let catalog = bundled_catalog();
+		for (os, arch, toolchains) in CELL_TOOLCHAINS_PER_HOST {
+			let key = platform_key_for(os, arch);
+			for toolchain in *toolchains {
+				let entry = catalog
+					.get(toolchain)
+					.unwrap_or_else(|| panic!("`{toolchain}` is not in the catalog"));
+				assert!(
+					entry.targets.contains_key(&key),
+					"`{toolchain}` has no `{key}` download, so `forge toolchains sync` cannot resolve it on a {os} {arch} host"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn every_catalog_target_key_is_one_the_engine_can_produce() {
+		let catalog = bundled_catalog();
+		let supported: BTreeSet<String> = CELL_TOOLCHAINS_PER_HOST
+			.iter()
+			.map(|(os, arch, _)| platform_key_for(os, arch))
+			.collect();
+		for name in catalog.names() {
+			for key in catalog.get(name).unwrap().targets.keys() {
+				assert!(
+					supported.contains(key),
+					"`{name}` advertises `{key}`, which no host resolves to; platform keys are the target-triple os and arch"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn every_catalog_url_resolves() {
+		if std::env::var_os("FORGE_CATALOG_URLS").is_none() {
+			eprintln!("skipping: set FORGE_CATALOG_URLS=1 to resolve every catalog url");
+			return;
+		}
+		let catalog = bundled_catalog();
+		let mut dead = Vec::new();
+		for name in catalog.names() {
+			let resolved = catalog.resolve(name, None).expect("every toolchain resolves");
+			for platform in resolved.entry.targets.keys() {
+				let target = resolved
+					.entry
+					.url_for(&resolved.version, platform)
+					.expect("its own key resolves");
+				let status = http_status(&target.url);
+				println!("{status}  {name} {platform}  {}", short_url(&target.url));
+				if !(200..300).contains(&status) {
+					dead.push(format!("{name} {platform} {status} {}", target.url));
+				}
+			}
+		}
+		assert!(dead.is_empty(), "catalog urls that no longer exist:\n{}", dead.join("\n"));
+	}
 
 	fn write_tar_gz(path: &Path, entries: &[(&str, &[u8])]) {
 		use flate2::write::GzEncoder;
@@ -457,7 +570,7 @@ mod tests {
 		let url = serve_once(payload.clone());
 		let wrong = "0".repeat(64);
 		assert!(
-			fetch_blob(&store, &url, Some(&wrong)).is_err(),
+			fetch_blob(&store, &url, Some(&wrong), false).is_err(),
 			"a mismatched digest must not be published"
 		);
 		assert!(!store.blobs().exists() || std::fs::read_dir(store.blobs()).unwrap().flatten().count() == 0);
@@ -472,8 +585,14 @@ mod tests {
 		let digest = "a".repeat(64);
 		std::fs::create_dir_all(store.blobs()).unwrap();
 		std::fs::write(store.blob(&digest), b"cached").unwrap();
-		let path = fetch_blob(&store, "https://example.invalid/never", Some(&digest)).unwrap();
+		let path = fetch_blob(&store, "https://example.invalid/never", Some(&digest), true).unwrap();
 		assert_eq!(path, store.blob(&digest));
+		let absent = "b".repeat(64);
+		let error = fetch_blob(&store, "https://example.invalid/absent", Some(&absent), true)
+			.unwrap_err()
+			.to_string();
+		assert!(error.contains("https://example.invalid/absent"), "{error}");
+		assert!(error.contains("re-run without `--offline`"), "{error}");
 		let _ = std::fs::remove_dir_all(&root);
 	}
 

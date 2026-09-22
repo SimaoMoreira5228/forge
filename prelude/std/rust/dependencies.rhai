@@ -63,7 +63,7 @@ fn cargo_inherit(manifest, workspace) {
     manifest
 }
 
-fn rust_resolve(targets, catalog) {
+fn rust_resolve(targets, catalog, selected, conflict) {
     let pending = [];
     for metadata in targets {
         let rust = metadata["rust"];
@@ -73,7 +73,7 @@ fn rust_resolve(targets, catalog) {
         pending += rust_resolve_section(rust_inherited_dependencies(rust["build-dependencies"], catalog, "cell.rust.dependencies"));
     }
     if pending.len() > 0 && resolving_dependencies {
-        rust_registry_candidates(pending);
+        rust_registry_candidates(pending, selected, conflict);
     }
 }
 
@@ -122,7 +122,7 @@ fn rust_resolve_section(declarations) {
 }
 
 if is_def_var("targets") {
-    rust_resolve(targets, cell_config["dependencies"]);
+    rust_resolve(targets, cell_config["dependencies"], selected_packages, conflict);
 } else if is_def_var("cell_config") {
     rust_workspace(cell_config);
 }

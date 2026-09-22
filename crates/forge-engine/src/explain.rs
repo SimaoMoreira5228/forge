@@ -33,7 +33,7 @@ impl Engine {
 		let platform = prepared.config.resolve_target()?;
 		let toolchains = crate::toolchain::ToolchainStore::load(&self.workspace, prepared.config.clone())?.resolve_all()?;
 		let cells = crate::std_cells::StdCells::load(&self.workspace, &prepared.config.std_patches)?;
-		let fetched_sources = self.fetch_sources(&prepared)?;
+		let fetched_sources = self.fetch_sources(&prepared, false)?;
 
 		let ctx = PlanContext {
 			graph: &prepared.graph,

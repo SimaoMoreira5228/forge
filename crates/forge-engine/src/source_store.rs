@@ -21,18 +21,20 @@ pub struct SourceStore {
 	store: Store,
 	workspace: PathBuf,
 	mirrors: Vec<(String, String)>,
+	offline: bool,
 }
 
 impl SourceStore {
-	pub fn open(workspace: &Path, mirrors: Vec<(String, String)>) -> Self {
-		Self::with_store(workspace, Store::open(), mirrors)
+	pub fn open(workspace: &Path, mirrors: Vec<(String, String)>, offline: bool) -> Self {
+		Self::with_store(workspace, Store::open(), mirrors, offline)
 	}
 
-	pub fn with_store(workspace: &Path, store: Store, mirrors: Vec<(String, String)>) -> Self {
+	pub fn with_store(workspace: &Path, store: Store, mirrors: Vec<(String, String)>, offline: bool) -> Self {
 		Self {
 			store,
 			workspace: workspace.to_path_buf(),
 			mirrors,
+			offline,
 		}
 	}
 
@@ -52,7 +54,7 @@ impl SourceStore {
 				package.name, package.version, url
 			);
 		}
-		let archive = fetch_blob(&self.store, &url, Some(&package.sha256))?;
+		let archive = fetch_blob(&self.store, &url, Some(&package.sha256), self.offline)?;
 		let staging = self.store.staging(&format!("src-{}", package.name));
 		std::fs::create_dir_all(&staging).map_err(|e| io_error("create", &staging, e))?;
 		extract(&archive, &staging).inspect_err(|_e| {
@@ -257,7 +259,7 @@ mod tests {
 		std::fs::create_dir_all(store_root.join("blobs")).unwrap();
 		std::fs::copy(&archive_path, store_root.join("blobs").join(&digest)).unwrap();
 
-		let store = SourceStore::with_store(&ws, Store::at(&store_root), Vec::new());
+		let store = SourceStore::with_store(&ws, Store::at(&store_root), Vec::new(), false);
 		let package = SourcePackage {
 			name: "demo".into(),
 			version: "1.0.0".into(),
@@ -296,7 +298,7 @@ mod tests {
 		std::fs::create_dir_all(store_root.join("blobs")).unwrap();
 		std::fs::write(store_root.join("blobs").join(&digest), b"not an archive").unwrap();
 
-		let store = SourceStore::with_store(&ws, Store::at(&store_root), Vec::new());
+		let store = SourceStore::with_store(&ws, Store::at(&store_root), Vec::new(), false);
 		let package = SourcePackage {
 			name: "demo".into(),
 			version: "1.0.0".into(),

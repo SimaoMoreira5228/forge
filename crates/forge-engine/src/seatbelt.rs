@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::confine::Policy;
 use crate::runner::Launch;
@@ -91,8 +92,11 @@ fn run(launch: &Launch, policy: &Policy, sandbox_exec: &Path) -> std::io::Result
 	command.output()
 }
 
+static PROBE_SERIAL: AtomicU32 = AtomicU32::new(0);
+
 pub fn probe() -> Result<(), String> {
-	let scratch = std::env::temp_dir().join(format!("forge-seatbelt-probe-{}", std::process::id()));
+	let serial = PROBE_SERIAL.fetch_add(1, Ordering::Relaxed);
+	let scratch = std::env::temp_dir().join(format!("forge-seatbelt-probe-{}-{serial}", std::process::id()));
 	let secret = scratch.with_extension("secret");
 	let _ = std::fs::remove_dir_all(&scratch);
 	let _ = std::fs::remove_file(&secret);

@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -9,11 +10,20 @@ use serde_json::Value as Json;
 use crate::document::{FieldsBuilder, TargetDecl, TargetKind};
 use crate::glob;
 
-pub type MetadataFetcher = Rc<dyn Fn(&str) -> Result<String, String>>;
+pub const UNRESOLVED_FETCH: &str = "forge:unresolved-fetch";
 
 #[derive(Clone, Default)]
 pub struct ResolutionContext {
-	pub http_get: Option<MetadataFetcher>,
+	pub resolving: bool,
+	pub bytes: BTreeMap<String, String>,
+	pub requested: Rc<RefCell<Vec<String>>>,
+	pub scratch: Rc<RefCell<BTreeMap<String, String>>>,
+	pub selected: Rc<RefCell<BTreeMap<String, String>>>,
+	pub conflict: String,
+}
+
+pub fn unresolved_fetch(error: &ForgeDiagnostic) -> bool {
+	error.message.contains(UNRESOLVED_FETCH)
 }
 
 #[derive(Debug, Clone)]
@@ -84,12 +94,26 @@ fn run_forge_rhai_inner(
 	register_glob(&mut engine, package_dir);
 	register_platform(&mut engine, platform);
 	register_io(&mut engine, package_dir);
-	let http_get = resolution.http_get.clone();
-	engine.register_fn("http_get", move |url: &str| -> Result<String, Box<EvalAltResult>> {
-		let fetch = http_get
-			.as_ref()
-			.ok_or("http_get is only available during explicit dependency resolution")?;
-		fetch(url).map_err(Into::into)
+	let bytes = resolution.bytes.clone();
+	let requested = resolution.requested.clone();
+	engine.register_fn("fetch", move |url: &str| -> Result<String, Box<EvalAltResult>> {
+		if let Some(text) = bytes.get(url) {
+			return Ok(text.clone());
+		}
+		requested.borrow_mut().push(url.to_string());
+		Err(format!("{UNRESOLVED_FETCH} {url}").into())
+	});
+
+	let scratch = resolution.scratch.clone();
+	engine.register_fn("scratch_get", move |key: &str| -> Dynamic {
+		match scratch.borrow().get(key) {
+			Some(value) => Dynamic::from(value.clone()),
+			None => Dynamic::UNIT,
+		}
+	});
+	let scratch = resolution.scratch.clone();
+	engine.register_fn("scratch_put", move |key: &str, value: &str| {
+		scratch.borrow_mut().insert(key.to_string(), value.to_string());
 	});
 
 	let claim = imported.clone();
@@ -101,7 +125,10 @@ fn run_forge_rhai_inner(
 		Ok(())
 	});
 	let mut scope = rhai::Scope::new();
-	scope.push_constant("resolving_dependencies", resolution.http_get.is_some());
+	scope.push_constant("resolving_dependencies", resolution.resolving);
+	let selection = selected_packages(&resolution.selected.borrow());
+	scope.push_dynamic("selected_packages", selection);
+	scope.push_constant("conflict", resolution.conflict.clone());
 	scope.push_dynamic(
 		"cell_config",
 		toml_value_to_dynamic(toml::Value::Table(config.clone())).map_err(|e| ForgeDiagnostic::error(101, e))?,
@@ -126,6 +153,14 @@ fn run_forge_rhai_inner(
 		candidates: candidates.borrow().clone(),
 		imported_lock: imported.borrow().clone(),
 	})
+}
+
+fn selected_packages(selected: &BTreeMap<String, String>) -> Dynamic {
+	let mut packages = Map::new();
+	for (name, version) in selected {
+		packages.insert(name.as_str().into(), Dynamic::from(version.clone()));
+	}
+	Dynamic::from(packages)
 }
 
 fn register_platform(engine: &mut rhai::Engine, platform: &forge_core::Platform) {
@@ -184,6 +219,9 @@ fn register_io(engine: &mut rhai::Engine, package_dir: &Path) {
 	engine.register_fn("json_decode", |text: &str| -> Result<Dynamic, Box<EvalAltResult>> {
 		json_decode(text).map_err(Into::into)
 	});
+	engine.register_fn("json_encode", |value: Dynamic| -> Result<String, Box<EvalAltResult>> {
+		json_encode(value).map_err(Into::into)
+	});
 }
 
 pub(crate) fn toml_decode(text: &str) -> Result<Map, String> {
@@ -200,6 +238,47 @@ pub fn json_decode(text: &str) -> Result<Dynamic, String> {
 	serde_json::from_str::<Json>(text)
 		.map(json_to_dynamic)
 		.map_err(|e| format!("json_decode: {e}"))
+}
+
+pub fn json_encode(value: Dynamic) -> Result<String, String> {
+	serde_json::to_string(&dynamic_to_json(value)?).map_err(|e| format!("json_encode: {e}"))
+}
+
+fn dynamic_to_json(value: Dynamic) -> Result<Json, String> {
+	if value.is::<rhai::Map>() {
+		let map = value.cast::<rhai::Map>();
+		return map
+			.into_iter()
+			.map(|(key, value)| Ok((key.to_string(), dynamic_to_json(value)?)))
+			.collect::<Result<serde_json::Map<String, Json>, String>>()
+			.map(Json::Object);
+	}
+	if value.is::<rhai::Array>() {
+		return value
+			.cast::<rhai::Array>()
+			.into_iter()
+			.map(dynamic_to_json)
+			.collect::<Result<Vec<Json>, String>>()
+			.map(Json::Array);
+	}
+	if value.is_unit() {
+		return Ok(Json::Null);
+	}
+	if let Ok(text) = value.clone().into_string() {
+		return Ok(Json::String(text));
+	}
+	if let Ok(flag) = value.as_bool() {
+		return Ok(Json::Bool(flag));
+	}
+	if let Ok(integer) = value.as_int() {
+		return Ok(Json::Number(integer.into()));
+	}
+	if let Ok(float) = value.as_float() {
+		return serde_json::Number::from_f64(float)
+			.map(Json::Number)
+			.ok_or_else(|| "json_encode: number is not finite".to_string());
+	}
+	Err("json_encode: values must be strings, numbers, booleans, arrays, maps, or ()".to_string())
 }
 
 fn json_to_dynamic(value: serde_json::Value) -> Dynamic {
@@ -547,47 +626,76 @@ fn diag_to_box(d: ForgeDiagnostic) -> Box<EvalAltResult> {
 }
 
 #[test]
-fn resolution_callback_is_opt_in_and_propagates_results() {
+fn fetch_declares_a_url_until_the_engine_supplies_its_bytes() {
 	let platform = forge_core::Platform::host();
 	let config = toml::Table::new();
 	let script = r#"if resolving_dependencies { throw "unexpected resolution"; }"#;
 	run_forge_rhai(script, Path::new("."), &platform).unwrap();
 	run_forge_rhai_configured(script, Path::new("."), &platform, &config).unwrap();
-	let script = r#"http_get("https://example.invalid/metadata");"#;
-	let error =
-		run_forge_rhai_resolving(script, Path::new("."), &platform, &config, &ResolutionContext::default()).unwrap_err();
-	assert!(
-		error
-			.to_string()
-			.contains("only available during explicit dependency resolution")
-	);
-	let calls = Rc::new(RefCell::new(Vec::new()));
-	let sink = calls.clone();
+
 	let context = ResolutionContext {
-		http_get: Some(Rc::new(move |url| {
-			sink.borrow_mut().push(url.to_string());
-			if url == "failure" {
-				Err("callback failed".into())
-			} else {
-				Ok("payload".into())
-			}
-		})),
+		resolving: true,
+		..Default::default()
 	};
-	let script = r#"if !resolving_dependencies { throw "not resolving"; } binary(http_get("metadata"), #{});"#;
-	let output = run_forge_rhai_resolving(script, Path::new("."), &platform, &config, &context.clone()).unwrap();
+	let error = run_forge_rhai_resolving(
+		r#"fetch("https://example.invalid/metadata");"#,
+		Path::new("."),
+		&platform,
+		&config,
+		&context,
+	)
+	.unwrap_err();
+	assert!(unresolved_fetch(&error), "{error}");
+	assert!(error.to_string().contains("https://example.invalid/metadata"), "{error}");
+	assert_eq!(*context.requested.borrow(), ["https://example.invalid/metadata"]);
+
+	let supplied = ResolutionContext {
+		resolving: true,
+		bytes: BTreeMap::from([("metadata".to_string(), "payload".to_string())]),
+		..Default::default()
+	};
+	let script = r#"if !resolving_dependencies { throw "not resolving"; } binary(fetch("metadata"), #{});"#;
+	let output = run_forge_rhai_resolving(script, Path::new("."), &platform, &config, &supplied).unwrap();
 	assert_eq!(output.targets[0].name, "payload");
-	let error =
-		run_forge_rhai_resolving(r#"http_get("failure");"#, Path::new("."), &platform, &config, &context).unwrap_err();
-	assert!(error.to_string().contains("callback failed"));
-	assert_eq!(*calls.borrow(), ["metadata", "failure"]);
+	assert!(supplied.requested.borrow().is_empty());
+
 	assert!(
 		run_forge_rhai(
-			r#"let resolving_dependencies = true; http_get("metadata");"#,
+			r#"let resolving_dependencies = true; fetch("metadata");"#,
 			Path::new("."),
 			&platform
 		)
 		.is_err()
 	);
+}
+
+#[test]
+fn the_scratch_map_and_the_selection_survive_a_resolution() {
+	let platform = forge_core::Platform::host();
+	let config = toml::Table::new();
+	let context = ResolutionContext {
+		resolving: true,
+		selected: Rc::new(RefCell::new(BTreeMap::from([("demo".to_string(), "1.2.3".to_string())]))),
+		..Default::default()
+	};
+	let script = r#"
+		scratch_put("parsed", json_encode([#{ vers: "1.2.3", features: #{ turbo: ["dep:helper"] } }]));
+		let index = json_decode(scratch_get("parsed"));
+		if index[0].vers != selected_packages.demo { throw "the selection is not the cell's to interpret"; }
+		if index[0].features.turbo[0] != "dep:helper" { throw "json_encode did not round-trip"; }
+		if scratch_get("absent") != () { throw "an absent key must be unit"; }
+		dependency_candidate("demo", index[0].vers, "https://cdn.invalid/demo", "sha", []);
+	"#;
+	let output = run_forge_rhai_resolving(script, Path::new("."), &platform, &config, &context).unwrap();
+	assert_eq!(output.candidates.len(), 1);
+	assert_eq!(output.candidates[0].version, forge_core::Version::new(1, 2, 3));
+	assert_eq!(
+		context.scratch.borrow().get("parsed").map(String::as_str),
+		Some(r#"[{"features":{"turbo":["dep:helper"]},"vers":"1.2.3"}]"#)
+	);
+	assert!(json_encode(Dynamic::UNIT).is_ok());
+	assert!(json_encode(Dynamic::from(1.5)).is_ok());
+	assert!(json_decode("not json").is_err());
 }
 
 #[test]

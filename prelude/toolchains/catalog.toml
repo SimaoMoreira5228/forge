@@ -3,7 +3,7 @@
 
 [toolchains.clang]
 aliases = ["llvm"]
-default_version = "23.1.0"
+default_version = "23.1.2"
 
 [toolchains.clang.targets.linux-x86_64]
 url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-Linux-X64.tar.xz"
@@ -11,11 +11,14 @@ url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/
 [toolchains.clang.targets.linux-aarch64]
 url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-Linux-ARM64.tar.xz"
 
-[toolchains.clang.targets.darwin-x86_64]
-url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-macOS-X64.tar.xz"
-
 [toolchains.clang.targets.darwin-aarch64]
 url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/LLVM-{version}-macOS-ARM64.tar.xz"
+
+[toolchains.clang.targets.windows-x86_64]
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/clang+llvm-{version}-x86_64-pc-windows-msvc.tar.xz"
+
+[toolchains.clang.targets.windows-aarch64]
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/clang+llvm-{version}-aarch64-pc-windows-msvc.tar.xz"
 
 [toolchains.clang.coverage]
 raw_extension = "profraw"
@@ -62,10 +65,10 @@ url = "https://ziglang.org/download/{version}/zig-x86_64-linux-{version}.tar.xz"
 [toolchains.zig.targets.linux-aarch64]
 url = "https://ziglang.org/download/{version}/zig-aarch64-linux-{version}.tar.xz"
 
-[toolchains.zig.targets.macos-x86_64]
+[toolchains.zig.targets.darwin-x86_64]
 url = "https://ziglang.org/download/{version}/zig-x86_64-macos-{version}.tar.xz"
 
-[toolchains.zig.targets.macos-aarch64]
+[toolchains.zig.targets.darwin-aarch64]
 url = "https://ziglang.org/download/{version}/zig-aarch64-macos-{version}.tar.xz"
 
 [toolchains.cmake]
@@ -129,6 +132,12 @@ url = "https://static.rust-lang.org/dist/rust-{version}-x86_64-apple-darwin.tar.
 
 [toolchains.rust.targets.darwin-aarch64]
 url = "https://static.rust-lang.org/dist/rust-{version}-aarch64-apple-darwin.tar.gz"
+
+[toolchains.rust.targets.windows-x86_64]
+url = "https://static.rust-lang.org/dist/rust-{version}-x86_64-pc-windows-msvc.tar.gz"
+
+[toolchains.rust.targets.windows-aarch64]
+url = "https://static.rust-lang.org/dist/rust-{version}-aarch64-pc-windows-msvc.tar.gz"
 
 [toolchains.lcov]
 default_version = "2.1"

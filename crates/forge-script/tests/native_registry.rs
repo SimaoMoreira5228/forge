@@ -1,19 +1,26 @@
-use std::cell::RefCell;
 use std::path::Path;
-use std::rc::Rc;
 
 use forge_script::rhai_rt::{ResolutionContext, run_forge_rhai_configured, run_forge_rhai_resolve};
 
 fn rust_cell() -> String {
 	format!(
-		"{}\n{}",
+		"{}\n{}\n{}",
 		include_str!("../../../prelude/std/rust/workspace.rhai"),
+		include_str!("../../../prelude/std/rust/registry.rhai"),
 		include_str!("../../../prelude/std/rust/dependencies.rhai")
 	)
 }
 
 fn targets(spec: &str) -> Vec<toml::Table> {
 	vec![toml::from_str(spec).unwrap()]
+}
+
+fn registry(bodies: &[(&str, &str)]) -> ResolutionContext {
+	ResolutionContext {
+		resolving: true,
+		bytes: bodies.iter().map(|(url, body)| (url.to_string(), body.to_string())).collect(),
+		..Default::default()
+	}
 }
 
 fn resolve_ok(
@@ -51,33 +58,37 @@ fn native_sparse_resolution_and_range_subset() {
 	);
 	let offline = run_forge_rhai_configured(script, Path::new("."), &platform, &toml::Table::new()).unwrap();
 	assert!(offline.requirements.is_empty() && offline.candidates.is_empty());
-	let calls = Rc::new(RefCell::new(Vec::new()));
-	let observed = calls.clone();
-	let resolution = ResolutionContext {
-		http_get: Some(Rc::new(move |url| {
-			observed.borrow_mut().push(url.to_string());
-			match url {
-				"https://example.invalid/index/config.json" => Ok(r#"{"dl":"https://downloads.example.invalid/crates/","auth-required":false}"#.into()),
-				"https://example.invalid/index/de/mo/demo" => Ok(concat!(
-					r#"{"vers":"1.2.3","cksum":"demo-sha","deps":[{"name":"a","req":"^0.2.3"},{"name":"bb","req":"~1.2"},{"name":"ccc","req":">=1.0, <2.0"},{"name":"ignored","req":"unsupported","kind":"dev"}]}"#,
-					"\n",
-					r#"{"vers":"1.3.0","cksum":"yanked","yanked":true,"deps":[]}"#,
-					"\n",
-					r#"{"vers":"1.4.0-rc.1","cksum":"pre","deps":[]}"#,
-					"\n",
-					r#"{"vers":"2.0.0","cksum":"outside","deps":[{"name":"ignored","req":"unsupported"}]}"#,
-					"\n"
-				).into()),
-				"https://example.invalid/index/1/a" => Ok(r#"{"vers":"0.2.4","cksum":"a-sha","deps":[]}"#.into()),
-				"https://example.invalid/index/2/bb" => Ok(r#"{"vers":"1.2.5","cksum":"bb-sha","deps":[]}"#.into()),
-				"https://example.invalid/index/3/c/ccc" => Ok(r#"{"vers":"1.1.0","cksum":"ccc-sha","deps":[{"name":"demo","req":"^1"}]}"#.into()),
-				_ => Err(format!("unexpected request: {url}")),
-			}
-		})),
-	};
+	let index = concat!(
+		r#"{"vers":"1.2.3","cksum":"demo-sha","deps":[{"name":"a","req":"^0.2.3"},{"name":"bb","req":"~1.2"},{"name":"ccc","req":">=1.0, <2.0"},{"name":"ignored","req":"unsupported","kind":"dev"}]}"#,
+		"\n",
+		r#"{"vers":"1.3.0","cksum":"yanked","yanked":true,"deps":[]}"#,
+		"\n",
+		r#"{"vers":"1.4.0-rc.1","cksum":"pre","deps":[]}"#,
+		"\n",
+		r#"{"vers":"2.0.0","cksum":"outside","deps":[{"name":"ignored","req":"unsupported"}]}"#,
+		"\n"
+	);
+	let resolution = registry(&[
+		(
+			"https://example.invalid/index/config.json",
+			r#"{"dl":"https://downloads.example.invalid/crates/","auth-required":false}"#,
+		),
+		("https://example.invalid/index/de/mo/demo", index),
+		(
+			"https://example.invalid/index/1/a",
+			r#"{"vers":"0.2.4","cksum":"a-sha","deps":[]}"#,
+		),
+		(
+			"https://example.invalid/index/2/bb",
+			r#"{"vers":"1.2.5","cksum":"bb-sha","deps":[]}"#,
+		),
+		(
+			"https://example.invalid/index/3/c/ccc",
+			r#"{"vers":"1.1.0","cksum":"ccc-sha","deps":[{"name":"demo","req":"^1"}]}"#,
+		),
+	]);
 	let result = resolve_ok(script, &platform, &demo, &resolution);
-	assert_eq!(calls.borrow().len(), 5);
-	assert_eq!(calls.borrow()[0], "https://example.invalid/index/config.json");
+	assert!(resolution.requested.borrow().is_empty());
 	assert_eq!(result.candidates.len(), 4);
 	for candidate in &result.candidates {
 		assert_eq!(
@@ -99,37 +110,40 @@ for sample in [
     ["^1.2.3", "1.2.3", "2.0.0"], ["0.2.3", "0.2.3", "0.3.0"],
     ["^0.0.3", "0.0.3", "0.0.4"], ["^0.0", "0.0.0", "0.1.0"],
     ["~1", "1.0.0", "2.0.0"], ["~1.2.3", "1.2.3", "1.3.0"],
-    [">=1.2, <3, <2", "1.2.0", "2.0.0"]
+    [">=1.2, <3, <2", "1.2.0", "2.0.0"],
+    ["*", "", ""], ["=1.2.3", "1.2.3", "1.2.4"], [">1", "1.0.1", ""],
+    ["<=2", "", "2.0.1"], ["==3.1", "3.1.0", "3.1.1"]
 ] {
     let range = rust_registry_requirement(sample[0]);
     if range.min != sample[1] || range.max != sample[2] { throw `wrong range: ${sample}`; }
 }
-for req in ["*", "1.*", "=1.2.3", ">1", "<=2", "1 || 2", "1.0-pre", "1.0+build", "1,", "01", ">=2,<1"] {
+for req in ["1.*", "1 || 2", "1.0-pre", "1.0+build", "1,", "01", ">=2,<1", ">="] {
     let rejected = false;
     try { rust_registry_requirement(req); } catch { rejected = true; }
     if !rejected { throw `accepted unsupported requirement: ${req}`; }
 }
 "#;
 	run_forge_rhai_configured(&format!("{script}\n{checks}"), Path::new("."), &platform, &toml::Table::new()).unwrap();
-	let invalid = ResolutionContext {
-		http_get: Some(Rc::new(|url| {
-			if url.ends_with("/config.json") {
-				Ok(r#"{"dl":"https://downloads.example.invalid"}"#.into())
-			} else {
-				Ok(r#"{"vers":"1.2.3","cksum":"sha","deps":[{"name":"bad","req":"*"}]}"#.into())
-			}
-		})),
-	};
+	let invalid = registry(&[
+		(
+			"https://example.invalid/index/config.json",
+			r#"{"dl":"https://downloads.example.invalid"}"#,
+		),
+		(
+			"https://example.invalid/index/de/mo/demo",
+			r#"{"vers":"1.2.3","cksum":"sha","deps":[{"name":"bad","req":"1.*"}]}"#,
+		),
+	]);
 	let error = resolve_err(script, &platform, &demo, &invalid);
-	assert!(error.to_string().contains("https://example.invalid/index"));
-	assert!(error.to_string().contains("unsupported Rust requirement"));
+	assert!(error.contains("https://example.invalid/index"));
+	assert!(error.contains("unsupported Rust requirement"));
 }
 
 #[test]
 fn native_registry_download_templates_and_default() {
 	let script = &rust_cell();
 	let platform = forge_core::Platform::host();
-	for (registry, index, dl, expected) in [
+	for (registry_decl, index, dl, expected) in [
 		(
 			"",
 			"https://index.crates.io",
@@ -150,19 +164,15 @@ fn native_registry_download_templates_and_default() {
 		),
 	] {
 		let demo = targets(&format!(
-			"[rust.dependencies.demo]\nrange = {{ min = '1', max = '2' }}\n{registry}"
+			"[rust.dependencies.demo]\nrange = {{ min = '1', max = '2' }}\n{registry_decl}"
 		));
-		let resolution = ResolutionContext {
-			http_get: Some(Rc::new(move |url| {
-				if url == format!("{index}/config.json") {
-					Ok(serde_json::json!({ "dl": dl }).to_string())
-				} else if url == format!("{index}/de/mo/demo") {
-					Ok(r#"{"vers":"1.2.3","cksum":"demo-sha","deps":[]}"#.into())
-				} else {
-					Err(format!("unexpected request: {url}"))
-				}
-			})),
-		};
+		let resolution = registry(&[
+			(&format!("{index}/config.json"), &serde_json::json!({ "dl": dl }).to_string()),
+			(
+				&format!("{index}/de/mo/demo"),
+				r#"{"vers":"1.2.3","cksum":"demo-sha","deps":[]}"#,
+			),
+		]);
 		let result = resolve_ok(script, &platform, &demo, &resolution);
 		assert_eq!(result.candidates.len(), 1);
 		assert_eq!(result.candidates[0].source.as_deref(), Some(expected));
@@ -210,12 +220,7 @@ fn native_registry_rejects_invalid_config_and_urls() {
 		r#"{"dl":"https://cdn.invalid/crates?query"}"#,
 		r#"{"dl":"https://cdn.invalid/%zz/{crate}"}"#,
 	] {
-		let resolution = ResolutionContext {
-			http_get: Some(Rc::new(move |url| {
-				assert_eq!(url, "https://example.invalid/index/config.json");
-				Ok(body.into())
-			})),
-		};
+		let resolution = registry(&[("https://example.invalid/index/config.json", body)]);
 		let error = resolve_err(script, &platform, &demo, &resolution);
 		assert!(error.contains("config.json"), "{body}: {error}");
 		assert!(
@@ -231,11 +236,35 @@ for url in ["https://", "http:///index", "https://user:pass@host/index", "https:
 }
 "#;
 	run_forge_rhai_configured(&format!("{script}\n{checks}"), Path::new("."), &platform, &toml::Table::new()).unwrap();
-	let missing = ResolutionContext {
-		http_get: Some(Rc::new(|url| Err(format!("not found: {url}")))),
+}
+
+#[test]
+fn native_registry_declares_urls_when_the_engine_supplies_no_bytes() {
+	let script = &rust_cell();
+	let platform = forge_core::Platform::host();
+	let demo = targets("[rust.dependencies.demo]\nrange = {}\nregistry = 'https://example.invalid/index'");
+	let resolution = ResolutionContext {
+		resolving: true,
+		..Default::default()
 	};
-	let error = resolve_err(script, &platform, &demo, &missing);
-	assert!(error.contains("config.json") && error.contains("not found"), "{error}");
+	let error = resolve_err(script, &platform, &demo, &resolution);
+	assert!(error.contains(forge_script::rhai_rt::UNRESOLVED_FETCH), "{error}");
+	assert!(
+		error.contains("Rust registry https://example.invalid/index, crate demo"),
+		"{error}"
+	);
+	assert_eq!(*resolution.requested.borrow(), ["https://example.invalid/index/config.json"]);
+
+	let partial = registry(&[("https://example.invalid/index/config.json", r#"{"dl":"https://cdn.invalid"}"#)]);
+	let error = resolve_err(script, &platform, &demo, &partial);
+	assert!(error.contains(forge_script::rhai_rt::UNRESOLVED_FETCH), "{error}");
+	assert_eq!(*partial.requested.borrow(), ["https://example.invalid/index/de/mo/demo"]);
+
+	let offline = ResolutionContext::default();
+	let result = resolve_ok(script, &platform, &demo, &offline);
+	assert!(offline.requested.borrow().is_empty());
+	assert_eq!(result.requirements.len(), 1);
+	assert!(result.candidates.is_empty());
 }
 
 #[test]
@@ -244,24 +273,23 @@ fn native_registry_activates_optional_dependencies_through_features() {
 	let platform = forge_core::Platform::host();
 	let demo = targets("[rust.dependencies.demo]\nrange = {}\n");
 	let resolution = |features: &str| {
-		let features = features.to_string();
-		ResolutionContext {
-			http_get: Some(Rc::new(move |url| {
-				if url.ends_with("/config.json") {
-					Ok(r#"{"dl":"https://cdn.invalid"}"#.into())
-				} else if url.ends_with("/de/mo/demo") {
-					Ok(format!(
-						r#"{{"vers":"1.2.3","cksum":"sha","features":{features},"deps":[{{"name":"helper","req":"^1","optional":true}},{{"name":"plain","req":"^1"}}]}}"#
-					))
-				} else if url.ends_with("/he/lp/helper") {
-					Ok(r#"{"vers":"1.0.0","cksum":"h","deps":[]}"#.into())
-				} else if url.ends_with("/pl/ai/plain") {
-					Ok(r#"{"vers":"1.0.0","cksum":"p","deps":[]}"#.into())
-				} else {
-					Err(format!("unexpected request: {url}"))
-				}
-			})),
-		}
+		registry(&[
+			("https://index.crates.io/config.json", r#"{"dl":"https://cdn.invalid"}"#),
+			(
+				"https://index.crates.io/de/mo/demo",
+				&format!(
+					r#"{{"vers":"1.2.3","cksum":"sha","features":{features},"deps":[{{"name":"helper","req":"^1","optional":true}},{{"name":"plain","req":"^1"}}]}}"#
+				),
+			),
+			(
+				"https://index.crates.io/he/lp/helper",
+				r#"{"vers":"1.0.0","cksum":"h","deps":[]}"#,
+			),
+			(
+				"https://index.crates.io/pl/ai/plain",
+				r#"{"vers":"1.0.0","cksum":"p","deps":[]}"#,
+			),
+		])
 	};
 	let activated = resolve_ok(script, &platform, &demo, &resolution(r#"{"default":["dep:helper"]}"#));
 	assert_eq!(resolved_names(&activated), ["demo", "helper", "plain"]);
@@ -275,24 +303,23 @@ fn native_registry_honors_dependency_feature_requests() {
 	let platform = forge_core::Platform::host();
 	let demo = targets("[rust.dependencies.demo]\nrange = {}\n");
 	let resolution = |features: &str, default_features: bool| {
-		let features = features.to_string();
-		ResolutionContext {
-			http_get: Some(Rc::new(move |url| {
-				if url.ends_with("/config.json") {
-					Ok(r#"{"dl":"https://cdn.invalid"}"#.into())
-				} else if url.ends_with("/de/mo/demo") {
-					Ok(format!(
-						r#"{{"vers":"1.2.3","cksum":"sha","deps":[{{"name":"tool","req":"^1","features":{features},"default_features":{default_features}}}]}}"#
-					))
-				} else if url.ends_with("/to/ol/tool") {
-					Ok(r#"{"vers":"1.0.0","cksum":"t","features":{"default":["dep:extra"]},"features2":{"extras":["dep:extra"]},"deps":[{"name":"extra","req":"^1","optional":true}]}"#.into())
-				} else if url.ends_with("/ex/tr/extra") {
-					Ok(r#"{"vers":"1.0.0","cksum":"e","deps":[]}"#.into())
-				} else {
-					Err(format!("unexpected request: {url}"))
-				}
-			})),
-		}
+		registry(&[
+			("https://index.crates.io/config.json", r#"{"dl":"https://cdn.invalid"}"#),
+			(
+				"https://index.crates.io/de/mo/demo",
+				&format!(
+					r#"{{"vers":"1.2.3","cksum":"sha","deps":[{{"name":"tool","req":"^1","features":{features},"default_features":{default_features}}}]}}"#
+				),
+			),
+			(
+				"https://index.crates.io/to/ol/tool",
+				r#"{"vers":"1.0.0","cksum":"t","features":{"default":["dep:extra"]},"features2":{"extras":["dep:extra"]},"deps":[{"name":"extra","req":"^1","optional":true}]}"#,
+			),
+			(
+				"https://index.crates.io/ex/tr/extra",
+				r#"{"vers":"1.0.0","cksum":"e","deps":[]}"#,
+			),
+		])
 	};
 	let default_feature = resolve_ok(script, &platform, &demo, &resolution("[]", true));
 	assert_eq!(resolved_names(&default_feature), ["demo", "extra", "tool"]);
@@ -303,21 +330,56 @@ fn native_registry_honors_dependency_feature_requests() {
 }
 
 #[test]
+fn a_second_pass_over_one_session_parses_no_index_bytes_twice() {
+	let script = &rust_cell();
+	let platform = forge_core::Platform::host();
+	let demo = targets(
+		"[rust.dependencies.demo]\nrange = { min = \"1.0\", max = \"2.0\" }\nregistry = \"https://example.invalid/index/\"\n",
+	);
+	let first = registry(&[
+		(
+			"https://example.invalid/index/config.json",
+			r#"{"dl":"https://downloads.example.invalid/crates/"}"#,
+		),
+		(
+			"https://example.invalid/index/de/mo/demo",
+			concat!(
+				r#"{"vers":"1.2.3","cksum":"demo-sha","deps":[{"name":"a","req":"^0.2.3"}]}"#,
+				"\n",
+				r#"{"vers":"1.4.0","cksum":"next","deps":[]}"#,
+				"\n"
+			),
+		),
+		(
+			"https://example.invalid/index/1/a",
+			r#"{"vers":"0.2.4","cksum":"a-sha","deps":[]}"#,
+		),
+	]);
+	let output = resolve_ok(script, &platform, &demo, &first);
+
+	let second = ResolutionContext {
+		resolving: true,
+		scratch: first.scratch.clone(),
+		..Default::default()
+	};
+	let again = resolve_ok(script, &platform, &demo, &second);
+
+	assert_eq!(output.candidates, again.candidates);
+	assert_eq!(output.requirements, again.requirements);
+}
+
+#[test]
 fn native_registry_rejects_cross_registry_dependencies() {
 	let script = &rust_cell();
 	let platform = forge_core::Platform::host();
 	let demo = targets("[rust.dependencies.demo]\nrange = {}\nregistry = 'https://example.invalid/index'");
-	let resolution = ResolutionContext {
-		http_get: Some(Rc::new(|url| {
-			match url {
-				"https://example.invalid/index/config.json" => Ok(r#"{"dl":"https://cdn.invalid"}"#.into()),
-				"https://example.invalid/index/de/mo/demo" => {
-					Ok(r#"{"vers":"1.2.3","cksum":"sha","deps":[{"name":"other","req":"^1","registry":"https://other.invalid/index"}]}"#.into())
-				}
-				_ => panic!("unexpected request: {url}"),
-			}
-		})),
-	};
+	let resolution = registry(&[
+		("https://example.invalid/index/config.json", r#"{"dl":"https://cdn.invalid"}"#),
+		(
+			"https://example.invalid/index/de/mo/demo",
+			r#"{"vers":"1.2.3","cksum":"sha","deps":[{"name":"other","req":"^1","registry":"https://other.invalid/index"}]}"#,
+		),
+	]);
 	let error = resolve_err(script, &platform, &demo, &resolution);
 	assert!(error.contains("unsupported cross-registry dependency"), "{error}");
 }

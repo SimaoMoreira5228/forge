@@ -50,15 +50,15 @@ fn validate_lock(prepared: &Prepared, lock: &forge_core::resolver::ForgeLock) ->
 }
 
 impl Engine {
-	pub fn dependency_lock(&self) -> Result<forge_core::resolver::ForgeLock, ForgeDiagnostic> {
+	pub fn dependency_lock(&self, offline: bool) -> Result<forge_core::resolver::ForgeLock, ForgeDiagnostic> {
 		let _lock = self.shared_lock()?;
-		let prepared = self.prepare_for_resolution()?;
+		let prepared = self.prepare_for_resolution(offline)?;
 		self.dependency_lock_for(&prepared, false)
 	}
 
-	pub fn write_dependency_lock(&self) -> Result<std::path::PathBuf, ForgeDiagnostic> {
+	pub fn write_dependency_lock(&self, offline: bool) -> Result<std::path::PathBuf, ForgeDiagnostic> {
 		let _lock = self.exclusive_lock()?;
-		let prepared = self.prepare_for_resolution()?;
+		let prepared = self.prepare_for_resolution(offline)?;
 		let lock = self.dependency_lock_for(&prepared, false)?;
 		let text = lock.to_toml().map_err(|e| ForgeDiagnostic::error(101, e))?;
 		let path = self.workspace.join("forge.lock");
@@ -81,10 +81,10 @@ impl Engine {
 		Ok(path)
 	}
 
-	pub fn sync_dependencies(&self) -> Result<Vec<forge_script::cells::FetchedSource>, ForgeDiagnostic> {
+	pub fn sync_dependencies(&self, offline: bool) -> Result<Vec<forge_script::cells::FetchedSource>, ForgeDiagnostic> {
 		let _lock = self.exclusive_lock()?;
 		let prepared = self.prepare()?;
-		self.fetch_sources(&prepared)
+		self.fetch_sources(&prepared, offline)
 	}
 
 	fn dependency_lock_for(
@@ -147,6 +147,7 @@ impl Engine {
 	pub(crate) fn fetch_sources(
 		&self,
 		prepared: &Prepared,
+		offline: bool,
 	) -> Result<Vec<forge_script::cells::FetchedSource>, ForgeDiagnostic> {
 		let lock = self.dependency_lock_for(prepared, true)?;
 		if lock.packages.is_empty() {
@@ -154,8 +155,12 @@ impl Engine {
 		}
 		let store = crate::store::Store::open();
 		let _lease = store.lock_shared("lease")?;
-		let store =
-			crate::source_store::SourceStore::with_store(&self.workspace, store, prepared.config.source_mirrors.clone());
+		let store = crate::source_store::SourceStore::with_store(
+			&self.workspace,
+			store,
+			prepared.config.source_mirrors.clone(),
+			offline,
+		);
 		let patches = &prepared.config.local_patches;
 		let mut roots = BTreeMap::new();
 		for package in lock.iter() {
@@ -271,7 +276,7 @@ mod tests {
 		std::fs::write(engine.workspace.join("forge.lock"), lock.to_toml().unwrap()).unwrap();
 		assert!(
 			engine
-				.fetch_sources(&prepared)
+				.fetch_sources(&prepared, false)
 				.unwrap_err()
 				.to_string()
 				.contains("does not match")
@@ -330,27 +335,27 @@ mod tests {
 		std::fs::write(&script, "dependency_require(\"demo\", \"1.0.0\", \"2.0.0\");\ndependency_candidate(\"demo\", \"1.0.0\", \"https://example.invalid/demo\", \"sha\", []);").unwrap();
 		assert!(
 			engine
-				.sync_dependencies()
+				.sync_dependencies(false)
 				.unwrap_err()
 				.to_string()
 				.contains("need forge.lock")
 		);
-		assert_eq!(engine.dependency_lock().unwrap().packages.len(), 1);
+		assert_eq!(engine.dependency_lock(false).unwrap().packages.len(), 1);
 		let path = engine.workspace.join("forge.lock");
 		assert!(!path.exists());
 		std::fs::write(&path, "previous lock").unwrap();
 		let snapshot = engine.workspace.join("previous.lock");
 		std::fs::hard_link(&path, &snapshot).unwrap();
-		assert_eq!(engine.write_dependency_lock().unwrap(), path);
+		assert_eq!(engine.write_dependency_lock(false).unwrap(), path);
 		assert_eq!(std::fs::read_to_string(&snapshot).unwrap(), "previous lock");
 		let locked = std::fs::read_to_string(&path).unwrap();
 		assert_eq!(ForgeLock::parse(&locked).unwrap().packages[0].name, "demo");
-		let sources = engine.sync_dependencies().unwrap();
+		let sources = engine.sync_dependencies(false).unwrap();
 		assert_eq!(sources.len(), 1);
 		assert_eq!(sources[0].root, "vendor/demo");
 		assert!(!engine.workspace.join("forge-out/deps/demo").exists());
 		std::fs::write(&script, "dependency_require(\"missing\", \"1.0.0\", \"2.0.0\");").unwrap();
-		assert!(engine.write_dependency_lock().is_err());
+		assert!(engine.write_dependency_lock(false).is_err());
 		assert_eq!(std::fs::read_to_string(&path).unwrap(), locked);
 		std::fs::remove_dir_all(engine.workspace).unwrap();
 	}
@@ -360,22 +365,22 @@ mod tests {
 		let (engine, _) = fixture("resolution-boundary");
 		std::fs::write(engine.workspace.join("FORGE_ROOT"), "[discovery]\ninclude = [\".\"]\n").unwrap();
 		let script = engine.workspace.join("FORGE.rhai");
-		std::fs::write(&script, r#"if !resolving_dependencies { http_get("disabled"); }"#).unwrap();
-		assert!(engine.dependency_lock().unwrap().packages.is_empty());
-		assert!(engine.write_dependency_lock().is_ok());
-		for result in [engine.prepare().map(|_| ()), engine.sync_dependencies().map(|_| ())] {
+		std::fs::write(&script, r#"if !resolving_dependencies { fetch("disabled"); }"#).unwrap();
+		assert!(engine.dependency_lock(false).unwrap().packages.is_empty());
+		assert!(engine.write_dependency_lock(false).is_ok());
+		for result in [engine.prepare().map(|_| ()), engine.sync_dependencies(false).map(|_| ())] {
 			assert!(
 				result
 					.unwrap_err()
 					.to_string()
-					.contains("only available during explicit dependency resolution")
+					.contains(forge_script::rhai_rt::UNRESOLVED_FETCH)
 			);
 		}
-		std::fs::write(&script, r#"if resolving_dependencies { http_get("file:///metadata"); }"#).unwrap();
+		std::fs::write(&script, r#"if resolving_dependencies { fetch("file:///metadata"); }"#).unwrap();
 		assert!(engine.prepare().is_ok());
-		assert!(engine.sync_dependencies().is_ok());
-		assert!(engine.dependency_lock().is_err());
-		assert!(engine.write_dependency_lock().is_err());
+		assert!(engine.sync_dependencies(false).is_ok());
+		assert!(engine.dependency_lock(false).is_err());
+		assert!(engine.write_dependency_lock(false).is_err());
 		std::fs::remove_dir_all(engine.workspace).unwrap();
 	}
 
@@ -385,7 +390,7 @@ mod tests {
 		std::fs::write(engine.workspace.join("forge.lock"), "invalid lock").unwrap();
 		prepared.imported_lock = Some("external.lock".into());
 		assert!(engine.dependency_lock_for(&prepared, true).unwrap().packages.is_empty());
-		assert!(engine.fetch_sources(&prepared).unwrap().is_empty());
+		assert!(engine.fetch_sources(&prepared, false).unwrap().is_empty());
 		assert!(
 			engine
 				.dependency_lock_for(&prepared, false)
@@ -397,7 +402,7 @@ mod tests {
 			.dependencies
 			.push(DependencyRequest::new("demo", "1.0.0", "https://example.invalid/demo", "sha"));
 		prepared.config.local_patches.insert("demo".into(), "vendor/demo".into());
-		let fetched = engine.fetch_sources(&prepared).unwrap();
+		let fetched = engine.fetch_sources(&prepared, false).unwrap();
 		assert_eq!(fetched.len(), 1);
 		assert_eq!(fetched[0].name, "demo");
 		assert_eq!(fetched[0].root, "vendor/demo");
@@ -405,7 +410,7 @@ mod tests {
 		prepared
 			.requirements
 			.push(DependencyRequirement::new("demo", VersionRange::full()));
-		assert!(engine.fetch_sources(&prepared).is_err());
+		assert!(engine.fetch_sources(&prepared, false).is_err());
 		std::fs::remove_dir_all(engine.workspace).unwrap();
 	}
 

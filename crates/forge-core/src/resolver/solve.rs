@@ -194,4 +194,33 @@ mod tests {
 
 		assert!(error.0.contains("missing"));
 	}
+
+	#[test]
+	fn resolution_is_deterministic_for_the_same_requirements_and_candidates() {
+		let requirements = [
+			DependencyRequirement::new("left", Ranges::between(version(1), version(3))),
+			DependencyRequirement::new("right", Ranges::between(version(1), version(3))),
+		];
+		let candidates = [
+			PackageCandidate::new("left", version(1))
+				.from_source("https://example.invalid/left", "left-sha")
+				.with_dependencies([DependencyRequirement::new("shared", Ranges::full())]),
+			PackageCandidate::new("right", version(1))
+				.from_source("https://example.invalid/right", "right-sha")
+				.with_dependencies([DependencyRequirement::new("shared", Ranges::between(version(2), version(4)))]),
+			PackageCandidate::new("shared", version(1)).from_source("https://example.invalid/shared-1", "sha-1"),
+			PackageCandidate::new("shared", version(2)).from_source("https://example.invalid/shared-2", "sha-2"),
+		];
+		let expected =
+			crate::resolver::ForgeLock::from_resolved(&solve("app", requirements.clone(), candidates.clone()).unwrap())
+				.to_toml()
+				.unwrap();
+
+		for _ in 0..16 {
+			let graph = solve("app", requirements.clone(), candidates.clone()).unwrap();
+			assert_eq!(graph.packages.len(), 3);
+			assert_eq!(graph.packages["shared"].version, version(2));
+			assert_eq!(crate::resolver::ForgeLock::from_resolved(&graph).to_toml().unwrap(), expected);
+		}
+	}
 }

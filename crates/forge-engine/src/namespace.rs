@@ -2,6 +2,7 @@ use std::ffi::{CStr, CString};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Output;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use forge_core::WorkerMount;
 
@@ -43,8 +44,11 @@ fn call_for(launch: &Launch, mount: &WorkerMount) -> std::io::Result<SandboxCall
 		.ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))
 }
 
+static PROBE_SERIAL: AtomicU32 = AtomicU32::new(0);
+
 pub fn probe_scratch() -> bool {
-	let scratch = std::env::temp_dir().join(format!("forge-namespace-probe-{}", std::process::id()));
+	let serial = PROBE_SERIAL.fetch_add(1, Ordering::Relaxed);
+	let scratch = std::env::temp_dir().join(format!("forge-namespace-probe-{}-{serial}", std::process::id()));
 	let _ = std::fs::remove_dir_all(&scratch);
 	if std::fs::create_dir_all(&scratch).is_err() {
 		return false;
@@ -149,5 +153,24 @@ mod tests {
 	#[test]
 	fn a_host_that_refuses_namespaces_is_reported_rather_than_assumed() {
 		assert_eq!(probe_scratch(), probe_scratch(), "the probe must be stable within a process");
+	}
+
+	#[test]
+	fn concurrent_probes_do_not_share_a_scratch_directory() {
+		let expected = probe_scratch();
+		let results: Vec<bool> = std::thread::scope(|scope| {
+			let probes: Vec<_> = (0..8)
+				.map(|_| scope.spawn(|| (0..4).map(|_| probe_scratch()).collect::<Vec<_>>()))
+				.collect();
+			probes
+				.into_iter()
+				.flat_map(|probe| probe.join().expect("probe thread"))
+				.collect()
+		});
+		assert_eq!(results.len(), 32);
+		assert!(
+			results.iter().all(|entered| *entered == expected),
+			"a probe that deleted another probe's scratch reports {expected} and {results:?}"
+		);
 	}
 }

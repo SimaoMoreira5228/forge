@@ -75,23 +75,32 @@ impl Engine {
 
 	pub(crate) fn prepare(&self) -> Result<Prepared, ForgeDiagnostic> {
 		let config = forge_script::WorkspaceConfig::load(&self.workspace)?;
-		self.prepare_with_context(config, &ResolutionContext::default())
+		self.prepare_with_context(config, None)
 	}
 
-	pub(crate) fn prepare_for_resolution(&self) -> Result<Prepared, ForgeDiagnostic> {
+	pub(crate) fn prepare_for_resolution(&self, offline: bool) -> Result<Prepared, ForgeDiagnostic> {
 		let config = forge_script::WorkspaceConfig::load(&self.workspace)?;
-		let resolution = crate::metadata_fetch::resolution_context(config.resolution.clone());
-		self.prepare_with_context(config, &resolution)
+		let store = crate::store::Store::open();
+		let transport = if offline {
+			crate::resolver_transport::ResolverTransport::offline(config.resolution.clone(), store)
+		} else {
+			crate::resolver_transport::ResolverTransport::new(config.resolution.clone(), store)
+		};
+		self.prepare_with_context(config, Some(&transport))
 	}
 
 	fn prepare_with_context(
 		&self,
 		config: forge_script::WorkspaceConfig,
-		resolution: &ResolutionContext,
+		transport: Option<&crate::resolver_transport::ResolverTransport>,
 	) -> Result<Prepared, ForgeDiagnostic> {
 		let packages = discover_packages(&self.workspace, &config.discovery)?;
 		let platform = config.resolve_target()?;
 		let cells = crate::std_cells::StdCells::load(&self.workspace, &config.std_patches)?;
+		let resolution = ResolutionContext {
+			resolving: transport.is_some(),
+			..Default::default()
+		};
 		let LoadedWorkspace {
 			graph,
 			decls,
@@ -107,20 +116,21 @@ impl Engine {
 			&config.platforms,
 			cells.workspace_scripts(),
 			&config.cell,
-			resolution,
+			&resolution,
 		);
 
 		if imported_lock.is_none() {
 			let targets: Vec<toml::Table> = decls.values().map(|decl| decl.metadata.clone()).collect();
 			for (cell, script) in cells.resolve_scripts() {
 				let cell_config = config.cell.get(cell).cloned().unwrap_or_default();
-				match forge_script::rhai_rt::run_forge_rhai_resolve(
+				match crate::resolve_hooks::run(
 					script,
 					&self.workspace,
 					&platform,
 					&cell_config,
-					resolution,
 					&targets,
+					transport,
+					&config.name,
 				) {
 					Ok(output) => {
 						dependencies.extend(output.dependencies);
@@ -180,7 +190,7 @@ impl Engine {
 		if let Some(progress) = &mut progress {
 			progress.phase("Fetching locked dependencies...");
 		}
-		let fetched_sources = self.fetch_sources(&prepared)?;
+		let fetched_sources = self.fetch_sources(&prepared, false)?;
 
 		let ctx = PlanContext {
 			graph: &prepared.graph,

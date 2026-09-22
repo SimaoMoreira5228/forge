@@ -10,7 +10,6 @@ pub mod junit;
 #[cfg(target_os = "linux")]
 mod landlock;
 pub mod lock;
-mod metadata_fetch;
 #[cfg(target_os = "linux")]
 mod namespace;
 pub mod planner;
@@ -18,6 +17,8 @@ pub mod progress;
 pub mod proof;
 pub mod publish;
 pub mod registry;
+mod resolve_hooks;
+mod resolver_transport;
 pub mod runner;
 pub mod schedule;
 mod seatbelt;

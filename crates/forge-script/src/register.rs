@@ -460,13 +460,13 @@ mod tests {
 	#[test]
 	fn resolution_context_reaches_bootstrap_and_packages() {
 		let dir = fixture("resolution-context");
-		let script = r#"if !resolving_dependencies { throw "not resolving"; } binary(http_get(cell_config.name), #{});"#;
+		let script = r#"if !resolving_dependencies { throw "not resolving"; } binary(fetch(cell_config.name), #{});"#;
 		let scripts = vec![("demo".into(), script.into())];
 		let config = crate::workspace::WorkspaceConfig::parse("[cell.demo]\nname = \"bootstrap\"\n").unwrap();
 		let file = dir.join("FORGE.rhai");
 		std::fs::write(
 			&file,
-			r#"if !resolving_dependencies { throw "not resolving"; } binary(http_get("package"), #{});"#,
+			r#"if !resolving_dependencies { throw "not resolving"; } binary(fetch("package"), #{});"#,
 		)
 		.unwrap();
 		let packages = vec![PackageSource {
@@ -474,7 +474,12 @@ mod tests {
 			file,
 		}];
 		let context = crate::rhai_rt::ResolutionContext {
-			http_get: Some(std::rc::Rc::new(|url| Ok(url.to_string()))),
+			resolving: true,
+			bytes: BTreeMap::from([
+				("bootstrap".to_string(), "bootstrap".to_string()),
+				("package".to_string(), "package".to_string()),
+			]),
+			..Default::default()
 		};
 		let platform = forge_core::Platform::host();
 		let platforms = BTreeMap::new();
@@ -482,6 +487,7 @@ mod tests {
 		assert!(ws.diagnostics.is_empty(), "{:?}", ws.diagnostics);
 		assert!(ws.graph.get(&Label::new("", "bootstrap")).is_some());
 		assert!(ws.graph.get(&Label::new("", "package")).is_some());
+		assert!(context.requested.borrow().is_empty());
 		let ws = load_workspace(&dir, &packages, &platform, &platforms, &scripts, &config.cell);
 		assert_eq!(ws.diagnostics.len(), 2);
 		assert!(ws.diagnostics.iter().all(|error| error.to_string().contains("not resolving")));

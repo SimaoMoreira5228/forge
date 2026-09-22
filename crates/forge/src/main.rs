@@ -134,8 +134,14 @@ enum ToolchainAction {
 
 #[derive(Subcommand)]
 enum DepsAction {
-	Lock,
-	Sync,
+	Lock {
+		#[arg(long)]
+		offline: bool,
+	},
+	Sync {
+		#[arg(long)]
+		offline: bool,
+	},
 }
 
 fn main() {
@@ -465,16 +471,16 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 		},
 
 		Command::Deps {
-			action: DepsAction::Lock,
+			action: DepsAction::Lock { offline },
 		} => {
-			let path = Engine::open(&workspace).write_dependency_lock()?;
+			let path = Engine::open(&workspace).write_dependency_lock(offline)?;
 			println!("wrote {}", path.display());
 			Ok(())
 		}
 		Command::Deps {
-			action: DepsAction::Sync,
+			action: DepsAction::Sync { offline },
 		} => {
-			for package in Engine::open(&workspace).sync_dependencies()? {
+			for package in Engine::open(&workspace).sync_dependencies(offline)? {
 				println!(
 					"{}@{}: {}",
 					package.name,
@@ -567,10 +573,24 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn dependency_commands_have_no_lock_path_overrides() {
-		assert!(Cli::try_parse_from(["forge", "deps", "lock"]).is_ok());
-		assert!(Cli::try_parse_from(["forge", "deps", "sync"]).is_ok());
-		assert!(Cli::try_parse_from(["forge", "deps", "lock", "--output", "other.lock"]).is_err());
-		assert!(Cli::try_parse_from(["forge", "deps", "sync", "--lock", "other.lock"]).is_err());
+	fn dependency_commands_take_only_offline_and_have_no_lock_path_overrides() {
+		let accepted: &[&[&str]] = &[
+			&["forge", "deps", "lock"],
+			&["forge", "deps", "sync"],
+			&["forge", "deps", "lock", "--offline"],
+			&["forge", "deps", "sync", "--offline"],
+		];
+		for args in accepted {
+			assert!(Cli::try_parse_from(*args).is_ok(), "{args:?}");
+		}
+		let rejected: &[&[&str]] = &[
+			&["forge", "deps", "lock", "--output", "other.lock"],
+			&["forge", "deps", "sync", "--lock", "other.lock"],
+			&["forge", "deps", "sync", "--offline=false"],
+			&["forge", "deps"],
+		];
+		for args in rejected {
+			assert!(Cli::try_parse_from(*args).is_err(), "{args:?}");
+		}
 	}
 }

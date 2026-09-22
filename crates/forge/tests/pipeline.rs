@@ -29,7 +29,7 @@ fn dependency_lock_resolves_rhai_candidates_through_engine() {
 	)
 	.unwrap();
 
-	let lock = Engine::open(&dir).dependency_lock().unwrap();
+	let lock = Engine::open(&dir).dependency_lock(false).unwrap();
 	assert_eq!(lock.get("top").unwrap().dependencies, vec!["leaf 1.0.0"]);
 	assert_eq!(
 		lock.get("top").unwrap().source.as_deref(),

@@ -83,6 +83,16 @@ impl Store {
 		std::fs::rename(staged, destination).map_err(|e| io("publish", destination, e))
 	}
 
+	pub fn publish_file(&self, staged: &Path, destination: &Path) -> Result<(), ForgeDiagnostic> {
+		if destination.exists() {
+			std::fs::remove_file(destination).map_err(|e| io("remove stale", destination, e))?;
+		}
+		if let Some(parent) = destination.parent() {
+			std::fs::create_dir_all(parent).map_err(|e| io("create", parent, e))?;
+		}
+		std::fs::rename(staged, destination).map_err(|e| io("publish", destination, e))
+	}
+
 	pub fn clean(&self) -> Result<(), ForgeDiagnostic> {
 		let _lease = self.lock("lease")?;
 		let _lock = self.lock("store")?;
@@ -178,6 +188,21 @@ mod tests {
 		std::fs::write(staged2.join("g"), b"2").unwrap();
 		store.publish_dir(&staged2, &dest).unwrap();
 		assert!(dest.join("g").is_file() && !dest.join("f").exists());
+		let _ = std::fs::remove_dir_all(&root);
+	}
+
+	#[test]
+	fn publish_file_replaces_a_stale_entry_under_its_key() {
+		let root = std::env::temp_dir().join(format!("forge-store-pubfile-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&root);
+		let store = Store::at(&root);
+		std::fs::create_dir_all(store.blobs()).unwrap();
+		std::fs::write(store.blob("abc"), b"stale").unwrap();
+		let staged = store.staging("resolve");
+		std::fs::write(&staged, b"fresh").unwrap();
+		store.publish_file(&staged, &store.blob("abc")).unwrap();
+		assert_eq!(std::fs::read(store.blob("abc")).unwrap(), b"fresh");
+		assert!(!staged.exists(), "a published object leaves no staging path behind");
 		let _ = std::fs::remove_dir_all(&root);
 	}
 }
