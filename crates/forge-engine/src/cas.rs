@@ -50,39 +50,69 @@ impl Cas {
 		cache_key: &str,
 		outputs: &[(std::path::PathBuf, OutputKind)],
 		workspace: &Path,
-	) -> Result<(), ForgeDiagnostic> {
+	) -> Result<Vec<(String, String)>, ForgeDiagnostic> {
 		let dir = self.action_dir(cache_key);
 		for (rel, kind) in outputs {
 			let src = dir.join(rel);
 			let dst = workspace.join(rel);
 			match kind {
-				OutputKind::File => crate::publish::publish_file(&src, &dst).map_err(|e| io(e, &dst))?,
-				OutputKind::Directory => crate::publish::publish_tree(&src, &dst).map_err(|e| io(e, &dst))?,
+				OutputKind::File => crate::publish::publish_file(&src, &dst).map_err(|e| ForgeDiagnostic::io(&dst, e))?,
+				OutputKind::Directory => {
+					crate::publish::publish_tree(&src, &dst).map_err(|e| ForgeDiagnostic::io(&dst, e))?
+				}
 			}
 		}
 		touch_last_accessed(&dir);
-		Ok(())
+		self.stored_output_digests(cache_key)
 	}
 
-	pub fn store(&self, cache_key: &str, outputs: &[(PathBuf, OutputKind)], sandbox: &Path) -> Result<(), ForgeDiagnostic> {
+	pub fn stored_output_digests(&self, cache_key: &str) -> Result<Vec<(String, String)>, ForgeDiagnostic> {
+		let bytes = fs::read(self.action_dir(cache_key).join("manifest.json"))
+			.map_err(|e| ForgeDiagnostic::io(&self.action_dir(cache_key).join("manifest.json"), e))?;
+		let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|e| {
+			ForgeDiagnostic::error(
+				codes::hermetic::HERMETIC_VIOLATION,
+				format!("action {cache_key} has no readable output manifest: {e}"),
+			)
+		})?;
+		Ok(manifest
+			.outputs
+			.into_iter()
+			.map(|output| (output.path, output.hash))
+			.collect())
+	}
+
+	pub fn store(
+		&self,
+		cache_key: &str,
+		outputs: &[(PathBuf, OutputKind)],
+		sandbox: &Path,
+	) -> Result<Vec<(String, String)>, ForgeDiagnostic> {
 		let dir = self.action_dir(cache_key);
-		fs::create_dir_all(&dir).map_err(|e| io(e, &dir))?;
+		fs::create_dir_all(&dir).map_err(|e| ForgeDiagnostic::io(&dir, e))?;
+		let mut recorded = Vec::with_capacity(outputs.len());
 		for (rel, kind) in outputs {
 			let src = sandbox.join(rel);
 			let dst = dir.join(rel);
-			match kind {
-				OutputKind::File => copy_file(&src, &dst)?,
+			let hash = match kind {
+				OutputKind::File => hasher::hex(&copy_file(&src, &dst)?),
 				OutputKind::Directory => copy_tree(&src, &dst)?,
-			}
+			};
+			recorded.push(StoredOutput {
+				path: rel.to_string_lossy().into_owned(),
+				hash,
+			});
 		}
-		let manifest = Manifest {
-			outputs: outputs.iter().map(|(p, _)| p.to_string_lossy().into_owned()).collect(),
-		};
+		let manifest = Manifest { outputs: recorded };
 		let bytes = serde_json::to_vec(&manifest)
 			.map_err(|e| ForgeDiagnostic::error(codes::hermetic::HERMETIC_VIOLATION, format!("manifest encode: {e}")))?;
-		std::fs::write(dir.join("manifest.json"), bytes).map_err(|e| io(e, &dir.join("manifest.json")))?;
+		std::fs::write(dir.join("manifest.json"), bytes).map_err(|e| ForgeDiagnostic::io(&dir.join("manifest.json"), e))?;
 		touch_last_accessed(&dir);
-		Ok(())
+		Ok(manifest
+			.outputs
+			.into_iter()
+			.map(|output| (output.path, output.hash))
+			.collect())
 	}
 
 	pub fn gc(&self, max_bytes: u64) -> Result<u64, ForgeDiagnostic> {
@@ -94,7 +124,10 @@ impl Cas {
 			return Ok(0);
 		}
 		let mut entries: Vec<(PathBuf, u64, u64)> = Vec::new();
-		for entry in fs::read_dir(&actions).map_err(|e| io(e, &actions))?.flatten() {
+		for entry in fs::read_dir(&actions)
+			.map_err(|e| ForgeDiagnostic::io(&actions, e))?
+			.flatten()
+		{
 			let path = entry.path();
 			let size = dir_size(&path)?;
 			let accessed = fs::metadata(path.join(".accessed"))
@@ -124,18 +157,24 @@ impl Cas {
 	pub fn wipe(&self) -> Result<(), ForgeDiagnostic> {
 		let dir = self.root.clone();
 		if dir.exists() {
-			fs::remove_dir_all(&dir).map_err(|e| io(e, &dir))?;
+			fs::remove_dir_all(&dir).map_err(|e| ForgeDiagnostic::io(&dir, e))?;
 		}
 		Ok(())
 	}
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Manifest {
-	outputs: Vec<String>,
+	outputs: Vec<StoredOutput>,
 }
 
-fn copy_file(from: &Path, to: &Path) -> Result<(), ForgeDiagnostic> {
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredOutput {
+	path: String,
+	hash: String,
+}
+
+fn copy_file(from: &Path, to: &Path) -> Result<[u8; 32], ForgeDiagnostic> {
 	if !from.exists() {
 		return Err(ForgeDiagnostic::error(
 			codes::hermetic::HERMETIC_VIOLATION,
@@ -143,29 +182,49 @@ fn copy_file(from: &Path, to: &Path) -> Result<(), ForgeDiagnostic> {
 		));
 	}
 	if let Some(parent) = to.parent() {
-		fs::create_dir_all(parent).map_err(|e| io(e, parent))?;
+		fs::create_dir_all(parent).map_err(|e| ForgeDiagnostic::io(parent, e))?;
 	}
-	fs::copy(from, to).map(|_| ()).map_err(|e| io(e, from))
+	let mut reader = fs::File::open(from).map_err(|e| ForgeDiagnostic::io(from, e))?;
+	let mut writer = fs::File::create(to).map_err(|e| ForgeDiagnostic::io(to, e))?;
+	let mut hasher = blake3::Hasher::new();
+	let mut buffer = vec![0u8; 128 * 1024];
+	loop {
+		let read = std::io::Read::read(&mut reader, &mut buffer).map_err(|e| ForgeDiagnostic::io(from, e))?;
+		if read == 0 {
+			break;
+		}
+		hasher.update(&buffer[..read]);
+		std::io::Write::write_all(&mut writer, &buffer[..read]).map_err(|e| ForgeDiagnostic::io(to, e))?;
+	}
+	drop(writer);
+	let mode = reader.metadata().map_err(|e| ForgeDiagnostic::io(from, e))?.permissions();
+	fs::set_permissions(to, mode).map_err(|e| ForgeDiagnostic::io(to, e))?;
+	Ok(*hasher.finalize().as_bytes())
 }
 
-fn copy_tree(from: &Path, to: &Path) -> Result<(), ForgeDiagnostic> {
+fn copy_tree(from: &Path, to: &Path) -> Result<String, ForgeDiagnostic> {
 	if !from.is_dir() {
 		return Err(ForgeDiagnostic::error(
 			codes::hermetic::HERMETIC_VIOLATION,
 			format!("expected output directory `{}` was not produced", from.display()),
 		));
 	}
-	for entry in walkdir::WalkDir::new(from) {
-		let entry = entry.map_err(|e| io(e.into_io_error().unwrap_or_else(|| std::io::Error::other("walk")), from))?;
-		let rel = entry.path().strip_prefix(from).expect("prefix walked");
-		let dst = to.join(rel);
-		if entry.file_type().is_dir() {
-			fs::create_dir_all(&dst).map_err(|e| io(e, &dst))?;
-		} else {
-			copy_file(entry.path(), &dst)?;
-		}
+	fs::create_dir_all(to).map_err(|e| ForgeDiagnostic::io(to, e))?;
+	let mut files: Vec<PathBuf> = walkdir::WalkDir::new(from)
+		.into_iter()
+		.filter_map(Result::ok)
+		.filter(|entry| entry.file_type().is_file())
+		.map(|entry| entry.path().to_path_buf())
+		.collect();
+	files.sort();
+	let mut hasher = blake3::Hasher::new();
+	for file in &files {
+		let rel = file.strip_prefix(from).unwrap_or(file);
+		hasher.update(rel.to_string_lossy().as_bytes());
+		hasher.update(&[0]);
+		hasher.update(&copy_file(file, &to.join(rel))?);
 	}
-	Ok(())
+	Ok(hasher::hex(hasher.finalize().as_bytes()))
 }
 
 fn touch_last_accessed(dir: &Path) {
@@ -183,10 +242,6 @@ fn dir_size(dir: &Path) -> Result<u64, ForgeDiagnostic> {
 		}
 	}
 	Ok(total)
-}
-
-fn io(e: std::io::Error, path: &Path) -> ForgeDiagnostic {
-	ForgeDiagnostic::error(codes::hermetic::HERMETIC_VIOLATION, format!("{}: {e}", path.display()))
 }
 
 pub fn digest_of(bytes: &[u8]) -> String {

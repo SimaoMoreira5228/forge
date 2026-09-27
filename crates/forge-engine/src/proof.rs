@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use forge_diagnostics::{ForgeDiagnostic, codes};
 use serde::{Deserialize, Serialize};
@@ -175,16 +175,6 @@ fn is_generated(path: &str, produced: &[&str]) -> bool {
 fn digest_of(entries: &[ActionProof]) -> Result<String, ForgeDiagnostic> {
 	let bytes = serde_json::to_vec(entries).map_err(|e| ForgeDiagnostic::error(8, format!("proof encode: {e}")))?;
 	Ok(hasher::hex(blake3::hash(&bytes).as_bytes()))
-}
-
-pub fn hash_records(workspace: &Path, paths: &[PathBuf]) -> Result<Vec<(String, String)>, ForgeDiagnostic> {
-	let mut records = Vec::with_capacity(paths.len());
-	for path in paths {
-		let hash = hasher::hash_path(workspace, path)
-			.map_err(|e| ForgeDiagnostic::error(codes::inputs::MISSING_INPUT, format!("{}: {e}", path.display())))?;
-		records.push((path.to_string_lossy().into_owned(), hash));
-	}
-	Ok(records)
 }
 
 #[cfg(test)]

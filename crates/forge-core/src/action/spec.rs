@@ -48,6 +48,7 @@ pub struct ActionSpec {
 	pub workdir: Option<PathBuf>,
 	pub is_test: bool,
 	pub stdout: Option<PathBuf>,
+	pub compile_command: Option<String>,
 	pub environment_files: Vec<EnvironmentFile>,
 	pub argument_files: Vec<ArgumentFile>,
 	pub env: BTreeMap<String, String>,
@@ -85,6 +86,7 @@ impl ActionSpec {
 			put_path(&mut h, workdir);
 		}
 		put(&mut h, if self.is_test { "test" } else { "build" });
+		put_opt(&mut h, self.compile_command.as_deref());
 		if let Some(stdout) = &self.stdout {
 			put_path(&mut h, stdout);
 		}
@@ -159,6 +161,7 @@ mod tests {
 			workdir: None,
 			is_test: false,
 			stdout: None,
+			compile_command: Some("math.c".into()),
 			environment_files: Vec::new(),
 			argument_files: Vec::new(),
 			env: BTreeMap::from([("CFLAGS".into(), "-O2".into())]),
@@ -200,5 +203,13 @@ mod tests {
 			variant: "release".into(),
 		});
 		assert_ne!(spec().fingerprint(), s7.fingerprint());
+
+		let mut s8 = spec();
+		s8.is_test = true;
+		assert_ne!(spec().fingerprint(), s8.fingerprint());
+
+		let mut s9 = spec();
+		s9.compile_command = None;
+		assert_ne!(spec().fingerprint(), s9.fingerprint());
 	}
 }

@@ -142,6 +142,7 @@ mod tests {
 			workdir: None,
 			is_test: false,
 			stdout: None,
+			compile_command: None,
 			environment_files: Vec::new(),
 			argument_files: Vec::new(),
 			env: BTreeMap::new(),

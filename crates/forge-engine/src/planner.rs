@@ -7,7 +7,9 @@ use forge_core::{
 };
 use forge_diagnostics::{ForgeDiagnostic, codes};
 use forge_script::TargetDecl;
-use forge_script::cells::{ActionDecl, CellHooks, ComponentView, FetchedSource, ProfileView, lower};
+use forge_script::cells::{
+	ActionDecl, CellHooks, CellPlan, CellSession, ComponentView, FetchedSource, ProfileView, WorkspaceHooks, lower, plan,
+};
 
 use crate::hasher;
 use crate::std_cells::StdCells;
@@ -61,7 +63,7 @@ struct Planner<'a> {
 	producer_of: BTreeMap<PathBuf, usize>,
 	archive_of: BTreeMap<String, PathBuf>,
 	last_action_of: BTreeMap<String, usize>,
-	fetched_emitted: bool,
+	plans: BTreeMap<String, CellPlan>,
 }
 
 pub fn build_action_dag(ctx: &PlanContext<'_>) -> Result<ActionDag, ForgeDiagnostic> {
@@ -72,7 +74,7 @@ pub fn build_action_dag(ctx: &PlanContext<'_>) -> Result<ActionDag, ForgeDiagnos
 		producer_of: BTreeMap::new(),
 		archive_of: BTreeMap::new(),
 		last_action_of: BTreeMap::new(),
-		fetched_emitted: false,
+		plans: BTreeMap::new(),
 	};
 	for id in order {
 		let component = ctx.graph.component(id);
@@ -136,6 +138,12 @@ impl<'a> Planner<'a> {
 	}
 
 	fn adopt_component_inputs(&mut self) {
+		let mut present: Vec<BTreeSet<PathBuf>> = self
+			.dag
+			.specs
+			.iter()
+			.map(|spec| spec.execution_deps.iter().cloned().collect())
+			.collect();
 		let mut queue: Vec<usize> = (0..self.dag.specs.len()).rev().collect();
 		while let Some(index) = queue.pop() {
 			let component = self.dag.specs[index].component.clone();
@@ -149,7 +157,7 @@ impl<'a> Planner<'a> {
 				let inherited = self.dag.specs[producer].execution_deps.clone();
 				let mut added = false;
 				for path in inherited {
-					if !self.dag.specs[index].execution_deps.contains(&path) {
+					if present[index].insert(path.clone()) {
 						self.dag.specs[index].execution_deps.push(path);
 						added = true;
 					}
@@ -296,9 +304,9 @@ impl<'a> Planner<'a> {
 			)
 			.with_help(format!("declared variants: {}", program.variants.join(", "))));
 		}
-		let program = crate::toolchain::resolve_tool_path(self.ctx.toolchains, &program.command)?;
+		let program = crate::toolchain::resolve_tool_reference(self.ctx.toolchains, &program.command)?;
 		Ok(WorkerBinding {
-			program: program.to_string_lossy().into_owned(),
+			program,
 			variant: variant.to_string(),
 		})
 	}
@@ -319,9 +327,7 @@ impl<'a> Planner<'a> {
 		{
 			command
 		} else {
-			crate::toolchain::resolve_tool_path(self.ctx.toolchains, &command)?
-				.to_string_lossy()
-				.into_owned()
+			crate::toolchain::resolve_tool_reference(self.ctx.toolchains, &command)?
 		};
 		let toolchain = decl.compiler.as_deref().and_then(|name| self.ctx.toolchains.get(name));
 		let toolchain_id = toolchain.map(tool_id);
@@ -355,6 +361,7 @@ impl<'a> Planner<'a> {
 			workdir: None,
 			is_test: false,
 			stdout: None,
+			compile_command: None,
 			environment_files: Vec::new(),
 			argument_files: Vec::new(),
 			env: decl.env.clone(),
@@ -425,6 +432,7 @@ impl<'a> Planner<'a> {
 		let tool_digest = tool_id(&tool);
 
 		let hooks = CellHooks {
+			workspace: self.workspace_hooks(),
 			artifact_path: Box::new(move |src, category| {
 				artifact_path(Path::new(src), &artifact_profile_name, &artifact_namespace, category)
 			}),
@@ -436,40 +444,22 @@ impl<'a> Planner<'a> {
 			bin: Box::new(move |binary_name| {
 				tool_for_bin
 					.binary(binary_name)
-					.map(|p| p.to_string_lossy().into_owned())
+					.and_then(|p| tool_for_bin.reference(&p).ok())
 					.unwrap_or_default()
 			}),
 			tool_id: Box::new(move || tool_digest.clone()),
-			read_file: {
-				let ws = self.ctx.workspace.map(|p| p.to_path_buf()).unwrap_or_default();
-				Box::new(move |path: &str| -> Result<String, String> {
-					let full = if Path::new(path).is_absolute() {
-						PathBuf::from(path)
-					} else {
-						ws.join(path)
-					};
-					std::fs::read_to_string(&full).map_err(|e| format!("cannot read {}: {e}", full.display()))
-				})
-			},
-			glob: {
-				let ws = self.ctx.workspace.map(|p| p.to_path_buf()).unwrap_or_default();
-				Box::new(move |pattern: &str| -> Result<Vec<String>, String> {
-					let hits = forge_script::glob::expand_glob(&ws, pattern).map_err(|e| e.to_string())?;
-					Ok(hits.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
-				})
-			},
 		};
 
 		let dep_artifacts = self.collect_dep_artifacts(id);
-		let fetch_owner = !self.fetched_emitted && !self.ctx.fetched_sources.is_empty();
-		if fetch_owner {
-			self.fetched_emitted = true;
-		}
+		let mut session = self.session(&language);
+		session.platform_os = platform.os.clone();
+		session.platform_arch = platform.arch.clone();
+		session.platform_abi = platform.abi.clone().unwrap_or_default();
+		let cell_plan = self.plan_cell(&language, script, &session)?;
 
 		let view = ComponentView {
 			metadata: decl.metadata.clone(),
-			cell_config: self.ctx.cell_config.get(&language).cloned().unwrap_or_default(),
-			targets: self.ctx.decls.values().map(|decl| decl.metadata.clone()).collect(),
+			session,
 			label,
 			name,
 			kind: kind.to_string(),
@@ -489,28 +479,64 @@ impl<'a> Planner<'a> {
 			env: decl.env.clone(),
 			dep_archives: dep_archives.iter().map(|p: &PathBuf| path_string(p)).collect(),
 			dep_artifacts,
+			linker: match &decl.linker {
+				Some(spec) => crate::toolchain::resolve_tool_reference(self.ctx.toolchains, spec)?,
+				None => String::new(),
+			},
+			link_flags: decl.link_flags.clone(),
+		};
+
+		let actions = lower(script, &cell_plan, &view, hooks)?;
+		self.register_cell_actions(actions, id, kind, worker)
+	}
+
+	fn session(&self, language: &str) -> CellSession {
+		CellSession {
 			fetched_sources: self.ctx.fetched_sources.to_vec(),
-			fetch_owner,
 			workspace: self
 				.ctx
 				.workspace
 				.map(|p| p.to_string_lossy().into_owned())
 				.unwrap_or_default(),
-			linker: match &decl.linker {
-				Some(spec) => crate::toolchain::resolve_tool_path(self.ctx.toolchains, spec)?
-					.to_string_lossy()
-					.into_owned(),
-				None => String::new(),
-			},
-			link_flags: decl.link_flags.clone(),
-			platform_os: platform.os.clone(),
-			platform_arch: platform.arch.clone(),
-			platform_abi: platform.abi.clone().unwrap_or_default(),
+			platform_os: self.ctx.platform.os.clone(),
+			platform_arch: self.ctx.platform.arch.clone(),
+			platform_abi: self.ctx.platform.abi.clone().unwrap_or_default(),
 			profile: ProfileView::from(self.ctx.profile),
-		};
+			cell_config: self.ctx.cell_config.get(language).cloned().unwrap_or_default(),
+			targets: self.ctx.decls.values().map(|decl| decl.metadata.clone()).collect(),
+		}
+	}
 
-		let actions = lower(script, &view, hooks)?;
-		self.register_cell_actions(actions, id, kind, worker)
+	fn plan_cell(&mut self, language: &str, script: &str, session: &CellSession) -> Result<CellPlan, ForgeDiagnostic> {
+		if let Some(planned) = self.plans.get(language) {
+			return Ok(planned.clone());
+		}
+		if let Some(progress) = self.ctx.progress {
+			progress.phase(&format!("Planning {language}..."));
+		}
+		let planned = plan(script, session, self.workspace_hooks())?;
+		self.plans.insert(language.to_string(), planned.clone());
+		Ok(planned)
+	}
+
+	fn workspace_hooks(&self) -> WorkspaceHooks {
+		let root = self.ctx.workspace.map(|p| p.to_path_buf()).unwrap_or_default();
+		let reads = root.clone();
+		let globs = root.clone();
+		WorkspaceHooks {
+			read_file: Box::new(move |path: &str| -> Result<String, String> {
+				let full = if Path::new(path).is_absolute() {
+					PathBuf::from(path)
+				} else {
+					reads.join(path)
+				};
+				std::fs::read_to_string(&full).map_err(|e| format!("cannot read {}: {e}", full.display()))
+			}),
+			glob: Box::new(move |pattern: &str| -> Result<Vec<String>, String> {
+				let hits = forge_script::glob::expand_glob(&globs, pattern).map_err(|e| e.to_string())?;
+				Ok(hits.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
+			}),
+		}
 	}
 
 	fn register_cell_actions(
@@ -545,8 +571,9 @@ impl<'a> Planner<'a> {
 					})
 					.collect(),
 				workdir: action.workdir.map(PathBuf::from),
-				is_test: kind == "test" && action.name.starts_with("run "),
+				is_test: action.is_test,
 				stdout: action.stdout.map(PathBuf::from),
+				compile_command: action.compile_command.clone(),
 				environment_files: action
 					.environment_files
 					.into_iter()
@@ -653,7 +680,7 @@ fn cycle_error(cycles: Vec<Vec<forge_core::Label>>) -> ForgeDiagnostic {
 }
 
 fn tool_id(tool: &ResolvedToolchain) -> String {
-	format!("{}@{}", tool.name, &tool.digest[..12.min(tool.digest.len())])
+	tool.id()
 }
 
 fn lib_path(profile: &str, package: &str, filename: &str) -> PathBuf {

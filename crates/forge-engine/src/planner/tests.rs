@@ -66,3 +66,103 @@ fn depfile_paths_match_both_runner_roots_without_testing_existence() {
 		Path::new("FORGE_EXEC_ROOT_suffix/file")
 	);
 }
+
+const COUNTING_CELL: &str = r#"
+fn plan(ctx) { #{ phase: "workspace" } }
+fn build(ctx, plan) {
+    if plan.get("phase") != "workspace" { throw "the lowering was handed no plan"; }
+    if plan.once("workspace owner") {
+        ctx.action(#{ name: "plan owner", command: "true", outputs: ["forge-out/plan-owner"] });
+    }
+    ctx.action(#{
+        name: `compile ${ctx.label}`,
+        command: "true",
+        inputs: ctx.srcs,
+        outputs: [ctx.artifact_path(ctx.srcs[0], "obj")],
+        artifact: ctx.artifact_path(ctx.srcs[0], "lib") + ".a",
+    });
+}
+"#;
+
+fn library_decl(name: &str) -> forge_script::TargetDecl {
+	let mut builder = forge_script::document::FieldsBuilder::new(forge_script::document::TargetKind::Library, name).unwrap();
+	builder.string_list("srcs", vec![format!("src/{name}.c")]).unwrap();
+	builder.finish().unwrap()
+}
+
+fn plan_n_libraries(count: usize) -> ActionDag {
+	let workspace = std::env::temp_dir().join(format!("forge-plan-once-{}", std::process::id()));
+	std::fs::create_dir_all(&workspace).unwrap();
+	let cell = workspace.join("cell.rhai");
+	std::fs::write(&cell, COUNTING_CELL).unwrap();
+
+	let mut graph = BuildGraph::new();
+	let mut decls = BTreeMap::new();
+	for index in 0..count {
+		let name = format!("lib{index}");
+		let label = forge_core::Label::new("app", &name);
+		decls.insert(label.to_string(), library_decl(&name));
+		graph
+			.add_component(forge_core::Component {
+				label,
+				kind: forge_core::ComponentKind::Library {
+					link: forge_core::graph::component::LinkType::Static,
+				},
+				visibility: forge_core::Visibility::Public,
+				compatible_with: Vec::new(),
+				sources: vec![PathBuf::from(format!("src/{name}.c"))],
+				headers: Vec::new(),
+				configuration: forge_core::ConfigTransition::Target,
+			})
+			.unwrap();
+	}
+
+	let cells = StdCells::load(&workspace, &BTreeMap::from([("c".to_string(), cell)])).unwrap();
+	let toolchains = BTreeMap::from([(
+		"gcc".to_string(),
+		ResolvedToolchain {
+			name: "gcc".into(),
+			root: workspace.clone(),
+			bin_dir: workspace.join("bin"),
+			path_dirs: vec![workspace.join("bin")],
+			digest: "0".repeat(64),
+			coverage: None,
+			worker: None,
+		},
+	)]);
+	let profile = Profile::debug();
+	let platform = Platform::host();
+	let cell_config = BTreeMap::new();
+	let dag = build_action_dag(&PlanContext {
+		graph: &graph,
+		decls: &decls,
+		profile: &profile,
+		platform: &platform,
+		toolchains: &toolchains,
+		cells: &cells,
+		cell_config: &cell_config,
+		workspace: Some(&workspace),
+		fetched_sources: &[],
+		progress: None,
+	})
+	.unwrap();
+	std::fs::remove_dir_all(&workspace).unwrap();
+	dag
+}
+
+#[test]
+fn a_cell_plans_the_workspace_once_and_every_component_shares_that_plan() {
+	let dag = plan_n_libraries(4);
+	let owners: Vec<&str> = dag
+		.specs
+		.iter()
+		.filter(|spec| spec.name == "plan owner")
+		.map(|spec| spec.component.as_str())
+		.collect();
+	assert_eq!(
+		owners.len(),
+		1,
+		"the plan must be computed once for the workspace, not once per component"
+	);
+	assert_eq!(dag.specs.len(), 5, "one owner action plus one compile per component");
+}

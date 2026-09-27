@@ -68,6 +68,10 @@ impl ForgeDiagnostic {
 		}
 	}
 
+	pub fn io(path: &std::path::Path, e: std::io::Error) -> Self {
+		Self::error(crate::codes::hermetic::HERMETIC_VIOLATION, format!("{}: {e}", path.display()))
+	}
+
 	pub fn with_help(mut self, help: impl Into<String>) -> Self {
 		self.help = Some(help.into());
 		self

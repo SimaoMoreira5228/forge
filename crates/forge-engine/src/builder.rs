@@ -235,23 +235,6 @@ impl Engine {
 		Ok((recorded.entries.len(), crate::proof::compare(&recorded, &replayed)))
 	}
 
-	pub fn compile_commands(&self, profile_name: &str) -> Result<String, ForgeDiagnostic> {
-		let _lock = self.shared_lock()?;
-		let (_prepared, dag) = self.plan_dag_locked(profile_name, None)?;
-
-		let workspace_abs =
-			std::fs::canonicalize(&self.workspace).map_err(|e| ForgeDiagnostic::error(8, format!("workspace: {e}")))?;
-
-		let entries: Vec<CompileCommandEntry> = dag
-			.specs
-			.iter()
-			.filter(|s| s.name.starts_with("compile "))
-			.filter_map(|s| compile_entry(s, &workspace_abs))
-			.collect();
-
-		serde_json::to_string_pretty(&entries).map_err(|e| ForgeDiagnostic::error(8, format!("json: {e}")))
-	}
-
 	pub fn coverage(&self, output: Option<&str>, selection: Option<&str>) -> Result<(), ForgeDiagnostic> {
 		let _lock = self.exclusive_lock()?;
 		eprintln!("coverage: building with coverage flags...");
@@ -319,6 +302,7 @@ impl Engine {
 		let registry = prepared.config.registry_url.clone().map(crate::registry::Registry::open);
 		let lease = store.lock_shared("lease")?;
 		let db = CacheDb::open(&self.out_dir())?;
+		let materialized = crate::materialized::Materialized::load(&self.out_dir());
 		let runner = SandboxRunner::new(&self.workspace, &self.out_dir());
 
 		if !dynamic_components(&prepared.decls).is_empty() {
@@ -338,6 +322,7 @@ impl Engine {
 				specs: &dag.specs,
 				cas: &cas,
 				db: &db,
+				materialized: &materialized,
 				runner: &runner,
 				workers: &discovery_workers,
 				toolchains_paths: &toolchains_paths,
@@ -349,6 +334,7 @@ impl Engine {
 				proofs: parking_lot::Mutex::new(vec![None; dag.specs.len()]),
 			};
 			execute_dag(&dag, &discovery, |ctx, index| ctx.run(index))?;
+			db.flush();
 			let (next_prepared, next_dag) = self.plan_dag_locked(profile_name, Some(&progress))?;
 			prepared = next_prepared;
 			dag = next_dag;
@@ -380,6 +366,7 @@ impl Engine {
 			specs: &dag.specs,
 			cas: &cas,
 			db: &db,
+			materialized: &materialized,
 			runner: &runner,
 			workers: &workers,
 			toolchains_paths: &toolchains_paths,
@@ -392,6 +379,8 @@ impl Engine {
 		};
 
 		execute_dag(&dag, &exec, |ctx, index| ctx.run(index))?;
+		db.flush();
+		materialized.save();
 		{
 			let outcome = exec.outcome.lock();
 			progress.finished(outcome.executed, outcome.cache_hits);
@@ -447,6 +436,7 @@ struct ExecContext<'a> {
 	specs: &'a [ActionSpec],
 	cas: &'a Cas,
 	db: &'a CacheDb,
+	materialized: &'a crate::materialized::Materialized,
 	runner: &'a SandboxRunner,
 	workers: &'a WorkerPool<'a>,
 	toolchains_paths: &'a ToolchainPaths,
@@ -498,7 +488,8 @@ impl ExecContext<'_> {
 			&& verdict == "PASSED"
 		{
 			self.outcome.lock().test_cache_hits += 1;
-			self.record_proof(index, spec, &input_hashes, &key)?;
+			let digests = self.cas.stored_output_digests(&key)?;
+			self.record_proof(index, spec, &input_hashes, &key, &digests)?;
 			self.progress
 				.action_finished(&spec.name, true, Some(action_started.elapsed().as_millis()));
 			return Ok(());
@@ -515,11 +506,37 @@ impl ExecContext<'_> {
 		if cached {
 			let out_tuples: Vec<(PathBuf, forge_core::OutputKind)> =
 				spec.outputs.iter().map(|o| (o.path.clone(), o.kind)).collect();
-			self.cas.restore(&key, &out_tuples, &self.workspace)?;
+			let stale_files: Vec<(PathBuf, forge_core::OutputKind)> = out_tuples
+				.iter()
+				.filter(|(rel, kind)| {
+					matches!(kind, forge_core::OutputKind::File)
+						&& !self
+							.materialized
+							.confirm(&self.workspace, rel, &self.cas.action_path(&key).join(rel), &key)
+				})
+				.cloned()
+				.collect();
+			let stale_dirs: Vec<PathBuf> = out_tuples
+				.iter()
+				.filter(|(_, kind)| matches!(kind, forge_core::OutputKind::Directory))
+				.map(|(rel, _)| rel.clone())
+				.collect();
+			let digests = if stale_files.is_empty() {
+				self.cas.stored_output_digests(&key)?
+			} else {
+				self.cas.restore(&key, &stale_files, &self.workspace)?
+			};
+			for (rel, _) in &stale_files {
+				self.materialized.record(&self.workspace, rel, &key);
+			}
+			for rel in &stale_dirs {
+				self.materialized
+					.sync_dir(&self.cas.action_path(&key), &self.workspace, rel, &key)?;
+			}
 			self.db.record_action(&key, &spec.component, &spec.name);
 			self.db.mark_cache_hit(&key);
 			self.outcome.lock().cache_hits += 1;
-			self.record_proof(index, spec, &input_hashes, &key)?;
+			self.record_proof(index, spec, &input_hashes, &key, &digests)?;
 			self.progress
 				.action_finished(&spec.name, true, Some(action_started.elapsed().as_millis()));
 			return Ok(());
@@ -547,8 +564,12 @@ impl ExecContext<'_> {
 			)
 			.with_help(format!(
 				"command: {} {}\nworking directory: {}\nstdout:\n{}\nstderr:\n{}",
-				spec.command,
-				spec.args.join(" "),
+				self.toolchains_paths.expand(&spec.command),
+				spec.args
+					.iter()
+					.map(|arg| self.toolchains_paths.expand(arg))
+					.collect::<Vec<_>>()
+					.join(" "),
 				spec.workdir.as_deref().unwrap_or(Path::new(".")).display(),
 				if report.stdout_tail.trim().is_empty() {
 					"(empty)"
@@ -575,8 +596,13 @@ impl ExecContext<'_> {
 		}
 		let out_tuples: Vec<(PathBuf, forge_core::OutputKind)> =
 			spec.outputs.iter().map(|o| (o.path.clone(), o.kind)).collect();
-		self.cas.store(&key, &out_tuples, &sandbox)?;
+		let digests = self.cas.store(&key, &out_tuples, &sandbox)?;
 		self.runner.discard(&key);
+		for (rel, kind) in &out_tuples {
+			if matches!(kind, forge_core::OutputKind::File) {
+				self.materialized.record(&self.workspace, rel, &key);
+			}
+		}
 
 		self.db.record_action(&key, &spec.component, &spec.name);
 		self.db.record_duration(&key, report.duration.as_millis());
@@ -593,7 +619,7 @@ impl ExecContext<'_> {
 			let mut outcome = self.outcome.lock();
 			outcome.executed += 1;
 		}
-		self.record_proof(index, spec, &input_hashes, &key)?;
+		self.record_proof(index, spec, &input_hashes, &key, &digests)?;
 		self.progress
 			.action_finished(&spec.name, false, Some(action_started.elapsed().as_millis()));
 		Ok(())
@@ -605,11 +631,11 @@ impl ExecContext<'_> {
 		spec: &ActionSpec,
 		input_hashes: &BTreeMap<PathBuf, String>,
 		key: &str,
+		output_digests: &[(String, String)],
 	) -> Result<(), ForgeDiagnostic> {
 		if !self.record_proofs || spec.is_test {
 			return Ok(());
 		}
-		let outputs = spec.outputs.iter().map(|output| output.path.clone()).collect::<Vec<_>>();
 		let proof = crate::proof::ActionProof {
 			action: spec.name.clone(),
 			component: spec.component.clone(),
@@ -619,7 +645,7 @@ impl ExecContext<'_> {
 				.iter()
 				.map(|(path, hash)| (path.to_string_lossy().into_owned(), hash.clone()))
 				.collect(),
-			outputs: crate::proof::hash_records(&self.workspace, &outputs)?,
+			outputs: output_digests.to_vec(),
 		};
 		self.proofs.lock()[index] = Some(proof);
 		Ok(())
@@ -688,26 +714,6 @@ pub(crate) fn compose_key(
 		spec.fingerprint(),
 		input_hashes,
 	)
-}
-
-#[derive(serde::Serialize)]
-struct CompileCommandEntry {
-	directory: PathBuf,
-	command: String,
-	file: String,
-}
-
-fn compile_entry(spec: &ActionSpec, workspace: &Path) -> Option<CompileCommandEntry> {
-	let file = find_source_in_args(&spec.args)?;
-	Some(CompileCommandEntry {
-		directory: workspace.to_path_buf(),
-		command: format!("{} {}", spec.command, spec.args.join(" ")),
-		file,
-	})
-}
-
-fn find_source_in_args(args: &[String]) -> Option<String> {
-	args.windows(3).find(|w| w[0] == "-c").map(|w| w[1].clone())
 }
 
 fn cycles_diagnostic(cycles: Vec<Vec<forge_core::Label>>) -> ForgeDiagnostic {

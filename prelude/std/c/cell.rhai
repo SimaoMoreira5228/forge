@@ -173,6 +173,7 @@ fn compile_one(ctx, src, module_flags) {
         inputs: inputs,
         execution_deps: module_deps,
         outputs: outputs,
+        compile_command: src,
         env: ctx.env,
         toolchain_id: ctx.tool_id(),
     });
@@ -228,7 +229,9 @@ fn link_one(ctx, objs, exe_path) {
     });
 }
 
-fn build(ctx) {
+fn plan(ctx) { () }
+
+fn build(ctx, plan) {
     if ctx.kind == "library" && ctx.srcs.len() == 0 {
         throw `library ${ctx.label} declares no sources`;
     }
@@ -298,6 +301,7 @@ fn build(ctx) {
             inputs: ctx.data,
             execution_deps: [exe],
             outputs: test_outputs,
+            is_test: true,
             env: test_env,
             toolchain_id: "",
         });

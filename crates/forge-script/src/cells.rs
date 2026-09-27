@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use forge_diagnostics::{ForgeDiagnostic, codes};
 use rhai::{Dynamic, EvalAltResult, Map};
@@ -15,6 +17,8 @@ pub struct ActionDecl {
 	pub artifact: Option<String>,
 	pub workdir: Option<String>,
 	pub stdout: Option<String>,
+	pub is_test: bool,
+	pub compile_command: Option<String>,
 	pub environment_files: Vec<(String, String, Option<String>, Vec<String>)>,
 	pub argument_files: Vec<(String, String, String, Option<String>)>,
 	pub env: BTreeMap<String, String>,
@@ -25,6 +29,7 @@ type PathBufArg = String;
 
 #[derive(Debug, Clone, Default)]
 pub struct ComponentView {
+	pub session: CellSession,
 	pub label: String,
 	pub name: String,
 	pub kind: String,
@@ -41,16 +46,19 @@ pub struct ComponentView {
 	pub env: BTreeMap<String, String>,
 	pub dep_archives: Vec<String>,
 	pub dep_artifacts: Vec<(String, String)>,
-	pub fetched_sources: Vec<FetchedSource>,
-	pub fetch_owner: bool,
-	pub workspace: String,
 	pub linker: String,
 	pub link_flags: Vec<String>,
+	pub metadata: toml::Table,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CellSession {
+	pub fetched_sources: Vec<FetchedSource>,
+	pub workspace: String,
 	pub platform_os: String,
 	pub platform_arch: String,
 	pub platform_abi: String,
 	pub profile: ProfileView,
-	pub metadata: toml::Table,
 	pub cell_config: toml::Table,
 	pub targets: Vec<toml::Table>,
 }
@@ -95,38 +103,135 @@ impl From<&forge_core::Profile> for ProfileView {
 }
 
 type ArtifactPath = Box<dyn Fn(&str, &str) -> Result<String, String>>;
+type FileReader = Box<dyn Fn(&str) -> Result<String, String>>;
+type Globber = Box<dyn Fn(&str) -> Result<Vec<String>, String>>;
+
+const CLAIMED_SECTION: &str = "forge-claimed";
+
+pub struct WorkspaceHooks {
+	pub read_file: FileReader,
+	pub glob: Globber,
+}
 
 pub struct CellHooks {
+	pub workspace: WorkspaceHooks,
 	pub artifact_path: ArtifactPath,
 	pub depfile_inputs: Globber,
 	pub lib_path: Box<dyn Fn(&str) -> String>,
 	pub bin: Box<dyn Fn(&str) -> String>,
 	pub tool_id: Box<dyn Fn() -> String>,
-	pub read_file: FileReader,
-	pub glob: Globber,
 }
-type FileReader = Box<dyn Fn(&str) -> Result<String, String>>;
-type Globber = Box<dyn Fn(&str) -> Result<Vec<String>, String>>;
 
-pub fn lower(script: &str, component: &ComponentView, hooks: CellHooks) -> Result<Vec<ActionDecl>, ForgeDiagnostic> {
-	let actions: std::rc::Rc<std::cell::RefCell<Vec<ActionDecl>>> = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-	let mut engine = rhai::Engine::new();
-	engine.set_max_expr_depths(128, 128);
-	engine.set_max_call_levels(128);
+#[derive(Clone, Default)]
+pub struct CellPlan {
+	value: Rc<RefCell<Dynamic>>,
+}
 
-	register_emitters(&mut engine, &actions);
-	register_helpers(&mut engine, component, hooks);
+impl CellPlan {
+	pub fn new(value: Dynamic) -> Self {
+		Self {
+			value: Rc::new(RefCell::new(value)),
+		}
+	}
 
-	let ctx = context_map(component);
+	pub fn section(&self, name: &str) -> Dynamic {
+		let value = self.value.borrow();
+		match value.as_map_ref() {
+			Ok(plan) => entry(&plan, name),
+			Err(_) => Dynamic::UNIT,
+		}
+	}
+
+	pub fn entry(&self, section: &str, key: &str) -> Dynamic {
+		let value = self.value.borrow();
+		let Ok(plan) = value.as_map_ref() else {
+			return Dynamic::UNIT;
+		};
+		let Some(section) = plan.get(section) else {
+			return Dynamic::UNIT;
+		};
+		let Ok(entries) = section.as_map_ref() else {
+			return Dynamic::UNIT;
+		};
+		entries.get(key).cloned().unwrap_or(Dynamic::UNIT)
+	}
+
+	pub fn claim(&self, responsibility: &str) -> bool {
+		let mut value = self.value.borrow_mut();
+		let claimed = value.as_map_mut().map_err(|_| "cell plan is not a map").map(|mut plan| {
+			let mut claimed = match plan.get(CLAIMED_SECTION) {
+				Some(list) => list.clone().try_cast::<rhai::Array>().unwrap_or_default(),
+				None => rhai::Array::new(),
+			};
+			let already = claimed
+				.iter()
+				.any(|name| name.is_string() && name.clone_cast::<String>() == responsibility);
+			if !already {
+				claimed.push(Dynamic::from(responsibility.to_string()));
+				plan.insert(CLAIMED_SECTION.into(), Dynamic::from(claimed));
+			}
+			!already
+		});
+		claimed.unwrap_or(false)
+	}
+}
+
+fn entry(map: &Map, key: &str) -> Dynamic {
+	map.get(key).cloned().unwrap_or(Dynamic::UNIT)
+}
+
+pub fn plan(script: &str, session: &CellSession, hooks: WorkspaceHooks) -> Result<CellPlan, ForgeDiagnostic> {
+	let mut engine = new_engine();
+	register_workspace(&mut engine, hooks);
+	register_memo(&mut engine);
+	register_graph_ops(&mut engine);
+	let ast = cell_script(&mut engine, script)?;
 	let mut scope = rhai::Scope::new();
-	scope.push("ctx", ctx);
+	let value = engine
+		.call_fn::<Dynamic>(&mut scope, &ast, "plan", (context_map(session, None),))
+		.map_err(|e| ForgeDiagnostic::error(codes::script::PARSE_ERROR, format!("cell plan failed: {e}")))?;
+	Ok(CellPlan::new(value))
+}
 
-	let program = format!("{script}\nbuild(ctx);");
+pub fn lower(
+	script: &str,
+	plan: &CellPlan,
+	component: &ComponentView,
+	hooks: CellHooks,
+) -> Result<Vec<ActionDecl>, ForgeDiagnostic> {
+	let actions: std::rc::Rc<std::cell::RefCell<Vec<ActionDecl>>> = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+	let mut engine = new_engine();
+	register_emitters(&mut engine, &actions);
+	register_plan_ops(&mut engine);
+	register_component(&mut engine, hooks);
+	register_memo(&mut engine);
+	register_graph_ops(&mut engine);
+
+	let ast = cell_script(&mut engine, script)?;
+	let mut scope = rhai::Scope::new();
 	engine
-		.eval_with_scope::<()>(&mut scope, &program)
+		.call_fn::<()>(
+			&mut scope,
+			&ast,
+			"build",
+			(context_map(&component.session, Some(component)), Dynamic::from(plan.clone())),
+		)
 		.map_err(|e| ForgeDiagnostic::error(codes::script::PARSE_ERROR, format!("cell failed: {e}")))?;
 
 	Ok(std::mem::take(&mut *actions.borrow_mut()))
+}
+
+fn new_engine() -> rhai::Engine {
+	let mut engine = rhai::Engine::new();
+	engine.set_max_expr_depths(128, 128);
+	engine.set_max_call_levels(128);
+	engine
+}
+
+fn cell_script(engine: &mut rhai::Engine, script: &str) -> Result<rhai::AST, ForgeDiagnostic> {
+	engine
+		.compile(script)
+		.map_err(|e| ForgeDiagnostic::error(codes::script::PARSE_ERROR, format!("cell failed to parse: {e}")))
 }
 
 fn register_emitters(engine: &mut rhai::Engine, actions: &std::rc::Rc<std::cell::RefCell<Vec<ActionDecl>>>) {
@@ -139,16 +244,61 @@ fn register_emitters(engine: &mut rhai::Engine, actions: &std::rc::Rc<std::cell:
 	});
 }
 
-fn register_helpers(engine: &mut rhai::Engine, component: &ComponentView, hooks: CellHooks) {
+fn register_workspace(engine: &mut rhai::Engine, hooks: WorkspaceHooks) {
+	let WorkspaceHooks { read_file, glob } = hooks;
+	engine.register_fn(
+		"read_file",
+		move |_ctx: &mut Map, path: &str| -> Result<String, Box<EvalAltResult>> { read_file(path).map_err(|e| e.into()) },
+	);
+	engine.register_fn("json_decode", |text: &str| -> Result<Dynamic, Box<EvalAltResult>> {
+		crate::rhai_rt::json_decode(text).map_err(Into::into)
+	});
+	engine.register_fn("toml_decode", |text: &str| -> Result<Map, Box<EvalAltResult>> {
+		crate::rhai_rt::toml_decode(text).map_err(Into::into)
+	});
+	engine.register_fn(
+		"glob",
+		move |_ctx: &mut Map, pattern: &str| -> Result<rhai::Array, Box<EvalAltResult>> {
+			let files = glob(pattern).map_err(|e| -> Box<EvalAltResult> { e.into() })?;
+			Ok(files.into_iter().map(Dynamic::from).collect())
+		},
+	);
+}
+
+fn register_plan_ops(engine: &mut rhai::Engine) {
+	engine.register_type_with_name::<CellPlan>("CellPlan");
+	engine.register_fn("get", |plan: &mut CellPlan, section: &str| plan.section(section));
+	engine.register_fn("get", |plan: &mut CellPlan, section: &str, key: &str| {
+		plan.entry(section, key)
+	});
+	engine.register_fn("once", |plan: &mut CellPlan, responsibility: &str| plan.claim(responsibility));
+}
+
+fn register_memo(engine: &mut rhai::Engine) {
+	let memo: Rc<RefCell<BTreeMap<String, Dynamic>>> = Rc::new(RefCell::new(BTreeMap::new()));
+	let reads = Rc::clone(&memo);
+	engine.register_fn("memo_get", move |key: &str| -> Dynamic {
+		match reads.borrow().get(key) {
+			Some(value) => value.clone(),
+			None => Dynamic::UNIT,
+		}
+	});
+	let writes = Rc::clone(&memo);
+	engine.register_fn("memo_put", move |key: &str, value: Dynamic| {
+		writes.borrow_mut().insert(key.to_string(), value);
+	});
+}
+
+fn register_component(engine: &mut rhai::Engine, hooks: CellHooks) {
 	let CellHooks {
+		workspace,
 		artifact_path,
 		depfile_inputs,
 		lib_path,
 		bin,
 		tool_id,
-		read_file,
-		glob,
 	} = hooks;
+	register_workspace(engine, workspace);
 
 	engine.register_fn("bin", move |_ctx: &mut Map, name: &str| -> String { bin(name) });
 	engine.register_fn("tool_id", move |_ctx: &mut Map| -> String { tool_id() });
@@ -174,54 +324,69 @@ fn register_helpers(engine: &mut rhai::Engine, component: &ComponentView, hooks:
 			Ok(inputs.into_iter().map(Dynamic::from).collect())
 		},
 	);
-	engine.register_fn(
-		"read_file",
-		move |_ctx: &mut Map, path: &str| -> Result<String, Box<EvalAltResult>> { read_file(path).map_err(|e| e.into()) },
-	);
-	engine.register_fn("json_decode", |text: &str| -> Result<Dynamic, Box<EvalAltResult>> {
-		crate::rhai_rt::json_decode(text).map_err(Into::into)
-	});
-	engine.register_fn("toml_decode", |text: &str| -> Result<Map, Box<EvalAltResult>> {
-		crate::rhai_rt::toml_decode(text).map_err(Into::into)
-	});
-	register_graph_ops(engine);
-	engine.register_fn(
-		"glob",
-		move |_ctx: &mut Map, pattern: &str| -> Result<rhai::Array, Box<EvalAltResult>> {
-			let files = glob(pattern).map_err(|e| -> Box<EvalAltResult> { e.into() })?;
-			Ok(files.into_iter().map(Dynamic::from).collect())
-		},
-	);
-	let _ = component.profile;
 }
 
 fn register_graph_ops(engine: &mut rhai::Engine) {
 	use crate::dep_graph;
 
-	engine.register_fn("graph_roots", |adjacency: Map| -> rhai::Array {
-		dep_graph::keys_to_rhai(dep_graph::roots(&dep_graph::adjacency_from_rhai(&adjacency)))
+	engine.register_fn("graph_roots", |adjacency: &mut Map| -> rhai::Array {
+		dep_graph::keys_to_rhai(dep_graph::roots(&dep_graph::adjacency_from_rhai(adjacency)))
 	});
-	engine.register_fn("graph_reachable", |adjacency: Map, roots: rhai::Array| -> rhai::Array {
+	engine.register_fn("graph_reachable", |adjacency: &mut Map, roots: rhai::Array| -> rhai::Array {
 		let roots: Vec<String> = roots.into_iter().filter_map(|root| root.into_string().ok()).collect();
-		dep_graph::keys_to_rhai(dep_graph::reachable(&dep_graph::adjacency_from_rhai(&adjacency), &roots))
+		dep_graph::keys_to_rhai(dep_graph::reachable(&dep_graph::adjacency_from_rhai(adjacency), &roots))
 	});
-	engine.register_fn("graph_transitive", |adjacency: Map, key: &str| -> rhai::Array {
-		dep_graph::keys_to_rhai(dep_graph::transitive(&dep_graph::adjacency_from_rhai(&adjacency), key))
+	engine.register_fn("graph_transitive", |adjacency: &mut Map, key: &str| -> rhai::Array {
+		dep_graph::keys_to_rhai(dep_graph::transitive(&dep_graph::adjacency_from_rhai(adjacency), key))
 	});
-	engine.register_fn("graph_reverse", |adjacency: Map| -> Map {
+	engine.register_fn("graph_reverse", |adjacency: &mut Map| -> Map {
 		let mut out = Map::new();
-		for (key, list) in dep_graph::reverse(&dep_graph::adjacency_from_rhai(&adjacency)) {
+		for (key, list) in dep_graph::reverse(&dep_graph::adjacency_from_rhai(adjacency)) {
 			out.insert(key.into(), Dynamic::from(dep_graph::keys_to_rhai(list)));
 		}
 		out
 	});
-	engine.register_fn("graph_topo", |adjacency: Map| -> rhai::Array {
-		dep_graph::keys_to_rhai(dep_graph::toposort(&dep_graph::adjacency_from_rhai(&adjacency)))
+	engine.register_fn("graph_topo", |adjacency: &mut Map| -> rhai::Array {
+		dep_graph::keys_to_rhai(dep_graph::toposort(&dep_graph::adjacency_from_rhai(adjacency)))
 	});
 }
 
-fn context_map(component: &ComponentView) -> Map {
+fn context_map(session: &CellSession, component: Option<&ComponentView>) -> Map {
 	let mut ctx = Map::new();
+	insert_str(&mut ctx, "workspace", &session.workspace);
+	insert_str(&mut ctx, "platform_os", &session.platform_os);
+	insert_str(&mut ctx, "platform_arch", &session.platform_arch);
+	insert_str(&mut ctx, "platform_abi", &session.platform_abi);
+	ctx.insert("profile".into(), Dynamic::from(profile_to_map(&session.profile)));
+	ctx.insert(
+		"cell_config".into(),
+		crate::rhai_rt::toml_value_to_dynamic(toml::Value::Table(session.cell_config.clone())).expect("valid TOML value"),
+	);
+	let targets: rhai::Array = session
+		.targets
+		.iter()
+		.map(|table| crate::rhai_rt::toml_value_to_dynamic(toml::Value::Table(table.clone())).expect("valid TOML value"))
+		.collect();
+	ctx.insert("targets".into(), Dynamic::from(targets));
+
+	let fetched_sources: rhai::Array = session
+		.fetched_sources
+		.iter()
+		.map(|package| {
+			let mut value = Map::new();
+			insert_str(&mut value, "name", &package.name);
+			insert_str(&mut value, "version", &package.version);
+			insert_str(&mut value, "root", &package.root);
+			let dependencies: rhai::Array = package.dependencies.iter().map(|name| Dynamic::from(name.clone())).collect();
+			value.insert("dependencies".into(), Dynamic::from(dependencies));
+			Dynamic::from(value)
+		})
+		.collect();
+	ctx.insert("fetched_sources".into(), Dynamic::from(fetched_sources));
+
+	let Some(component) = component else {
+		return ctx;
+	};
 	insert_str(&mut ctx, "label", &component.label);
 	insert_str(&mut ctx, "name", &component.name);
 	insert_str(&mut ctx, "kind", &component.kind);
@@ -236,52 +401,23 @@ fn context_map(component: &ComponentView) -> Map {
 	insert_list(&mut ctx, "run_args", &component.run_args);
 	insert_list(&mut ctx, "data", &component.data);
 	insert_list(&mut ctx, "dep_archives", &component.dep_archives);
+	insert_str(&mut ctx, "linker", &component.linker);
+	insert_list(&mut ctx, "link_flags", &component.link_flags);
 	let artifact_list: rhai::Array = component
 		.dep_artifacts
 		.iter()
 		.map(|(name, path)| Dynamic::from(vec![Dynamic::from(name.clone()), Dynamic::from(path.clone())]))
 		.collect();
 	ctx.insert("dep_artifacts".into(), Dynamic::from(artifact_list));
-	let fetched_sources: rhai::Array = component
-		.fetched_sources
-		.iter()
-		.map(|package| {
-			let mut value = Map::new();
-			insert_str(&mut value, "name", &package.name);
-			insert_str(&mut value, "version", &package.version);
-			insert_str(&mut value, "root", &package.root);
-			let dependencies: rhai::Array = package.dependencies.iter().map(|name| Dynamic::from(name.clone())).collect();
-			value.insert("dependencies".into(), Dynamic::from(dependencies));
-			Dynamic::from(value)
-		})
-		.collect();
-	ctx.insert("fetched_sources".into(), Dynamic::from(fetched_sources));
-	ctx.insert("fetch_owner".into(), Dynamic::from(component.fetch_owner));
-	insert_str(&mut ctx, "workspace", &component.workspace);
-	insert_str(&mut ctx, "linker", &component.linker);
-	insert_list(&mut ctx, "link_flags", &component.link_flags);
-	insert_str(&mut ctx, "platform_os", &component.platform_os);
-	insert_str(&mut ctx, "platform_arch", &component.platform_arch);
-	insert_str(&mut ctx, "platform_abi", &component.platform_abi);
-
 	let mut env = Map::new();
 	for (k, v) in &component.env {
 		env.insert(k.as_str().into(), Dynamic::from(v.clone()));
 	}
 	ctx.insert("env".into(), Dynamic::from(env));
-	ctx.insert("profile".into(), Dynamic::from(profile_to_map(&component.profile)));
-	for (name, table) in [("metadata", &component.metadata), ("cell_config", &component.cell_config)] {
-		ctx.insert(
-			name.into(),
-			crate::rhai_rt::toml_value_to_dynamic(toml::Value::Table(table.clone())).expect("valid TOML value"),
-		);
-	}
-	let targets: rhai::Array = component
-		.targets
-		.iter()
-		.map(|table| crate::rhai_rt::toml_value_to_dynamic(toml::Value::Table(table.clone())).expect("valid TOML value"))
-		.collect();
-	ctx.insert("targets".into(), Dynamic::from(targets));
+	ctx.insert(
+		"metadata".into(),
+		crate::rhai_rt::toml_value_to_dynamic(toml::Value::Table(component.metadata.clone())).expect("valid TOML value"),
+	);
 	ctx
 }
 
@@ -376,6 +512,10 @@ fn parse_action(spec: Map) -> Result<ActionDecl, Box<EvalAltResult>> {
 		_ => None,
 	};
 	let stdout = spec.get("stdout").and_then(|v| v.clone().into_string().ok());
+	let is_test = spec
+		.get("is_test")
+		.is_some_and(|v| v.clone().try_cast::<bool>().unwrap_or(false));
+	let compile_command = spec.get("compile_command").and_then(|v| v.clone().into_string().ok());
 	let artifact = match spec.get("artifact") {
 		Some(v) if v.is_string() => Some(v.clone().into_string().expect("checked string")),
 		Some(_) => return Err("action `artifact` expects a string".into()),
@@ -457,6 +597,8 @@ fn parse_action(spec: Map) -> Result<ActionDecl, Box<EvalAltResult>> {
 		artifact,
 		workdir,
 		stdout,
+		is_test,
+		compile_command,
 		environment_files,
 		argument_files,
 		env,
@@ -464,5 +606,7 @@ fn parse_action(spec: Map) -> Result<ActionDecl, Box<EvalAltResult>> {
 	})
 }
 
+#[cfg(test)]
+mod rust_prelude;
 #[cfg(test)]
 mod tests;

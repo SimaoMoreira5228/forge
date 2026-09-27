@@ -144,18 +144,18 @@ impl SandboxRunner {
 			(sandbox.to_path_buf(), None)
 		};
 		Execution {
-			launch: self.launch_for(spec, sandbox, &root, &toolchains.bin_refs()),
+			launch: self.launch_for(spec, sandbox, &root, toolchains),
 			confinement: Confinement::new(root, toolchains.read_only.clone()),
 			mount,
 		}
 	}
 
-	fn launch_for(&self, spec: &ActionSpec, sandbox: &Path, root: &Path, toolchain_bins: &[&Path]) -> Launch {
+	fn launch_for(&self, spec: &ActionSpec, sandbox: &Path, root: &Path, toolchains: &ToolchainPaths) -> Launch {
 		let mut env: BTreeMap<String, String> =
 			RUNNER_LANG_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-		env.insert("PATH".into(), toolchain_path(toolchain_bins));
+		env.insert("PATH".into(), toolchain_path(&toolchains.bin_refs()));
 		for (k, v) in &spec.env {
-			env.insert(k.clone(), expand_token(v, root));
+			env.insert(k.clone(), expand(v, root, toolchains));
 		}
 		for file in &spec.environment_files {
 			for (key, value) in read_environment_file(sandbox.join(&file.path), file) {
@@ -168,10 +168,10 @@ impl SandboxRunner {
 		if !spec.env.contains_key("TMPDIR") {
 			env.insert("TMPDIR".into(), root.join("tmp").to_string_lossy().into_owned());
 		}
-		let mut args: Vec<String> = spec.args.iter().map(|argument| expand_token(argument, root)).collect();
-		args.extend(read_argument_files(sandbox, &spec.argument_files, root));
+		let mut args: Vec<String> = spec.args.iter().map(|argument| expand(argument, root, toolchains)).collect();
+		args.extend(read_argument_files(sandbox, &spec.argument_files, root, toolchains));
 		Launch {
-			program: expand_token(&spec.command, root),
+			program: expand(&spec.command, root, toolchains),
 			args,
 			env,
 			workdir: spec
@@ -347,7 +347,12 @@ fn metadata_env_name(key_prefix: &str, key: &str) -> String {
 	format!("{key_prefix}{}", key.to_uppercase().replace('-', "_"))
 }
 
-fn read_argument_files(sandbox: &Path, files: &[forge_core::ArgumentFile], exec_root: &Path) -> Vec<String> {
+fn read_argument_files(
+	sandbox: &Path,
+	files: &[forge_core::ArgumentFile],
+	exec_root: &Path,
+	toolchains: &ToolchainPaths,
+) -> Vec<String> {
 	let mut arguments = Vec::new();
 	for file in files {
 		let Ok(text) = std::fs::read_to_string(sandbox.join(&file.path)) else {
@@ -362,7 +367,7 @@ fn read_argument_files(sandbox: &Path, files: &[forge_core::ArgumentFile], exec_
 					None => value.to_string(),
 				};
 				arguments.push(file.flag.clone());
-				arguments.push(expand_token(&value, exec_root));
+				arguments.push(expand(&value, exec_root, toolchains));
 			}
 		}
 	}
@@ -371,8 +376,8 @@ fn read_argument_files(sandbox: &Path, files: &[forge_core::ArgumentFile], exec_
 
 const EXEC_ROOT_TOKEN: &str = "FORGE_EXEC_ROOT";
 
-fn expand_token(value: &str, exec_root: &Path) -> String {
-	value.replace(EXEC_ROOT_TOKEN, &exec_root.to_string_lossy())
+fn expand(value: &str, exec_root: &Path, toolchains: &ToolchainPaths) -> String {
+	toolchains.expand(&value.replace(EXEC_ROOT_TOKEN, &exec_root.to_string_lossy()))
 }
 
 fn reanchor(value: &str, marker: &str, exec_root: &Path) -> String {
@@ -471,7 +476,11 @@ mod tests {
 	#[test]
 	fn expands_exec_root_token() {
 		assert_eq!(
-			expand_token("FORGE_EXEC_ROOT/forge-out/build/x", Path::new("/exec/abc")),
+			expand(
+				"FORGE_EXEC_ROOT/forge-out/build/x",
+				Path::new("/exec/abc"),
+				&ToolchainPaths::default()
+			),
 			"/exec/abc/forge-out/build/x"
 		);
 	}

@@ -1,7 +1,17 @@
+fn rust_cfg_memo_key(ctx, expression) {
+    let profile = if ctx.profile == () { #{} } else { ctx.profile };
+    `${ctx.platform_os}|${ctx.platform_arch}|${ctx.platform_abi}|${profile.is_debug}|${expression}`
+}
+
 fn rust_cfg_matches(ctx, expression) {
     expression.trim();
     if !expression.starts_with("cfg(") { return expression == target_for(ctx); }
-    rust_cfg_evaluate(ctx, expression)
+    let key = rust_cfg_memo_key(ctx, expression);
+    let memo = memo_get(key);
+    if memo != () { return memo; }
+    let matched = rust_cfg_evaluate(ctx, expression);
+    memo_put(key, matched);
+    matched
 }
 
 fn rust_cfg_evaluate(ctx, expression) {

@@ -1,13 +1,30 @@
-fn emit_build_script(ctx, rustc, manifest, enabled, root, name, version, edition, build_deps, link_deps, package_files, extra_inputs) {
-    let build_name = if manifest["package"] == () || manifest["package"]["build"] == () { "build.rs" } else { manifest["package"]["build"] };
+fn build_script_shape(manifest, name, version, root, features) {
+    let pkg = manifest["package"];
+    let declared = if pkg == () || pkg["build"] == () { "build.rs" } else { pkg["build"] };
+    let build = if declared == true { "build.rs" } else { declared };
+    let manifest_path = if manifest["forge-manifest-path"] == () { if root == "" { "Cargo.toml" } else { `${root}/Cargo.toml` } } else { manifest["forge-manifest-path"] };
+    #{
+        build: build,
+        cfg: feature_cfg_args(manifest, features),
+        pkg_env: cargo_pkg_env(manifest, name, version),
+        manifest_path: manifest_path,
+    }
+}
+
+fn emit_build_script(ctx, rustc, crate) {
+    let name = crate["name"];
+    let version = crate["version"];
+    let root = crate["root"];
+    let build_name = crate["build"];
     if build_name == false { return ""; }
-    if build_name == true { build_name = "build.rs"; }
     let build_files = ctx.glob(if root == "" { build_name } else { `${root}/${build_name}` });
     if build_files.len() == 0 { return ""; }
     let pkg_name = crate_name(#{ name: name });
     let build_output = build_output_dir(ctx, name, version);
     let build_exe = `${build_output}/script`;
-    let build_args = ["--crate-type", "bin", "--crate-name", `${pkg_name}_build`, "--edition", edition, "-C", `metadata=${pkg_name}_build-${version}`, "--remap-path-prefix", "FORGE_EXEC_ROOT=", "-L", `dependency=${rust_host_deps_dir(ctx)}`] + feature_cfg_args(manifest, enabled) + rust_crate_profile_args(rust_host_profile(ctx), false);
+    let build_args = ["--crate-type", "bin", "--crate-name", `${pkg_name}_build`, "--edition", crate["edition"], "-C", `metadata=${pkg_name}_build-${version}`, "--remap-path-prefix", "FORGE_EXEC_ROOT=", "-L", `dependency=${rust_host_deps_dir(ctx)}`] + crate["cfg"] + rust_crate_profile_args(rust_host_profile(ctx), false);
+    let package_files = crate["package_files"];
+    let extra_inputs = crate["build_closure"];
     let build_inputs = package_files + [build_files[0]] + extra_inputs;
     let build_execution_deps = [];
     let environment_files = #{ };
@@ -15,12 +32,12 @@ fn emit_build_script(ctx, rustc, manifest, enabled, root, name, version, edition
     for input in extra_inputs {
         if input.starts_with("forge-out/") { build_execution_deps.push(input); }
     }
-    for dep in build_deps {
+    for dep in crate["build_externs"] {
         build_args.push("--extern");
         build_args.push(`${dep["name"]}=${dep["path"]}`);
         build_execution_deps.push(dep["path"]);
     }
-    for dep in link_deps {
+    for dep in crate["build_link_deps"] {
         let link = dep["links"];
         link.replace("-", "_");
         link = link.to_upper();
@@ -33,8 +50,8 @@ fn emit_build_script(ctx, rustc, manifest, enabled, root, name, version, edition
         environment_files[`CARGO_DEP_${link}_`] = metadata_file;
         environment_inputs.push(dep["dir"]);
     }
-    let compile_env = merge_env(string_env(ctx.env), cargo_pkg_env(manifest, name, version));
-    let manifest_path = if manifest["forge-manifest-path"] == () { if root == "" { "Cargo.toml" } else { `${root}/Cargo.toml` } } else { manifest["forge-manifest-path"] };
+    let compile_env = merge_env(string_env(ctx.env), crate["pkg_env"]);
+    let manifest_path = crate["manifest_path"];
     compile_env["CARGO_MANIFEST_DIR"] = if root == "" { "FORGE_EXEC_ROOT" } else { `FORGE_EXEC_ROOT/${root}` };
     compile_env["CARGO_MANIFEST_PATH"] = `FORGE_EXEC_ROOT/${manifest_path}`;
     compile_env["HOST"] = target_for(ctx);
@@ -51,11 +68,11 @@ fn emit_build_script(ctx, rustc, manifest, enabled, root, name, version, edition
         env: compile_env,
         toolchain_id: ctx.tool_id(),
     });
-    let run_env = merge_env(string_env(ctx.env), cargo_pkg_env(manifest, name, version));
+    let run_env = merge_env(string_env(ctx.env), crate["pkg_env"]);
     run_env["OUT_DIR"] = `FORGE_EXEC_ROOT/${build_output}`;
     run_env["CARGO_MANIFEST_DIR"] = compile_env["CARGO_MANIFEST_DIR"];
     run_env["CARGO_MANIFEST_PATH"] = compile_env["CARGO_MANIFEST_PATH"];
-    for feature_name in feature_env(enabled).keys() { run_env[feature_name] = "1"; }
+    for feature_name in feature_env(crate["features"]).keys() { run_env[feature_name] = "1"; }
     run_env["NUM_JOBS"] = "1";
     run_env["OPT_LEVEL"] = `${rust_host_profile(ctx).opt_level}`;
     run_env["DEBUG"] = if rust_host_profile(ctx).is_debug { "true" } else { "false" };

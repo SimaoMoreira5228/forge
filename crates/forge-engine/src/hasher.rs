@@ -7,16 +7,7 @@ use parking_lot::RwLock;
 
 pub fn hash_file(path: &Path) -> std::io::Result<[u8; 32]> {
 	if path.is_dir() {
-		let mut entries = walkdir::WalkDir::new(path).into_iter().collect::<Result<Vec<_>, _>>()?;
-		entries.sort_by_key(|entry| entry.path().to_path_buf());
-		let mut hasher = blake3::Hasher::new();
-		for entry in entries {
-			if entry.file_type().is_file() {
-				hasher.update(entry.path().to_string_lossy().as_bytes());
-				hasher.update(&hash_file(entry.path())?);
-			}
-		}
-		return Ok(*hasher.finalize().as_bytes());
+		return hash_tree(path, &|entry| hash_file(entry));
 	}
 	let mut file = std::fs::File::open(path)?;
 	let mut hasher = blake3::Hasher::new();
@@ -29,6 +20,23 @@ pub fn hash_file(path: &Path) -> std::io::Result<[u8; 32]> {
 		hasher.update(&buf[..read]);
 	}
 	Ok(*hasher.finalize().as_bytes())
+}
+
+fn hash_tree(root: &Path, file: &dyn Fn(&Path) -> std::io::Result<[u8; 32]>) -> std::io::Result<[u8; 32]> {
+	let mut entries = walkdir::WalkDir::new(root).into_iter().collect::<Result<Vec<_>, _>>()?;
+	entries.sort_by_key(|entry| entry.path().to_path_buf());
+	let mut hasher = blake3::Hasher::new();
+	for entry in entries {
+		if entry.file_type().is_file() {
+			hasher.update(relative_to(root, entry.path()).to_string_lossy().as_bytes());
+			hasher.update(&file(entry.path())?);
+		}
+	}
+	Ok(*hasher.finalize().as_bytes())
+}
+
+fn relative_to(root: &Path, path: &Path) -> PathBuf {
+	path.strip_prefix(root).unwrap_or(path).to_path_buf()
 }
 
 type CachedHash = (u64, i64, [u8; 32]);
@@ -67,16 +75,7 @@ impl HashCache {
 		if !path.is_dir() {
 			return self.file(path);
 		}
-		let mut entries = walkdir::WalkDir::new(path).into_iter().collect::<Result<Vec<_>, _>>()?;
-		entries.sort_by_key(|entry| entry.path().to_path_buf());
-		let mut hasher = blake3::Hasher::new();
-		for entry in entries {
-			if entry.file_type().is_file() {
-				hasher.update(entry.path().to_string_lossy().as_bytes());
-				hasher.update(&self.file(entry.path())?);
-			}
-		}
-		Ok(*hasher.finalize().as_bytes())
+		hash_tree(path, &|entry| self.file(entry))
 	}
 }
 
@@ -133,11 +132,10 @@ pub fn hash_path(root: &Path, path: &Path) -> std::io::Result<String> {
 			.collect();
 		files.sort();
 		let mut hasher = blake3::Hasher::new();
-		for file in files {
-			let relative = file.strip_prefix(&absolute).unwrap_or(&file);
-			hasher.update(relative.to_string_lossy().as_bytes());
+		for file in &files {
+			hasher.update(relative_to(&absolute, file).to_string_lossy().as_bytes());
 			hasher.update(&[0]);
-			hasher.update(&hash_file(&file)?);
+			hasher.update(&hash_file(file)?);
 		}
 		return Ok(hex(hasher.finalize().as_bytes()));
 	}
@@ -166,5 +164,44 @@ mod tests {
 		std::fs::write(&file, b"two").unwrap();
 		assert_ne!(first, cache.path(&file).unwrap());
 		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	fn tree(root: &Path, contents: &[(&str, &[u8])]) -> PathBuf {
+		let dir = root.to_path_buf();
+		for (name, bytes) in contents {
+			std::fs::create_dir_all(dir.join(name).parent().unwrap()).unwrap();
+			std::fs::write(dir.join(name), bytes).unwrap();
+		}
+		dir
+	}
+
+	#[test]
+	fn a_directory_hashes_by_its_layout_and_content_not_by_where_it_lives() {
+		let base = std::env::temp_dir().join(format!("forge-hashtree-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&base);
+		let first = tree(&base.join("one"), &[("out/x.rs", b"a"), ("out/y/z.rs", b"b")]);
+		let second = tree(&base.join("two/deeper"), &[("out/x.rs", b"a"), ("out/y/z.rs", b"b")]);
+
+		let cache = HashCache::new();
+		assert_eq!(cache.path(&first).unwrap(), cache.path(&second).unwrap());
+		assert_eq!(hash_file(&first).unwrap(), cache.path(&first).unwrap());
+
+		std::fs::write(second.join("out/y/z.rs"), b"changed").unwrap();
+		assert_ne!(cache.path(&first).unwrap(), cache.path(&second).unwrap());
+
+		let _ = std::fs::remove_dir_all(&base);
+	}
+
+	#[test]
+	fn a_directory_rename_is_a_different_input() {
+		let base = std::env::temp_dir().join(format!("forge-hashname-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&base);
+		let first = tree(&base.join("one"), &[("out/x.rs", b"a")]);
+		let second = tree(&base.join("two"), &[("renamed/x.rs", b"a")]);
+
+		let cache = HashCache::new();
+		assert_ne!(cache.path(&first).unwrap(), cache.path(&second).unwrap());
+
+		let _ = std::fs::remove_dir_all(&base);
 	}
 }

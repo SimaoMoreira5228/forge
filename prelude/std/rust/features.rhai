@@ -61,59 +61,6 @@ fn workspace_root_requests(ctx) {
     requests
 }
 
-fn feature_sets(ctx, meta, adjacency, order, requests) {
-    let enabled = #{};
-    for key in order {
-        enabled[key] = [];
-    }
-    for key in order {
-        let name = meta[key]["src"].name;
-        if requests.contains(name) {
-            let request = requests[name];
-            let dep_features = meta[key]["manifest"]["features"];
-            if request["defaults"] && dep_features != () {
-                enabled[key] = append_features(enabled[key], dep_features["default"]);
-            }
-            enabled[key] = append_features(enabled[key], request["features"]);
-        }
-    }
-    for key in order {
-        let manifest = meta[key]["manifest"];
-        let feature_table = manifest["features"];
-        enabled[key] = expand_features(feature_table, enabled[key]);
-        for dep_key in adjacency[key] {
-            let dep_name = meta[dep_key]["src"].name;
-            let entry = dependency_entry(ctx, manifest, dep_name);
-            if entry == () { continue; }
-            let spec = entry["spec"];
-            if spec.type_of() != "map" || spec["default-features"] != false {
-                let dep_features = meta[dep_key]["manifest"]["features"];
-                if dep_features != () {
-                    enabled[dep_key] = append_features(enabled[dep_key], dep_features["default"]);
-                }
-            }
-            if spec.type_of() == "map" && spec["features"] != () {
-                enabled[dep_key] = append_features(enabled[dep_key], spec["features"]);
-            }
-            let prefixes = [`${entry["name"]}/`, `${dep_name}/`, `${entry["name"]}?/`, `${dep_name}?/`];
-            let parent_features = manifest["features"];
-            if parent_features != () {
-                for parent_feature in parent_features.keys() {
-                    if !enabled[key].contains(parent_feature) { continue; }
-                    for member in parent_features[parent_feature] {
-                        for prefix in prefixes {
-                            if member.starts_with(prefix) {
-                                enabled[dep_key] = append_features(enabled[dep_key], [member.sub_string(prefix.len(), member.len() - prefix.len())]);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    enabled
-}
-
 fn manifest_has_dependency(manifest, name) {
     for section_name in ["dependencies", "build-dependencies"] {
         let section = manifest[section_name];
@@ -163,57 +110,72 @@ fn feature_env(enabled) {
     env
 }
 
-fn dependency_artifacts(meta, dep_keys, transition) {
+fn closure_artifacts(plan, keys) {
     let artifacts = [];
-    for dep_key in dep_keys {
-        artifacts.push(dependency_artifact(meta, dep_key, transition));
+    for key in keys { artifacts.push(host_artifact(plan.get("artifacts", key), key)); }
+    artifacts
+}
+
+fn configuration_artifacts(plan, keys, transition) {
+    let artifacts = [];
+    let proc_macro = plan.get("proc_macro");
+    for key in keys {
+        artifacts.push(configuration_artifact(plan.get("artifacts", key), proc_macro, key, transition));
     }
     artifacts
 }
 
-fn declared_locked_dep(meta, info, parent, section, name) {
-    let spec = section[name];
-    let package_name = if spec.type_of() == "map" && spec["package"] != () { spec["package"] } else { name };
-    let key = source_key(meta, package_name);
-    if key == () { return (); }
-    if parent != () && !info["adjacency"][parent].contains(key) { return (); }
-    #{ key: key, name: name, manifest: meta[key]["manifest"], src: meta[key]["src"] }
+fn host_closure_artifacts(plan, keys) {
+    let artifacts = [];
+    for key in keys {
+        for reached in plan.get("graph", key)["reachable"] {
+            let artifact = host_artifact(plan.get("artifacts", reached), reached);
+            if !artifacts.contains(artifact) { artifacts.push(artifact); }
+        }
+    }
+    artifacts
 }
 
-fn build_dependency_externs(ctx, meta, info, parent, manifest) {
+fn locked_dependency(plan, parent, section, name) {
+    let spec = section[name];
+    let package_name = if spec.type_of() == "map" && spec["package"] != () { spec["package"] } else { name };
+    let key = plan.get("by_name", package_name);
+    if key == () { return (); }
+    if parent != () && !plan.get("graph", parent)["full"].contains(key) { return (); }
+    #{ name: name, unit: plan.get("units", key) }
+}
+
+fn build_dependency_externs(ctx, plan, parent, sections) {
     let externs = [];
-    for section in active_build_sections(ctx, manifest) {
+    for section in sections {
         for name in section.keys() {
-            let dep = declared_locked_dep(meta, info, parent, section, name);
+            let dep = locked_dependency(plan, parent, section, name);
             if dep == () { continue; }
+            let unit = dep["unit"];
             let extern_name = name;
             extern_name.replace("-", "_");
-            let links = if dep["manifest"]["package"] == () || dep["manifest"]["package"]["links"] == () { "" } else { dep["manifest"]["package"]["links"] };
-            let keys = [dep["key"]];
-            for reached in graph_transitive(info["adjacency"], dep["key"]) {
-                if !keys.contains(reached) { keys.push(reached); }
-            }
             externs.push(#{
                 name: extern_name,
-                path: dependency_artifact(meta, dep["key"], "host"),
-                closure: dependency_artifacts(meta, keys, "host"),
-                links: links,
-                dir: build_output_dir(ctx, dep["src"].name, dep["src"].version),
+                path: host_artifact(plan.get("artifacts", unit["key"]), unit["key"]),
+                closure: closure_artifacts(plan, plan.get("graph", unit["key"])["host"]),
+                links: unit_links_name(unit),
+                dir: build_output_dir(ctx, unit["name"], unit["version"]),
             });
         }
     }
     externs
 }
 
-fn linked_dependencies(ctx, meta, info, parent, manifest) {
+fn linked_dependencies(ctx, plan, parent, sections) {
     let deps = [];
-    for section in active_dep_sections(ctx, manifest) {
+    for section in sections {
         for name in section.keys() {
-            let dep = declared_locked_dep(meta, info, parent, section, name);
+            let dep = locked_dependency(plan, parent, section, name);
             if dep == () { continue; }
-            let links = if dep["manifest"]["package"] == () || dep["manifest"]["package"]["links"] == () { "" } else { dep["manifest"]["package"]["links"] };
+            let unit = dep["unit"];
+            let links = unit_links_name(unit);
             if links != "" {
-                let dir = build_output_dir(ctx, dep["src"].name, dep["src"].version);
+                let dir = build_output_dir(ctx, unit["name"], unit["version"]);
                 if !deps.contains(#{ name: name, links: links, dir: dir }) { deps.push(#{ name: name, links: links, dir: dir }); }
             }
         }

@@ -118,7 +118,7 @@ impl<'a> WorkerPool<'a> {
 			return Arc::clone(slot);
 		}
 		let slot = Arc::new(Slot {
-			program: PathBuf::from(&binding.program),
+			program: PathBuf::from(self.toolchains.expand(&binding.program)),
 			running: Mutex::new(None),
 		});
 		slots.insert(key, Arc::clone(&slot));
@@ -381,6 +381,7 @@ mod tests {
 			workdir: None,
 			is_test: false,
 			stdout: None,
+			compile_command: None,
 			environment_files: Vec::new(),
 			argument_files: Vec::new(),
 			env: BTreeMap::new(),

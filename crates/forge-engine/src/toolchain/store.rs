@@ -26,10 +26,13 @@ pub struct ResolvedToolchain {
 	pub worker: Option<forge_core::worker::WorkerProgram>,
 }
 
+pub const TOOLCHAIN_TOKEN: &str = "FORGE_TOOLCHAIN";
+
 #[derive(Default)]
 pub struct ToolchainPaths {
 	pub bin: Vec<PathBuf>,
 	pub read_only: Vec<PathBuf>,
+	roots: BTreeMap<String, PathBuf>,
 }
 
 impl ToolchainPaths {
@@ -37,6 +40,7 @@ impl ToolchainPaths {
 		let mut paths = Self {
 			bin: toolchains.values().flat_map(|t| t.path_dirs.iter().cloned()).collect(),
 			read_only: toolchains.values().map(|t| t.root.clone()).collect(),
+			roots: toolchains.values().map(|t| (t.id(), t.root.clone())).collect(),
 		};
 		paths.bin.sort();
 		paths.bin.dedup();
@@ -48,9 +52,35 @@ impl ToolchainPaths {
 	pub fn bin_refs(&self) -> Vec<&Path> {
 		self.bin.iter().map(PathBuf::as_path).collect()
 	}
+
+	pub fn expand(&self, value: &str) -> String {
+		let mut expanded = value.to_string();
+		for (id, root) in &self.roots {
+			expanded = expanded.replace(&format!("{TOOLCHAIN_TOKEN}/{id}/"), &format!("{}/", root.to_string_lossy()));
+		}
+		expanded
+	}
 }
 
 impl ResolvedToolchain {
+	pub fn id(&self) -> String {
+		format!("{}@{}", self.name, &self.digest[..12.min(self.digest.len())])
+	}
+
+	pub fn reference(&self, binary: &Path) -> Result<String, ForgeDiagnostic> {
+		let relative = binary.strip_prefix(&self.root).map_err(|_| {
+			ForgeDiagnostic::error(
+				codes::hermetic::TOOLCHAIN_MISMATCH,
+				format!("tool `{}` is outside toolchain `{}`", binary.display(), self.name),
+			)
+		})?;
+		Ok(format!(
+			"{TOOLCHAIN_TOKEN}/{}/{}",
+			self.id(),
+			relative.to_string_lossy().replace('\\', "/")
+		))
+	}
+
 	pub fn binary(&self, name: &str) -> Option<PathBuf> {
 		let suffix = std::env::consts::EXE_SUFFIX;
 		for dir in &self.path_dirs {
@@ -86,15 +116,34 @@ pub fn resolve_tool_path(toolchains: &BTreeMap<String, ResolvedToolchain>, spec:
 			return Ok(found);
 		}
 	}
+	Err(not_found(toolchains, spec))
+}
+
+pub fn resolve_tool_reference(
+	toolchains: &BTreeMap<String, ResolvedToolchain>,
+	spec: &str,
+) -> Result<String, ForgeDiagnostic> {
+	if PathBuf::from(spec).is_absolute() {
+		return resolve_tool_path(toolchains, spec).map(|path| path.to_string_lossy().into_owned());
+	}
+	for tool in toolchains.values() {
+		if let Some(found) = tool.binary(spec) {
+			return tool.reference(&found);
+		}
+	}
+	Err(not_found(toolchains, spec))
+}
+
+fn not_found(toolchains: &BTreeMap<String, ResolvedToolchain>, spec: &str) -> ForgeDiagnostic {
 	let searched: Vec<String> = toolchains.values().map(|t| t.bin_dir.display().to_string()).collect();
-	Err(ForgeDiagnostic::error(
+	ForgeDiagnostic::error(
 		codes::hermetic::TOOLCHAIN_MISMATCH,
 		format!("tool `{spec}` was not found in any configured toolchain"),
 	)
 	.with_help(format!(
 		"searched: {}; add a [toolchains.<name>] section providing it",
 		searched.join(", ")
-	)))
+	))
 }
 
 pub struct ToolchainStore {
@@ -297,4 +346,139 @@ fn directory_digest(root: &Path, bin_dirs: &[PathBuf]) -> String {
 
 fn hasher_digest_file(path: &Path) -> std::io::Result<Vec<u8>> {
 	Ok(hasher::hash_file(path)?.to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn toolchain(name: &str, root: &str, digest: &str) -> ResolvedToolchain {
+		ResolvedToolchain {
+			name: name.to_string(),
+			root: root.into(),
+			bin_dir: root.into(),
+			path_dirs: vec![root.into()],
+			digest: digest.to_string(),
+			coverage: None,
+			worker: None,
+		}
+	}
+
+	#[test]
+	fn a_reference_names_the_toolchain_and_the_binary_not_where_the_store_lives() {
+		let here = toolchain("rust", "/store/one/toolchains/rust/1.98.0", "abcdef0123456789");
+		let there = toolchain("rust", "/elsewhere/toolchains/rust/1.98.0", "abcdef0123456789");
+		let binary = |tool: &ResolvedToolchain| tool.root.join("bin/rustc");
+
+		assert_eq!(
+			here.reference(&binary(&here)).unwrap(),
+			there.reference(&binary(&there)).unwrap()
+		);
+		assert_eq!(
+			here.reference(&binary(&here)).unwrap(),
+			"FORGE_TOOLCHAIN/rust@abcdef012345/bin/rustc"
+		);
+	}
+
+	#[test]
+	fn a_reference_keeps_distinguishing_the_things_a_key_must_distinguish() {
+		let rust = toolchain("rust", "/store/toolchains/rust/1.98.0", "abcdef0123456789");
+		let clang = toolchain("clang", "/store/toolchains/clang/1.98.0", "abcdef0123456789");
+		let rebuilt = toolchain("rust", "/store/toolchains/rust/1.98.0", "ffffffffffffffff");
+		let other_binary = toolchain("rust", "/store/toolchains/rust/1.98.0", "abcdef0123456789");
+
+		let reference = |tool: &ResolvedToolchain, binary: &str| tool.reference(&PathBuf::from(binary)).unwrap();
+		let base = reference(&rust, "/store/toolchains/rust/1.98.0/bin/rustc");
+
+		assert_ne!(
+			base,
+			reference(&clang, "/store/toolchains/clang/1.98.0/bin/rustc"),
+			"a different toolchain is a different key"
+		);
+		assert_ne!(
+			base,
+			reference(&rebuilt, "/store/toolchains/rust/1.98.0/bin/rustc"),
+			"a changed toolchain digest is a different key"
+		);
+		assert_ne!(
+			base,
+			reference(&other_binary, "/store/toolchains/rust/1.98.0/bin/cargo"),
+			"a different binary is a different key"
+		);
+	}
+
+	#[test]
+	fn a_binary_outside_its_toolchain_has_no_reference() {
+		let tool = toolchain("gcc", "/store/toolchains/gcc/14", "abcdef0123456789");
+		assert!(tool.reference(Path::new("/usr/bin/cc")).is_err());
+	}
+
+	#[test]
+	fn expanding_a_reference_returns_the_binary_to_run() {
+		let toolchains = BTreeMap::from([(
+			"rust".to_string(),
+			toolchain("rust", "/store/one/toolchains/rust/1.98.0", "abcdef0123456789"),
+		)]);
+		let paths = ToolchainPaths::of(&toolchains);
+
+		assert_eq!(
+			paths.expand("FORGE_TOOLCHAIN/rust@abcdef012345/bin/rustc"),
+			"/store/one/toolchains/rust/1.98.0/bin/rustc"
+		);
+		assert_eq!(
+			paths.expand("-L dependency=FORGE_TOOLCHAIN/rust@abcdef012345/lib"),
+			"-L dependency=/store/one/toolchains/rust/1.98.0/lib"
+		);
+		assert_eq!(paths.expand("rustc"), "rustc", "a bare tool name is left alone");
+	}
+
+	#[test]
+	fn a_reference_only_expands_for_the_toolchain_it_names() {
+		let toolchains = BTreeMap::from([
+			(
+				"rust".to_string(),
+				toolchain("rust", "/store/one/rust", "abcdef0123456789abcdef01"),
+			),
+			(
+				"clang".to_string(),
+				toolchain("clang", "/store/one/clang", "fedcba9876543210fedcba98"),
+			),
+		]);
+		let paths = ToolchainPaths::of(&toolchains);
+
+		assert_eq!(
+			paths.expand("FORGE_TOOLCHAIN/rust@abcdef012345/bin/rustc"),
+			"/store/one/rust/bin/rustc"
+		);
+		assert_eq!(
+			paths.expand("FORGE_TOOLCHAIN/clang@fedcba987654/bin/clang"),
+			"/store/one/clang/bin/clang"
+		);
+	}
+
+	#[test]
+	fn a_reference_is_resolved_from_the_toolchain_that_actually_provides_the_binary() {
+		let root = std::env::temp_dir().join(format!("forge-toolref-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&root);
+		std::fs::create_dir_all(root.join("bin")).unwrap();
+		std::fs::write(root.join("bin/rustc"), b"tool").unwrap();
+		let mut rust = toolchain("rust", &root.to_string_lossy(), "abcdef0123456789abcdef01");
+		rust.bin_dir = root.join("bin");
+		rust.path_dirs = vec![rust.bin_dir.clone()];
+		let toolchains = BTreeMap::from([("rust".to_string(), rust)]);
+
+		assert_eq!(
+			resolve_tool_reference(&toolchains, "rustc").unwrap(),
+			"FORGE_TOOLCHAIN/rust@abcdef012345/bin/rustc".to_string()
+		);
+		assert!(resolve_tool_reference(&toolchains, "no-such-tool").is_err());
+		assert_eq!(resolve_tool_path(&toolchains, "rustc").unwrap(), root.join("bin/rustc"));
+		assert_eq!(
+			resolve_tool_reference(&toolchains, &root.join("bin/rustc").to_string_lossy()).unwrap(),
+			root.join("bin/rustc").to_string_lossy()
+		);
+		assert!(resolve_tool_reference(&toolchains, "/no/such/binary").is_err());
+
+		let _ = std::fs::remove_dir_all(&root);
+	}
 }

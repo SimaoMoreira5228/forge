@@ -146,6 +146,62 @@ fn full_pipeline_build_run_and_cache_hits() {
 }
 
 #[test]
+fn warm_builds_leave_fresh_outputs_untouched() {
+	if !have_compiler() {
+		eprintln!("skipping: no system compiler");
+		return;
+	}
+	let dir = std::env::temp_dir().join(format!("forge-ifresh-{}", std::process::id()));
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(&dir).unwrap();
+	write_workspace(&dir);
+
+	let (ok, log) = run_forge(&dir, &["build"]);
+	assert!(ok, "first build failed: {log}");
+	let binary = dir.join("forge-out/bin/debug/app");
+	let before = std::fs::metadata(&binary).unwrap().modified().unwrap();
+
+	let (ok, log) = run_forge(&dir, &["build"]);
+	assert!(ok, "warm build failed: {log}");
+	assert!(log.contains("cache hits"), "expected hits, got: {log}");
+	let after = std::fs::metadata(&binary).unwrap().modified().unwrap();
+	assert_eq!(before, after, "a fresh output must not be rewritten");
+
+	std::fs::write(
+		dir.join("lib/math.c"),
+		"#include \"math.h\"\nint add(int a, int b) { return a + b + 1; }\n",
+	)
+	.unwrap();
+	let (ok, _) = run_forge(&dir, &["build"]);
+	assert!(ok, "rebuild failed");
+	let rebuilt = std::fs::metadata(&binary).unwrap().modified().unwrap();
+	assert!(rebuilt != after, "a stale output must be republished");
+
+	let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn compile_commands_lists_cell_declared_sources() {
+	if !have_compiler() {
+		eprintln!("skipping: no system compiler");
+		return;
+	}
+	let dir = std::env::temp_dir().join(format!("forge-icc-{}", std::process::id()));
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(&dir).unwrap();
+	write_workspace(&dir);
+
+	let json = Engine::open(&dir).compile_commands("debug").expect("compile commands");
+	let entries: Vec<serde_json::Value> = serde_json::from_str(&json).expect("valid json");
+	assert_eq!(entries.len(), 2, "both C sources must be listed: {json}");
+	let files: Vec<&str> = entries.iter().map(|entry| entry["file"].as_str().unwrap()).collect();
+	assert!(files.contains(&"lib/math.c"), "got: {files:?}");
+	assert!(files.contains(&"src/main.c"), "got: {files:?}");
+
+	let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn visibility_violations_fail_before_any_compilation() {
 	if !have_compiler() {
 		eprintln!("skipping: no system compiler");

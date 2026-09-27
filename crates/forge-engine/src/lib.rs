@@ -1,5 +1,6 @@
 pub mod builder;
 pub mod cas;
+pub mod compile_commands;
 pub mod confine;
 pub mod coverage;
 pub mod db;
@@ -10,6 +11,7 @@ pub mod junit;
 #[cfg(target_os = "linux")]
 mod landlock;
 pub mod lock;
+pub mod materialized;
 #[cfg(target_os = "linux")]
 mod namespace;
 pub mod planner;
