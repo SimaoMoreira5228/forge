@@ -7,3 +7,8 @@ local/
 .cargo/
 .opencode/
 .forge-lock
+bench/app/build/
+bench/app/builddir/
+bench/app/buck-out/
+bench/app/bazel-*
+examples/slint-gui/gen/

@@ -1,0 +1,21 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
+
+cc_library(
+    name = "math",
+    srcs = ["lib/math.c"],
+    hdrs = ["lib/math.h"],
+    includes = ["lib"],
+    visibility = ["//visibility:public"],
+)
+
+cc_binary(
+    name = "hello",
+    srcs = ["src/main.c"],
+    deps = [":math"],
+)
+
+cc_test(
+    name = "math_test",
+    srcs = ["tests/math_test.c"],
+    deps = [":math"],
+)

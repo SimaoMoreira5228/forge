@@ -1,0 +1,5 @@
+project('bench', 'c', default_options: ['buildtype=debug'])
+math = static_library('math', 'lib/math.c', include_directories: include_directories('lib'))
+hello = executable('hello', 'src/main.c', include_directories: include_directories('lib'), link_with: math)
+math_test = executable('math_test', 'tests/math_test.c', include_directories: include_directories('lib'), link_with: math)
+test('math_test', math_test)

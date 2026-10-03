@@ -1,0 +1,9 @@
+[project]
+name = "bench"
+
+[discovery]
+include = ["."]
+
+[toolchains.gcc]
+from = "path"
+path = "/usr"

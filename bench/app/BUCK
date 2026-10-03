@@ -1,0 +1,19 @@
+cxx_library(
+    name = "math",
+    srcs = ["lib/math.c"],
+    exported_headers = {"math.h": "lib/math.h"},
+    preferred_linkage = "static",
+    visibility = ["PUBLIC"],
+)
+
+cxx_binary(
+    name = "hello",
+    srcs = ["src/main.c"],
+    deps = [":math"],
+)
+
+cxx_test(
+    name = "math_test",
+    srcs = ["tests/math_test.c"],
+    deps = [":math"],
+)
