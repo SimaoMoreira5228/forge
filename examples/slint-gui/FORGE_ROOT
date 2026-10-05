@@ -1,0 +1,21 @@
+[project]
+name = "slint-gui"
+
+[discovery]
+include = ["."]
+
+[toolchains.gcc]
+from = "path"
+path = "/usr"
+
+[toolchains.rust]
+from = "version"
+version = "1.98.0"
+
+[toolchains.slint]
+from = "version"
+version = "1.18.1"
+
+[toolchains.cmake]
+from = "version"
+version = "4.4.3"

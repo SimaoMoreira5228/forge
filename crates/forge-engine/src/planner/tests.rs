@@ -40,6 +40,7 @@ fn library_paths_are_profile_distinct() {
 #[test]
 fn depfile_paths_match_both_runner_roots_without_testing_existence() {
 	let workspace = Path::new("/workspace");
+	let toolchains = [PathBuf::from("/toolchains/slint/1.18.1")];
 	for path in [
 		"./include/../missing.strange",
 		"/workspace/missing.strange",
@@ -48,8 +49,8 @@ fn depfile_paths_match_both_runner_roots_without_testing_existence() {
 		"/workspace/forge-out/sandbox/123456789abc/missing.strange",
 	] {
 		assert_eq!(
-			depfile_input_path(workspace, Path::new(path)).unwrap(),
-			Path::new("missing.strange")
+			depfile_input_path(workspace, Path::new(path), &toolchains).unwrap(),
+			Some(PathBuf::from("missing.strange"))
 		);
 	}
 	for path in [
@@ -59,11 +60,21 @@ fn depfile_paths_match_both_runner_roots_without_testing_existence() {
 		"/workspace-other/input",
 		".",
 	] {
-		assert!(depfile_input_path(workspace, Path::new(path)).is_err(), "{path}");
+		assert!(depfile_input_path(workspace, Path::new(path), &toolchains).is_err(), "{path}");
 	}
 	assert_eq!(
-		depfile_input_path(workspace, Path::new("FORGE_EXEC_ROOT_suffix/file")).unwrap(),
-		Path::new("FORGE_EXEC_ROOT_suffix/file")
+		depfile_input_path(workspace, Path::new("FORGE_EXEC_ROOT_suffix/file"), &toolchains).unwrap(),
+		Some(PathBuf::from("FORGE_EXEC_ROOT_suffix/file"))
+	);
+	assert_eq!(
+		depfile_input_path(
+			workspace,
+			Path::new("/toolchains/slint/1.18.1/Slint-cpp-1.18.1-Linux-x86_64/include/slint/slint.h"),
+			&toolchains
+		)
+		.unwrap(),
+		None,
+		"toolchain headers are keyed by reference, not hashed as inputs"
 	);
 }
 

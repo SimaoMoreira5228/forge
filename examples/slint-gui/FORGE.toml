@@ -1,0 +1,82 @@
+[rule.slint_ui]
+command = "slint-compiler"
+args = ["-f", "cpp", "ui/app-window.slint", "-o", "gen/app-window.h"]
+inputs = ["ui/app-window.slint"]
+output_dir = "gen"
+
+[rule.slint_build]
+command = "cmake"
+args = ["-P", "build-slint.cmake"]
+inputs = ["build-slint.cmake", "vendor/slint", "vendor/corrosion"]
+outputs = ["forge-out/slint-build/libslint_cpp.a", "forge-out/slint-build/generated_include/private/slint_brush_internal.h",
+           "forge-out/slint-build/generated_include/private/slint_builtin_structs.h",
+           "forge-out/slint-build/generated_include/private/slint_builtin_structs_internal.h",
+           "forge-out/slint-build/generated_include/private/slint_color_internal.h",
+           "forge-out/slint-build/generated_include/private/slint_data_transfer_internal.h",
+           "forge-out/slint-build/generated_include/private/slint_enums.h",
+           "forge-out/slint-build/generated_include/private/slint_enums_internal.h",
+           "forge-out/slint-build/generated_include/private/slint_events_internal.h",
+           "forge-out/slint-build/generated_include/private/slint_generated_public.h",
+           "forge-out/slint-build/generated_include/private/slint_image_internal.h",
+           "forge-out/slint-build/generated_include/private/slint_internal.h",
+           "forge-out/slint-build/generated_include/private/slint_interpreter_generated_public.h",
+           "forge-out/slint-build/generated_include/private/slint_interpreter_internal.h",
+           "forge-out/slint-build/generated_include/private/slint_keys_internal.h",
+           "forge-out/slint-build/generated_include/private/slint_pathdata_internal.h",
+           "forge-out/slint-build/generated_include/private/slint_platform_internal.h",
+           "forge-out/slint-build/generated_include/private/slint_properties_internal.h",
+           "forge-out/slint-build/generated_include/private/slint_qt_internal.h",
+           "forge-out/slint-build/generated_include/private/slint_sharedvector_internal.h",
+           "forge-out/slint-build/generated_include/private/slint_string_internal.h",
+           "forge-out/slint-build/generated_include/private/slint_testing_internal.h",
+           "forge-out/slint-build/generated_include/private/slint_timer_internal.h"]
+env = { FETCHCONTENT_SOURCE_DIR_CORROSION = "FORGE_EXEC_ROOT/vendor/corrosion",
+        CARGO_HOME = "forge-out/cargo-home", CARGO_TARGET_DIR = "forge-out/cargo-target",
+        CC = "gcc", CXX = "g++" }
+
+[binary.gui]
+srcs = ["src/main.cpp"]
+hdrs = ["gen/app-window.h"]
+includes = ["gen"]
+compiler = "g++"
+standard = "c++20"
+
+[binary.gui.metadata.c.runtime.slint]
+toolchain = "slint"
+include = "Slint-cpp-1.18.1-Linux-x86_64/include/slint"
+libdir = "Slint-cpp-1.18.1-Linux-x86_64/lib"
+libs = ["slint_cpp"]
+
+[binary.gui_static]
+srcs = ["src/main.cpp"]
+hdrs = ["gen/app-window.h", "${glob('vendor/slint/api/cpp/include/**/*.h')}",
+        "forge-out/slint-build/generated_include/private/slint_brush_internal.h",
+        "forge-out/slint-build/generated_include/private/slint_builtin_structs.h",
+        "forge-out/slint-build/generated_include/private/slint_builtin_structs_internal.h",
+        "forge-out/slint-build/generated_include/private/slint_color_internal.h",
+        "forge-out/slint-build/generated_include/private/slint_data_transfer_internal.h",
+        "forge-out/slint-build/generated_include/private/slint_enums.h",
+        "forge-out/slint-build/generated_include/private/slint_enums_internal.h",
+        "forge-out/slint-build/generated_include/private/slint_events_internal.h",
+        "forge-out/slint-build/generated_include/private/slint_generated_public.h",
+        "forge-out/slint-build/generated_include/private/slint_image_internal.h",
+        "forge-out/slint-build/generated_include/private/slint_internal.h",
+        "forge-out/slint-build/generated_include/private/slint_interpreter_generated_public.h",
+        "forge-out/slint-build/generated_include/private/slint_interpreter_internal.h",
+        "forge-out/slint-build/generated_include/private/slint_keys_internal.h",
+        "forge-out/slint-build/generated_include/private/slint_pathdata_internal.h",
+        "forge-out/slint-build/generated_include/private/slint_platform_internal.h",
+        "forge-out/slint-build/generated_include/private/slint_properties_internal.h",
+        "forge-out/slint-build/generated_include/private/slint_qt_internal.h",
+        "forge-out/slint-build/generated_include/private/slint_sharedvector_internal.h",
+        "forge-out/slint-build/generated_include/private/slint_string_internal.h",
+        "forge-out/slint-build/generated_include/private/slint_testing_internal.h",
+        "forge-out/slint-build/generated_include/private/slint_timer_internal.h"]
+includes = ["gen", "vendor/slint/api/cpp/include", "forge-out/slint-build/generated_include"]
+compiler = "g++"
+standard = "c++20"
+system_libs = ["fontconfig", "xkbcommon", "xkbcommon-x11", "wayland-client", "wayland-egl", "EGL",
+               "GLESv2", "GL", "X11", "X11-xcb", "xcb"]
+
+[binary.gui_static.metadata.c.static.slint]
+lib = "forge-out/slint-build/libslint_cpp.a"

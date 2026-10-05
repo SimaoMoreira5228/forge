@@ -10,6 +10,8 @@ fn hooks() -> CellHooks {
 		depfile_inputs: Box::new(|_| Ok(vec![])),
 		lib_path: Box::new(|filename| format!("forge-out/lib/modules.a/{filename}")),
 		bin: Box::new(|name| format!("/tools/bin/{name}")),
+		tool_bin: Box::new(|name| format!("/tools/bin/{name}")),
+		toolchain_dir: Box::new(|name| format!("/tools/{name}")),
 		tool_id: Box::new(|| "gcc@abc123".into()),
 	}
 }

@@ -652,40 +652,6 @@ impl ExecContext<'_> {
 	}
 }
 
-fn select_dag(prepared: &Prepared, dag: &ActionDag, expression: &str) -> Result<ActionDag, ForgeDiagnostic> {
-	let expr = forge_core::graph::query::parse(expression)?;
-	let ids = forge_core::graph::query::evaluate(&prepared.graph, &expr)?;
-	let selected: std::collections::BTreeSet<String> =
-		ids.iter().map(|id| prepared.graph.component(*id).label.to_string()).collect();
-	let mut keep = std::collections::BTreeSet::new();
-	let mut pending: Vec<usize> = dag
-		.specs
-		.iter()
-		.enumerate()
-		.filter(|(_, spec)| selected.contains(&spec.component))
-		.map(|(index, _)| index)
-		.collect();
-	if pending.is_empty() {
-		return Err(ForgeDiagnostic::error(
-			codes::targets::UNKNOWN_TARGET,
-			format!("selection `{expression}` matched no components"),
-		));
-	}
-	while let Some(index) = pending.pop() {
-		if keep.insert(index) {
-			pending.extend(dag.deps[index].iter().copied());
-		}
-	}
-	let remap: std::collections::BTreeMap<usize, usize> = keep.iter().enumerate().map(|(new, old)| (*old, new)).collect();
-	let mut specs = Vec::with_capacity(keep.len());
-	let mut deps = Vec::with_capacity(keep.len());
-	for old in &keep {
-		specs.push(dag.specs[*old].clone());
-		deps.push(dag.deps[*old].iter().map(|dep| remap[dep]).collect());
-	}
-	Ok(ActionDag { specs, deps })
-}
-
 fn dynamic_components(decls: &forge_script::DeclMap) -> std::collections::BTreeSet<String> {
 	decls
 		.iter()
@@ -742,3 +708,7 @@ fn fatal_report(diagnostics: Vec<ForgeDiagnostic>) -> ForgeDiagnostic {
 	}
 	ForgeDiagnostic::error(code, parts.join("nn"))
 }
+
+mod selection;
+
+use selection::select_dag;

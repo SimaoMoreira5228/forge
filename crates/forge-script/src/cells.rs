@@ -119,6 +119,8 @@ pub struct CellHooks {
 	pub depfile_inputs: Globber,
 	pub lib_path: Box<dyn Fn(&str) -> String>,
 	pub bin: Box<dyn Fn(&str) -> String>,
+	pub tool_bin: Box<dyn Fn(&str) -> String>,
+	pub toolchain_dir: Box<dyn Fn(&str) -> String>,
 	pub tool_id: Box<dyn Fn() -> String>,
 }
 
@@ -296,11 +298,17 @@ fn register_component(engine: &mut rhai::Engine, hooks: CellHooks) {
 		depfile_inputs,
 		lib_path,
 		bin,
+		tool_bin,
+		toolchain_dir,
 		tool_id,
 	} = hooks;
 	register_workspace(engine, workspace);
 
 	engine.register_fn("bin", move |_ctx: &mut Map, name: &str| -> String { bin(name) });
+	engine.register_fn("tool_bin", move |_ctx: &mut Map, name: &str| -> String { tool_bin(name) });
+	engine.register_fn("toolchain_dir", move |_ctx: &mut Map, name: &str| -> String {
+		toolchain_dir(name)
+	});
 	engine.register_fn("tool_id", move |_ctx: &mut Map| -> String { tool_id() });
 	engine.register_fn(
 		"lib_path",

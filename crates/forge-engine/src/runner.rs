@@ -397,6 +397,9 @@ fn link_in(src: &Path, dst: &Path, hardlink: bool) -> Result<(), ForgeDiagnostic
 	if let Some(parent) = dst.parent() {
 		std::fs::create_dir_all(parent).map_err(|e| io_err("prepare", parent, e))?;
 	}
+	if dst.exists() {
+		std::fs::remove_file(dst).map_err(|e| io_err("replace input", dst, e))?;
+	}
 	if hardlink && std::fs::hard_link(src, dst).is_ok() {
 		return Ok(());
 	}
@@ -455,6 +458,21 @@ fn fallback_path_dirs() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn repeated_materialization_preserves_the_workspace_input() {
+		let dir = std::env::temp_dir().join(format!("forge-repeated-input-{}", std::process::id()));
+		std::fs::create_dir_all(&dir).unwrap();
+		let src = dir.join("source");
+		let dst = dir.join("sandbox/input");
+		std::fs::write(&src, b"archive contents").unwrap();
+		for hardlink in [true, true, false, true] {
+			link_in(&src, &dst, hardlink).unwrap();
+			assert_eq!(std::fs::read(&src).unwrap(), b"archive contents");
+			assert_eq!(std::fs::read(&dst).unwrap(), b"archive contents");
+		}
+		std::fs::remove_dir_all(dir).unwrap();
+	}
 
 	#[test]
 	fn reanchors_out_dir_link_search() {

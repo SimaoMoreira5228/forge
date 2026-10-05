@@ -56,3 +56,59 @@ fn algebraic_selection_builds_only_the_matched_targets() {
 
 	let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn selected_binary_builds_generated_headers_and_static_archives() {
+	if !have_compiler() {
+		return;
+	}
+	let dir = std::env::temp_dir().join(format!("forge-generated-static-{}", std::process::id()));
+	let _ = std::fs::remove_dir_all(&dir);
+	write_two_binaries(&dir);
+	std::fs::write(
+		dir.join("FORGE.toml"),
+		r#"
+[rule.headers]
+command = "/bin/sh"
+args = ["-c", "mkdir -p gen && printf 'int answer(void);\n' > gen/api.h"]
+output_dir = "gen"
+
+[rule.archive]
+command = "/bin/sh"
+args = ["-c", "gcc -c src/answer.c -o answer.o && ar rcs libanswer.a answer.o"]
+inputs = ["src/answer.c"]
+outputs = ["libanswer.a"]
+
+[binary.app]
+srcs = ["src/app.c"]
+hdrs = ["gen/api.h"]
+includes = ["gen"]
+compiler = "gcc"
+system_libs = ["m"]
+
+[binary.app.metadata.c.static.answer]
+lib = "libanswer.a"
+"#,
+	)
+	.unwrap();
+	std::fs::write(
+		dir.join("src/answer.c"),
+		"#include <math.h>\nint answer(void) { volatile double value = 1764; return (int)sqrt(value); }\n",
+	)
+	.unwrap();
+	std::fs::write(
+		dir.join("src/app.c"),
+		"#include \"api.h\"\nint main(void) { return answer() == 42 ? 0 : 1; }\n",
+	)
+	.unwrap();
+	let (ok, log) = run_forge(&dir, &["build", "//:app"]);
+	assert!(ok, "selected build failed: {log}");
+	let binary = dir.join("forge-out/bin/debug/app");
+	assert!(std::process::Command::new(binary).status().unwrap().success());
+	let (ok, log) = run_forge(&dir, &["build", "//:app"]);
+	assert!(
+		ok && log.contains("0 executed"),
+		"selected build did not reuse its cache: {log}"
+	);
+	std::fs::remove_dir_all(&dir).unwrap();
+}

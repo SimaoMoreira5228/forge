@@ -61,7 +61,37 @@ fn lto_archiver(ctx) {
     throw `toolchain provides no LTO-capable archiver`;
 }
 
-fn linker_for(ctx) {
+fn runtime_entries(ctx) {
+    if ctx.metadata == () || ctx.metadata["c"] == () || ctx.metadata["c"]["runtime"] == () { return []; }
+    let entries = [];
+    for name in ctx.metadata["c"]["runtime"].keys() {
+        let entry = ctx.metadata["c"]["runtime"][name];
+        let dir = ctx.toolchain_dir(entry["toolchain"]);
+        if dir == "" { throw `toolchain ${entry["toolchain"]} is not configured`; }
+        let include = if entry["include"] == () { "" } else { `-I${dir}/${entry["include"]}` };
+        let libdir = if entry["libdir"] == () { "" } else { `${dir}/${entry["libdir"]}` };
+        let libs = if entry["libs"] == () { [] } else { entry["libs"] };
+        entries.push(#{ name: name, libdir: libdir, libs: libs, include: include });
+    }
+    entries;
+}
+
+fn runtime_tool(ctx, name) {
+    let path = ctx.tool_bin(name);
+    if path == "" { throw `toolchain provides no ${name}`; }
+    path;
+}
+
+fn static_archives(ctx) {
+    if ctx.metadata == () || ctx.metadata["c"] == () || ctx.metadata["c"]["static"] == () { return []; }
+    let archives = [];
+    for name in ctx.metadata["c"]["static"].keys() {
+        archives.push(ctx.metadata["c"]["static"][name]["lib"]);
+    }
+    archives;
+}
+
+fn linker_for(ctx) {    
     if ctx.linker != "" {
         return ctx.linker;
     }
@@ -158,6 +188,9 @@ fn compile_one(ctx, src, module_flags) {
     args.push(src);
     args.push("-o");
     args.push(obj);
+    for runtime in runtime_entries(ctx) {
+        if runtime["include"] != "" { args.push(runtime["include"]); }
+    }
 
     let outputs = [obj, depfile];
     if ctx.profile.coverage && !llvm {
@@ -171,7 +204,7 @@ fn compile_one(ctx, src, module_flags) {
         command: compiler,
         args: args,
         inputs: inputs,
-        execution_deps: module_deps,
+        execution_deps: module_deps + static_archives(ctx),
         outputs: outputs,
         compile_command: src,
         env: ctx.env,
@@ -199,7 +232,7 @@ fn archive_one(ctx, objs) {
     });
 }
 
-fn link_one(ctx, objs, exe_path) {
+fn link_one(ctx, objs, exe_dir, exe_path) {
     let linker = linker_for(ctx);
     let args = objs + ctx.dep_archives;
     if ctx.linker == "" {
@@ -208,25 +241,56 @@ fn link_one(ctx, objs, exe_path) {
     for flag in ctx.link_flags {
         args.push(flag);
     }
+    let archives = static_archives(ctx);
+    for archive in archives {
+        args.push(archive);
+    }
     for lib in ctx.system_libs {
         args.push("-l");
         args.push(lib);
     }
+    let runtimes = runtime_entries(ctx);
+    let staged = [];
+    for runtime in runtimes {
+        if runtime["libdir"] != "" {
+            args.push(`-L${runtime["libdir"]}`);
+            for lib in runtime["libs"] {
+                args.push("-l");
+                args.push(lib);
+            }
+            if runtime["libs"].len() > 0 { staged.push(runtime); }
+        }
+    }
+    if staged.len() > 0 { args.push(`-Wl,-rpath,$ORIGIN`); }
     args.push("-o");
     args.push(exe_path);
-
-    let inputs = [];
 
     ctx.action(#{
         name: `link ${ctx.label}`,
         command: linker,
         args: args,
-        inputs: inputs,
-        execution_deps: objs + ctx.dep_archives,
+        inputs: archives,
+        execution_deps: objs + ctx.dep_archives + archives,
         outputs: [exe_path],
         env: #{},
         toolchain_id: ctx.tool_id(),
     });
+
+    for runtime in staged {
+        for lib in runtime["libs"] {
+            let staged_path = `${exe_dir}/lib${lib}.so`;
+            ctx.action(#{
+                name: `stage ${runtime["name"]} for ${ctx.label}`,
+                command: runtime_tool(ctx, "cmake"),
+                args: ["-E", "copy", `${runtime["libdir"]}/lib${lib}.so`, staged_path],
+                inputs: [],
+                execution_deps: [],
+                outputs: [staged_path],
+                env: #{},
+                toolchain_id: ctx.tool_id(),
+            });
+        }
+    }
 }
 
 fn plan(ctx) { () }
@@ -283,7 +347,7 @@ fn build(ctx, plan) {
     let out_dir = if ctx.kind == "test" { "forge-out/test" } else { "forge-out/bin" };
     let exe = `${out_dir}/${ctx.profile.name}/${ctx.name}`;
 
-    link_one(ctx, objs, exe);
+    link_one(ctx, objs, out_dir + "/" + ctx.profile.name, exe);
 
     if ctx.kind == "test" {
         let test_env = ctx.env;

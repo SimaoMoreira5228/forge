@@ -430,6 +430,8 @@ impl<'a> Planner<'a> {
 		};
 		let tool_for_bin = tool.clone();
 		let tool_digest = tool_id(&tool);
+		let all_toolchains = self.ctx.toolchains.clone();
+		let dir_toolchains = all_toolchains.clone();
 
 		let hooks = CellHooks {
 			workspace: self.workspace_hooks(),
@@ -438,13 +440,23 @@ impl<'a> Planner<'a> {
 			}),
 			depfile_inputs: {
 				let workspace = self.ctx.workspace.unwrap_or(Path::new(".")).to_path_buf();
-				Box::new(move |path| depfile_inputs(&workspace, Path::new(path)))
+				let roots: Vec<PathBuf> = self.ctx.toolchains.values().map(|tool| tool.root.clone()).collect();
+				Box::new(move |path| depfile_inputs(&workspace, Path::new(path), &roots))
 			},
 			lib_path: Box::new(move |filename| lib_path(&profile_name, &pkg_slug, filename).to_string_lossy().into_owned()),
 			bin: Box::new(move |binary_name| {
 				tool_for_bin
 					.binary(binary_name)
 					.and_then(|p| tool_for_bin.reference(&p).ok())
+					.unwrap_or_default()
+			}),
+			tool_bin: Box::new(move |binary_name| {
+				crate::toolchain::resolve_tool_reference(&all_toolchains, binary_name).unwrap_or_default()
+			}),
+			toolchain_dir: Box::new(move |toolchain| {
+				dir_toolchains
+					.get(toolchain)
+					.map(|tool| format!("{}/{}", crate::toolchain::TOOLCHAIN_TOKEN, tool.id()))
 					.unwrap_or_default()
 			}),
 			tool_id: Box::new(move || tool_digest.clone()),
@@ -704,7 +716,7 @@ fn artifact_path(source: &Path, profile: &str, namespace: &str, category: &str) 
 	Ok(format!("forge-out/{category}/{profile}/{namespace}_{stem}_{suffix}"))
 }
 
-fn depfile_inputs(workspace: &Path, depfile: &Path) -> Result<Vec<String>, String> {
+fn depfile_inputs(workspace: &Path, depfile: &Path, toolchains: &[PathBuf]) -> Result<Vec<String>, String> {
 	let workspace = std::path::absolute(workspace).map_err(|e| e.to_string())?;
 	let path = workspace.join(depfile);
 	let text = match std::fs::read_to_string(&path) {
@@ -714,11 +726,15 @@ fn depfile_inputs(workspace: &Path, depfile: &Path) -> Result<Vec<String>, Strin
 	};
 	forge_core::depfile::parse(&text)
 		.into_iter()
-		.map(|input| depfile_input_path(&workspace, Path::new(&input)).map(|p| path_string(&p)))
+		.filter_map(|input| depfile_input_path(&workspace, Path::new(&input), toolchains).transpose())
+		.map(|result| result.map(|p| path_string(&p)))
 		.collect()
 }
 
-fn depfile_input_path(workspace: &Path, input: &Path) -> Result<PathBuf, String> {
+fn depfile_input_path(workspace: &Path, input: &Path, toolchains: &[PathBuf]) -> Result<Option<PathBuf>, String> {
+	if input.is_absolute() && toolchains.iter().any(|root| input.starts_with(root)) {
+		return Ok(None);
+	}
 	let relative = if let Ok(path) = input.strip_prefix("FORGE_EXEC_ROOT") {
 		path
 	} else if input.is_absolute() {
@@ -748,7 +764,7 @@ fn depfile_input_path(workspace: &Path, input: &Path) -> Result<PathBuf, String>
 	if normalized.as_os_str().is_empty() {
 		return Err(format!("depfile input is not a file path: {}", input.display()));
 	}
-	Ok(normalized)
+	Ok(Some(normalized))
 }
 
 #[cfg(test)]

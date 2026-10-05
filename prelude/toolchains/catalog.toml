@@ -153,3 +153,12 @@ url = "https://github.com/linux-test-project/lcov/releases/download/v{version}/l
 
 [toolchains.lcov.targets.darwin-aarch64]
 url = "https://github.com/linux-test-project/lcov/releases/download/v{version}/lcov-{version}.tar.gz"
+
+[toolchains.slint]
+default_version = "1.18.1"
+
+[toolchains.slint.targets.linux-x86_64]
+url = "https://github.com/slint-ui/slint/releases/download/v{version}/Slint-cpp-{version}-Linux-x86_64.tar.gz"
+
+[toolchains.slint.targets.linux-aarch64]
+url = "https://github.com/slint-ui/slint/releases/download/v{version}/Slint-cpp-{version}-Linux-arm64.tar.gz"
