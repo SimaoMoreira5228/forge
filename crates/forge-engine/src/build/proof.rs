@@ -4,7 +4,7 @@ use std::path::Path;
 use forge_diagnostics::{ForgeDiagnostic, codes};
 use serde::{Deserialize, Serialize};
 
-use crate::hasher;
+use crate::store::hasher;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionProof {

@@ -2,8 +2,8 @@ use std::ffi::c_void;
 use std::os::windows::io::AsRawHandle;
 use std::process::{Child, Command, Output, Stdio};
 
-use crate::confine::Policy;
-use crate::runner::Launch;
+use crate::execution::confinement::Policy;
+use crate::execution::runner::Launch;
 
 const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: i32 = 9;
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x0000_2000;

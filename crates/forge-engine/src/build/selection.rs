@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use forge_diagnostics::{ForgeDiagnostic, codes};
 
 use super::Prepared;
-use crate::planner::ActionDag;
+use crate::build::planner::ActionDag;
 
 pub(super) fn select_dag(prepared: &Prepared, dag: &ActionDag, expression: &str) -> Result<ActionDag, ForgeDiagnostic> {
 	let expr = forge_core::graph::query::parse(expression)?;

@@ -110,7 +110,7 @@ impl Materialized {
 			if self.confirm(workspace, &rel_file, &src.join(file), key) {
 				continue;
 			}
-			crate::publish::publish_file(&src.join(file), &dst.join(file))
+			crate::store::publish::publish_file(&src.join(file), &dst.join(file))
 				.map_err(|e| ForgeDiagnostic::io(&dst.join(file), e))?;
 			self.record(workspace, &rel_file, key);
 		}

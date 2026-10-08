@@ -6,9 +6,9 @@ use std::process::Command;
 
 #[cfg(unix)]
 use forge_core::Confinement;
-use forge_engine::confine::{self, Backend};
+use forge_engine::execution::confinement::{self, Backend};
 #[cfg(unix)]
-use forge_engine::runner::{self, Launch};
+use forge_engine::execution::runner::{self, Launch};
 
 #[cfg(unix)]
 fn scratch(name: &str) -> PathBuf {
@@ -42,7 +42,7 @@ fn reach_outside() -> bool {
 		workdir: root.clone(),
 	};
 	let confinement = Confinement::new(&root, vec![root.to_path_buf()]);
-	let policy = confine::Policy::of(&confinement, None, &launch.program);
+	let policy = confinement::Policy::of(&confinement, None, &launch.program);
 	let output = runner::spawn(&launch, None, &policy).expect("spawn the probe action");
 	assert!(
 		root.join("inside").exists(),
@@ -65,7 +65,7 @@ fn reach_outside() -> bool {
 
 #[test]
 fn the_active_backend_reports_exactly_what_it_enforces() {
-	let report = confine::active();
+	let report = confinement::active();
 	let rendered = report.renders();
 	assert!(rendered.contains(report.backend.name()), "{rendered}");
 	assert!(rendered.contains(std::env::consts::OS), "{rendered}");
@@ -99,13 +99,13 @@ fn the_cli_reports_the_same_backend_the_engine_chose() {
 		"forge confine failed: {text}{}",
 		String::from_utf8_lossy(&reported.stderr)
 	);
-	assert!(text.contains(confine::active().backend.name()), "{text}");
+	assert!(text.contains(confinement::active().backend.name()), "{text}");
 }
 
 #[cfg(unix)]
 #[test]
 fn a_real_action_never_reaches_outside_a_sandbox_the_report_calls_confined() {
-	let report = confine::active();
+	let report = confinement::active();
 	if !report.gates_paths {
 		return;
 	}
@@ -119,7 +119,7 @@ fn a_real_action_never_reaches_outside_a_sandbox_the_report_calls_confined() {
 #[cfg(all(unix, target_os = "linux"))]
 #[test]
 fn linux_selects_landlock_and_enforces_it() {
-	let report = confine::active();
+	let report = confinement::active();
 	assert_eq!(
 		report.backend,
 		Backend::Landlock,
@@ -137,7 +137,7 @@ fn linux_selects_landlock_and_enforces_it() {
 #[cfg(all(unix, target_os = "macos"))]
 #[test]
 fn macos_selects_seatbelt_and_enforces_it() {
-	let report = confine::active();
+	let report = confinement::active();
 	assert_eq!(
 		report.backend,
 		Backend::Seatbelt,
@@ -150,7 +150,7 @@ fn macos_selects_seatbelt_and_enforces_it() {
 #[cfg(target_os = "windows")]
 #[test]
 fn windows_selects_job_objects_and_claims_no_path_confinement() {
-	let report = confine::active();
+	let report = confinement::active();
 	assert_eq!(
 		report.backend,
 		Backend::JobObjects,
@@ -169,7 +169,7 @@ fn windows_selects_job_objects_and_claims_no_path_confinement() {
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
 #[test]
 fn this_platform_has_no_confinement_backend_at_all() {
-	let report = confine::active();
+	let report = confinement::active();
 	assert_eq!(report.backend, Backend::CopySandbox, "{}", report.renders());
 	assert!(!report.gates_paths, "{}", report.renders());
 	assert!(!report.gates_network, "{}", report.renders());

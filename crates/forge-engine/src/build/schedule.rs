@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use forge_diagnostics::ForgeDiagnostic;
 use parking_lot::{Condvar, Mutex};
 
-use crate::planner::ActionDag;
+use crate::build::planner::ActionDag;
 
 pub fn execute_dag<T: Send + Sync>(
 	dag: &ActionDag,

@@ -1,10 +1,14 @@
+pub mod db;
+pub mod materialized;
+pub mod registry;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use forge_core::OutputKind;
 use forge_diagnostics::{ForgeDiagnostic, codes};
 
-use crate::hasher;
+use crate::store::hasher;
 
 #[derive(Debug, Clone)]
 pub struct Cas {
@@ -56,9 +60,11 @@ impl Cas {
 			let src = dir.join(rel);
 			let dst = workspace.join(rel);
 			match kind {
-				OutputKind::File => crate::publish::publish_file(&src, &dst).map_err(|e| ForgeDiagnostic::io(&dst, e))?,
+				OutputKind::File => {
+					crate::store::publish::publish_file(&src, &dst).map_err(|e| ForgeDiagnostic::io(&dst, e))?
+				}
 				OutputKind::Directory => {
-					crate::publish::publish_tree(&src, &dst).map_err(|e| ForgeDiagnostic::io(&dst, e))?
+					crate::store::publish::publish_tree(&src, &dst).map_err(|e| ForgeDiagnostic::io(&dst, e))?
 				}
 			}
 		}

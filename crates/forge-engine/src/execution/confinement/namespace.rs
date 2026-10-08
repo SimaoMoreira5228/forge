@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use forge_core::WorkerMount;
 
-use crate::confine::Policy;
-use crate::runner::{Launch, base_command};
+use crate::execution::confinement::Policy;
+use crate::execution::runner::{Launch, base_command};
 
 pub fn spawn_mounted(launch: &Launch, mount: &WorkerMount) -> std::io::Result<Output> {
 	let mut command = base_command(launch);
@@ -19,7 +19,7 @@ pub fn spawn_mounted(launch: &Launch, mount: &WorkerMount) -> std::io::Result<Ou
 }
 
 pub fn spawn_landlocked(launch: &Launch, mount: Option<&WorkerMount>, policy: &Policy) -> std::io::Result<Output> {
-	let rules = crate::landlock::rules(policy);
+	let rules = crate::execution::confinement::landlock::rules(policy);
 	let call = match mount {
 		Some(mount) => Some(call_for(launch, mount)?),
 		None => None,

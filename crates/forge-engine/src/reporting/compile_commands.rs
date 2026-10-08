@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use forge_core::ActionSpec;
 use forge_diagnostics::ForgeDiagnostic;
 
-use crate::builder::Engine;
+use crate::build::Engine;
 use crate::toolchain::{ToolchainPaths, ToolchainStore};
 
 #[derive(serde::Serialize)]

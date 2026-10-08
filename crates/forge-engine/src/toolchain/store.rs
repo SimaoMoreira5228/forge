@@ -5,7 +5,7 @@ use forge_core::Catalog;
 use forge_diagnostics::{ForgeDiagnostic, codes};
 use forge_script::{ToolchainSelection, WorkspaceConfig};
 
-use crate::hasher;
+use crate::store::hasher;
 
 pub const EMBEDDED_CATALOG: &str = include_str!("../../../../prelude/toolchains/catalog.toml");
 

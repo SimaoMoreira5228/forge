@@ -5,9 +5,8 @@ use std::sync::Mutex;
 use forge_diagnostics::{ForgeDiagnostic, codes};
 use sha2::Digest;
 
-use crate::cas::Cas;
-use crate::hasher;
-use crate::store::Store;
+use crate::cache::Cas;
+use crate::store::{Store, hasher};
 
 pub struct Registry {
 	url: String,

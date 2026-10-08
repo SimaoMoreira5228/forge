@@ -11,7 +11,7 @@ use forge_cli::run_forge;
 use rust_toolchain::install_rust_toolchain;
 use rust_workspace::{build_and_run_rust, rust_workspace};
 
-fn assert_rustc_plan(dir: &Path, count: usize) -> forge_engine::planner::ActionDag {
+fn assert_rustc_plan(dir: &Path, count: usize) -> forge_engine::build::planner::ActionDag {
 	let (_, dag) = Engine::open(dir).plan_dag("debug").expect("plan direct-rustc actions");
 	assert_eq!(dag.specs.len(), count, "unexpected action plan: {dag:?}");
 	for spec in &dag.specs {

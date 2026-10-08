@@ -1,8 +1,12 @@
+pub mod hasher;
+pub mod lock;
+pub mod publish;
+
 use std::path::{Path, PathBuf};
 
 use forge_diagnostics::{ForgeDiagnostic, codes};
 
-use crate::lock::FileLock;
+use crate::store::lock::FileLock;
 
 pub const STORE_DIR_ENV: &str = "FORGE_STORE_DIR";
 

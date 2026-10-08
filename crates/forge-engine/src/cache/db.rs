@@ -5,10 +5,10 @@ use forge_diagnostics::{ForgeDiagnostic, codes};
 use rusqlite::Connection;
 
 const MIGRATIONS: &[(&str, &str)] = &[
-	("0001_initial", include_str!("../migrations/0001_initial.sql")),
-	("0002_feedback", include_str!("../migrations/0002_feedback.sql")),
-	("0003_test_stderr", include_str!("../migrations/0003_test_stderr.sql")),
-	("0004_telemetry", include_str!("../migrations/0004_telemetry.sql")),
+	("0001_initial", include_str!("../../migrations/0001_initial.sql")),
+	("0002_feedback", include_str!("../../migrations/0002_feedback.sql")),
+	("0003_test_stderr", include_str!("../../migrations/0003_test_stderr.sql")),
+	("0004_telemetry", include_str!("../../migrations/0004_telemetry.sql")),
 ];
 
 const FLUSH_INPUT_ROWS: usize = 4096;

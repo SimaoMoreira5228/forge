@@ -1,3 +1,11 @@
+#[cfg(target_os = "windows")]
+pub(super) mod job_object;
+#[cfg(target_os = "linux")]
+pub(super) mod landlock;
+#[cfg(target_os = "linux")]
+pub(super) mod namespace;
+pub(super) mod seatbelt;
+
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -150,10 +158,10 @@ fn detect() -> Report {
 
 #[cfg(target_os = "linux")]
 fn detect_linux() -> Report {
-	if !crate::namespace::probe_scratch() {
+	if !crate::execution::confinement::namespace::probe_scratch() {
 		return Report::copy_sandbox("user and mount namespaces are unavailable on this host");
 	}
-	match crate::landlock::probe() {
+	match crate::execution::confinement::landlock::probe() {
 		Some(abi) => Report::new(
 			Backend::Landlock,
 			true,
@@ -182,7 +190,7 @@ fn detect_seatbelt() -> Report {
 	if std::env::consts::OS != "macos" {
 		return Report::copy_sandbox("seatbelt is a macOS primitive");
 	}
-	match crate::seatbelt::probe() {
+	match crate::execution::confinement::seatbelt::probe() {
 		Ok(()) => Report::new(
 			Backend::Seatbelt,
 			true,
@@ -196,7 +204,7 @@ fn detect_seatbelt() -> Report {
 
 #[cfg(target_os = "windows")]
 fn detect_job_object() -> Report {
-	match crate::job_object::probe() {
+	match crate::execution::confinement::job_object::probe() {
 		Ok(()) => Report::new(
 			Backend::JobObjects,
 			false,

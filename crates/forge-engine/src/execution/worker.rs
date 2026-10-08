@@ -8,8 +8,8 @@ use std::time::Instant;
 use forge_core::{ActionSpec, Confinement, WorkRequest, WorkResponse, WorkerBinding};
 use parking_lot::Mutex;
 
-use crate::confine::Policy;
-use crate::runner::{self, ExecReport, Launch, SandboxRunner};
+use crate::execution::confinement::Policy;
+use crate::execution::runner::{self, ExecReport, Launch, SandboxRunner};
 use crate::toolchain::ToolchainPaths;
 
 pub const MAX_FRAME_BYTES: u64 = 256 * 1024 * 1024;
@@ -89,8 +89,8 @@ impl<'a> WorkerPool<'a> {
 				self.runner.record_stdout(spec, sandbox, &response.stdout);
 				ExecReport {
 					success: response.status == 0,
-					stdout_tail: crate::runner::output_tail(&response.stdout),
-					stderr_tail: crate::runner::output_tail(&response.stderr),
+					stdout_tail: crate::execution::runner::output_tail(&response.stdout),
+					stderr_tail: crate::execution::runner::output_tail(&response.stderr),
 					duration,
 				}
 			}

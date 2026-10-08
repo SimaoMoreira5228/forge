@@ -2,7 +2,7 @@ use std::ffi::CString;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use crate::confine::Policy;
+use crate::execution::confinement::Policy;
 
 const RULE_PATH_BENEATH: u32 = 1;
 const CREATE_RULESET_VERSION: u32 = 1;

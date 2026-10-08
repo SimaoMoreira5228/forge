@@ -6,7 +6,7 @@ use std::rc::Rc;
 use forge_diagnostics::{ForgeDiagnostic, codes};
 use forge_script::rhai_rt::{ResolutionContext, ScriptOutput, run_forge_rhai_resolve, unresolved_fetch};
 
-use crate::resolver_transport::ResolverTransport;
+use crate::resolution::transport::ResolverTransport;
 
 type Selection = BTreeMap<String, String>;
 

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use forge_core::ActionSpec;
 use forge_engine::Engine;
-use forge_engine::planner::ActionDag;
+use forge_engine::build::planner::ActionDag;
 
 mod forge_cli;
 mod rust_toolchain;

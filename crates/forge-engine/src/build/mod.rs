@@ -1,3 +1,9 @@
+pub mod planner;
+pub mod progress;
+pub mod proof;
+pub mod schedule;
+pub mod time_travel;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -8,15 +14,15 @@ use forge_script::discover_packages;
 use forge_script::register::{LoadedWorkspace, load_workspace_resolving};
 use forge_script::rhai_rt::ResolutionContext;
 
-use crate::cas::Cas;
-use crate::db::CacheDb;
-use crate::hasher;
-use crate::lock::FileLock;
-use crate::planner::{ActionDag, PlanContext, build_action_dag};
-use crate::runner::SandboxRunner;
-use crate::schedule::execute_dag;
+use crate::build::planner::{ActionDag, PlanContext, build_action_dag};
+use crate::build::schedule::execute_dag;
+use crate::cache::Cas;
+use crate::cache::db::CacheDb;
+use crate::execution::runner::SandboxRunner;
+use crate::execution::worker::WorkerPool;
+use crate::store::hasher;
+use crate::store::lock::FileLock;
 use crate::toolchain::{ResolvedToolchain, ToolchainPaths, ToolchainStore};
-use crate::worker::WorkerPool;
 
 pub struct Engine {
 	pub(crate) workspace: PathBuf,
@@ -82,9 +88,9 @@ impl Engine {
 		let config = forge_script::WorkspaceConfig::load(&self.workspace)?;
 		let store = crate::store::Store::open();
 		let transport = if offline {
-			crate::resolver_transport::ResolverTransport::offline(config.resolution.clone(), store)
+			crate::resolution::transport::ResolverTransport::offline(config.resolution.clone(), store)
 		} else {
-			crate::resolver_transport::ResolverTransport::new(config.resolution.clone(), store)
+			crate::resolution::transport::ResolverTransport::new(config.resolution.clone(), store)
 		};
 		self.prepare_with_context(config, Some(&transport))
 	}
@@ -92,7 +98,7 @@ impl Engine {
 	fn prepare_with_context(
 		&self,
 		config: forge_script::WorkspaceConfig,
-		transport: Option<&crate::resolver_transport::ResolverTransport>,
+		transport: Option<&crate::resolution::transport::ResolverTransport>,
 	) -> Result<Prepared, ForgeDiagnostic> {
 		let packages = discover_packages(&self.workspace, &config.discovery)?;
 		let platform = config.resolve_target()?;
@@ -123,7 +129,7 @@ impl Engine {
 			let targets: Vec<toml::Table> = decls.values().map(|decl| decl.metadata.clone()).collect();
 			for (cell, script) in cells.resolve_scripts() {
 				let cell_config = config.cell.get(cell).cloned().unwrap_or_default();
-				match crate::resolve_hooks::run(
+				match crate::resolution::hooks::run(
 					script,
 					&self.workspace,
 					&platform,
@@ -171,7 +177,7 @@ impl Engine {
 	pub(crate) fn plan_dag_locked(
 		&self,
 		profile_name: &str,
-		mut progress: Option<&crate::progress::Progress>,
+		mut progress: Option<&crate::build::progress::Progress>,
 	) -> Result<(Prepared, ActionDag), ForgeDiagnostic> {
 		if let Some(progress) = &mut progress {
 			progress.phase("Loading workspace files...");
@@ -226,13 +232,13 @@ impl Engine {
 		profile_name: &str,
 		selection: Option<&str>,
 		proof_path: &Path,
-	) -> Result<(usize, Vec<crate::proof::ReplayDivergence>), ForgeDiagnostic> {
+	) -> Result<(usize, Vec<crate::build::proof::ReplayDivergence>), ForgeDiagnostic> {
 		let _lock = self.exclusive_lock()?;
-		let recorded = crate::proof::Proof::load(proof_path)?;
+		let recorded = crate::build::proof::Proof::load(proof_path)?;
 		recorded.check_seal()?;
 		self.execute_locked(profile_name, true, selection, true)?;
-		let replayed = crate::proof::Proof::load(&self.out_dir().join("forge.proof"))?;
-		Ok((recorded.entries.len(), crate::proof::compare(&recorded, &replayed)))
+		let replayed = crate::build::proof::Proof::load(&self.out_dir().join("forge.proof"))?;
+		Ok((recorded.entries.len(), crate::build::proof::compare(&recorded, &replayed)))
 	}
 
 	pub fn coverage(&self, output: Option<&str>, selection: Option<&str>) -> Result<(), ForgeDiagnostic> {
@@ -249,7 +255,7 @@ impl Engine {
 			ToolchainStore::load(&self.workspace, forge_script::WorkspaceConfig::load(&self.workspace)?)?.resolve_all()?;
 
 		eprintln!("coverage: collecting profiles...");
-		let report = crate::coverage::collect(&self.workspace, &out_dir, &toolchains, None, "coverage")?;
+		let report = crate::reporting::coverage::collect(&self.workspace, &out_dir, &toolchains, None, "coverage")?;
 
 		match output {
 			Some(path) if path.ends_with(".info") || path == "lcov" => match &report.lcov_path {
@@ -279,14 +285,14 @@ impl Engine {
 		selection: Option<&str>,
 		force: bool,
 	) -> Result<BuildOutcome, ForgeDiagnostic> {
-		let confinement = crate::confine::active();
+		let confinement = crate::execution::confinement::active();
 		if !confinement.gates_paths {
 			eprintln!(
 				"confinement: {} — run `forge confine` for the full report",
 				confinement.backend.name()
 			);
 		}
-		let mut progress = crate::progress::Progress::new(0, profile_name);
+		let mut progress = crate::build::progress::Progress::new(0, profile_name);
 		progress.header(env!("CARGO_PKG_VERSION"));
 		progress.phase("Loading workspace...");
 		progress.phase("Resolving graph and dependencies...");
@@ -299,10 +305,14 @@ impl Engine {
 
 		let cas = Cas::open();
 		let store = crate::store::Store::open();
-		let registry = prepared.config.registry_url.clone().map(crate::registry::Registry::open);
+		let registry = prepared
+			.config
+			.registry_url
+			.clone()
+			.map(crate::cache::registry::Registry::open);
 		let lease = store.lock_shared("lease")?;
 		let db = CacheDb::open(&self.out_dir())?;
-		let materialized = crate::materialized::Materialized::load(&self.out_dir());
+		let materialized = crate::cache::materialized::Materialized::load(&self.out_dir());
 		let runner = SandboxRunner::new(&self.workspace, &self.out_dir());
 
 		if !dynamic_components(&prepared.decls).is_empty() {
@@ -394,10 +404,10 @@ impl Engine {
 			}
 		}
 
-		let entries: Vec<crate::proof::ActionProof> = exec.proofs.into_inner().into_iter().flatten().collect();
+		let entries: Vec<crate::build::proof::ActionProof> = exec.proofs.into_inner().into_iter().flatten().collect();
 		if !entries.is_empty() {
-			crate::proof::Proof::seal(entries)?.write(&self.out_dir().join("forge.proof"))?;
-			crate::time_travel::record_revision(&self.workspace, &self.out_dir())?;
+			crate::build::proof::Proof::seal(entries)?.write(&self.out_dir().join("forge.proof"))?;
+			crate::build::time_travel::record_revision(&self.workspace, &self.out_dir())?;
 		}
 
 		let mut outcome = exec.outcome.into_inner();
@@ -430,22 +440,22 @@ struct ExecContext<'a> {
 	record_proofs: bool,
 	force: bool,
 	store: &'a crate::store::Store,
-	registry: Option<&'a crate::registry::Registry>,
+	registry: Option<&'a crate::cache::registry::Registry>,
 	dynamic: &'a std::collections::BTreeSet<String>,
 	workspace: PathBuf,
 	specs: &'a [ActionSpec],
 	cas: &'a Cas,
 	db: &'a CacheDb,
-	materialized: &'a crate::materialized::Materialized,
+	materialized: &'a crate::cache::materialized::Materialized,
 	runner: &'a SandboxRunner,
 	workers: &'a WorkerPool<'a>,
 	toolchains_paths: &'a ToolchainPaths,
 	toolchains: &'a BTreeMap<String, ResolvedToolchain>,
 	profile_fingerprint: String,
 	outcome: parking_lot::Mutex<BuildOutcome>,
-	progress: &'a crate::progress::Progress,
+	progress: &'a crate::build::progress::Progress,
 	hash_cache: hasher::HashCache,
-	proofs: parking_lot::Mutex<Vec<Option<crate::proof::ActionProof>>>,
+	proofs: parking_lot::Mutex<Vec<Option<crate::build::proof::ActionProof>>>,
 }
 
 impl ExecContext<'_> {
@@ -636,7 +646,7 @@ impl ExecContext<'_> {
 		if !self.record_proofs || spec.is_test {
 			return Ok(());
 		}
-		let proof = crate::proof::ActionProof {
+		let proof = crate::build::proof::ActionProof {
 			action: spec.name.clone(),
 			component: spec.component.clone(),
 			key: key.to_string(),

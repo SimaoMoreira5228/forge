@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use forge_core::{BuildGraph, ConfigTransition};
 use forge_diagnostics::{ForgeDiagnostic, codes};
 
-use crate::builder::Engine;
-use crate::hasher;
-use crate::planner::{PlanContext, build_action_dag};
+use crate::build::Engine;
+use crate::build::planner::{PlanContext, build_action_dag};
+use crate::store::hasher;
 
 pub struct Explanation {
 	pub action: String,
@@ -52,14 +52,14 @@ impl Engine {
 		let label = resolve_label(&prepared.graph, target)?;
 		let component_label = prepared.graph.component(label).label.to_string();
 
-		let db = crate::db::CacheDb::open(&self.out_dir())?;
+		let db = crate::cache::db::CacheDb::open(&self.out_dir())?;
 		let hash_cache = hasher::HashCache::new();
 		let mut explanations = Vec::new();
 		for spec in dag.specs.iter().filter(|s| s.component == component_label) {
 			let hash_inputs = spec.inputs.iter().chain(&spec.execution_deps).cloned().collect::<Vec<_>>();
 			let input_hashes = hasher::hash_inputs(&self.workspace, &hash_inputs, &hash_cache)
 				.map_err(|e| ForgeDiagnostic::error(codes::inputs::MISSING_INPUT, e.to_string()))?;
-			let current_key = super::builder::compose_key(spec, &input_hashes, &profile.fingerprint(), &toolchains);
+			let current_key = crate::build::compose_key(spec, &input_hashes, &profile.fingerprint(), &toolchains);
 
 			let state = match db.latest_action_key(spec.component.as_str(), spec.name.as_str()) {
 				None => ActionState::NeverBuilt,

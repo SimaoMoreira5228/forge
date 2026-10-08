@@ -189,18 +189,20 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 							.with_help("supported: junit:<file.xml>"));
 					}
 				};
-				let db = forge_engine::db::CacheDb::open(&workspace.join("forge-out"))?;
-				let cases: Vec<forge_engine::junit::JunitCase> = db
+				let db = forge_engine::cache::db::CacheDb::open(&workspace.join("forge-out"))?;
+				let cases: Vec<forge_engine::reporting::junit::JunitCase> = db
 					.latest_test_rows()
 					.into_iter()
-					.map(|(component, verdict, duration_ms, stderr)| forge_engine::junit::JunitCase {
-						component,
-						verdict,
-						duration_ms,
-						stderr,
-					})
+					.map(
+						|(component, verdict, duration_ms, stderr)| forge_engine::reporting::junit::JunitCase {
+							component,
+							verdict,
+							duration_ms,
+							stderr,
+						},
+					)
 					.collect();
-				std::fs::write(path, forge_engine::junit::junit_xml(&cases))
+				std::fs::write(path, forge_engine::reporting::junit::junit_xml(&cases))
 					.map_err(|e| ForgeDiagnostic::error(8, format!("{path}: {e}")))?;
 			}
 
@@ -210,7 +212,7 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 				outcome.executed, outcome.test_cache_hits
 			);
 			if flake_report {
-				let db = forge_engine::db::CacheDb::open(&workspace.join("forge-out"))?;
+				let db = forge_engine::cache::db::CacheDb::open(&workspace.join("forge-out"))?;
 				println!("\ncomponent                          passed/total   rate");
 				for (component, passed, total) in db.flake_report() {
 					let flaky = passed > 0 && passed < total;
@@ -244,7 +246,7 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 
 		Command::Explain { target, profile } => {
 			let explanations = Engine::open(&workspace).explain(&target, &profile)?;
-			print!("{}", forge_engine::explain::render(&explanations));
+			print!("{}", forge_engine::reporting::explain::render(&explanations));
 			Ok(())
 		}
 
@@ -255,17 +257,20 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 			let parsed = forge_core::graph::query::parse(&expr)?;
 			let ids = forge_core::graph::query::evaluate(&graph, &parsed)?;
 			let format = match output.as_str() {
-				"json" => forge_engine::query_output::OutputFormat::Json,
-				"dot" => forge_engine::query_output::OutputFormat::Dot,
-				"count" => forge_engine::query_output::OutputFormat::Count,
-				_ => forge_engine::query_output::OutputFormat::Label,
+				"json" => forge_engine::reporting::query::OutputFormat::Json,
+				"dot" => forge_engine::reporting::query::OutputFormat::Dot,
+				"count" => forge_engine::reporting::query::OutputFormat::Count,
+				_ => forge_engine::reporting::query::OutputFormat::Label,
 			};
-			print!("{}", forge_engine::query_output::format_results(&graph, &ids, format, &expr));
+			print!(
+				"{}",
+				forge_engine::reporting::query::format_results(&graph, &ids, format, &expr)
+			);
 			Ok(())
 		}
 
 		Command::Stats { limit } => {
-			let db = forge_engine::db::CacheDb::open(&workspace.join("forge-out"))?;
+			let db = forge_engine::cache::db::CacheDb::open(&workspace.join("forge-out"))?;
 
 			let slowest = db.slowest_actions(limit);
 			if !slowest.is_empty() {
@@ -301,7 +306,7 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 		}
 
 		Command::Confine => {
-			print!("{}", forge_engine::confine::active().renders());
+			print!("{}", forge_engine::execution::confinement::active().renders());
 			Ok(())
 		}
 
@@ -341,7 +346,7 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 				println!("removed forge-out/cas");
 			}
 			if test {
-				forge_engine::db::CacheDb::open(&workspace.join("forge-out"))?.wipe_test_results();
+				forge_engine::cache::db::CacheDb::open(&workspace.join("forge-out"))?.wipe_test_results();
 				println!("cleared test verdict cache");
 			}
 			Ok(())
@@ -368,7 +373,7 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 		Command::TimeTravel { to, proof } => {
 			let path = match (to, proof) {
 				(_, Some(path)) => workspace.join(path),
-				(Some(revision), None) => forge_engine::time_travel::revision_proof_path(&workspace, &revision)?,
+				(Some(revision), None) => forge_engine::build::time_travel::revision_proof_path(&workspace, &revision)?,
 				(None, None) => {
 					return Err(ForgeDiagnostic::error(
 						8,
@@ -403,7 +408,7 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 
 		Command::Verify { proof } => {
 			let path = workspace.join(proof);
-			let proof = forge_engine::proof::Proof::load(&path)?;
+			let proof = forge_engine::build::proof::Proof::load(&path)?;
 			let divergences = proof.verify(&workspace)?;
 			if divergences.is_empty() {
 				println!("proof verified: {} actions", proof.entries.len());
@@ -494,7 +499,7 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 		Command::Worker => {
 			let stdin = std::io::stdin();
 			let mut stdout = std::io::stdout();
-			forge_engine::worker::serve(&mut stdin.lock(), &mut stdout).map_err(|e| ForgeDiagnostic::error(8, e))
+			forge_engine::execution::worker::serve(&mut stdin.lock(), &mut stdout).map_err(|e| ForgeDiagnostic::error(8, e))
 		}
 	}
 }

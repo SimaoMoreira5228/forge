@@ -59,7 +59,10 @@ fn planning_depfile_inputs_uses_engine_workspace_not_cwd() {
 	assert_eq!(compile.inputs, expected);
 	assert!(!dir.join("unusual.schema").exists());
 	assert!(!dir.join("forge-out/bin/debug/app").exists());
-	assert!(forge_engine::hasher::hash_inputs(&dir, &compile.inputs, &forge_engine::hasher::HashCache::default()).is_err());
+	assert!(
+		forge_engine::store::hasher::hash_inputs(&dir, &compile.inputs, &forge_engine::store::hasher::HashCache::default())
+			.is_err()
+	);
 	std::fs::remove_file(dir.join(depfile)).unwrap();
 	std::fs::create_dir(dir.join(depfile)).unwrap();
 	let error = engine.plan_dag("debug").err().expect("directory depfile must fail planning");

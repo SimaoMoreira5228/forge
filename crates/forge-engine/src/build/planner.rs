@@ -11,8 +11,8 @@ use forge_script::cells::{
 	ActionDecl, CellHooks, CellPlan, CellSession, ComponentView, FetchedSource, ProfileView, WorkspaceHooks, lower, plan,
 };
 
-use crate::hasher;
 use crate::std_cells::StdCells;
+use crate::store::hasher;
 use crate::toolchain::ResolvedToolchain;
 
 #[derive(Debug, Default)]
@@ -52,7 +52,7 @@ pub struct PlanContext<'a> {
 	pub cell_config: &'a BTreeMap<String, toml::Table>,
 	pub workspace: Option<&'a Path>,
 	pub fetched_sources: &'a [FetchedSource],
-	pub progress: Option<&'a crate::progress::Progress>,
+	pub progress: Option<&'a crate::build::progress::Progress>,
 }
 
 pub type DeclMap = BTreeMap<String, TargetDecl>;

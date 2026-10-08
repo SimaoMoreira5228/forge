@@ -6,7 +6,7 @@ use std::time::Instant;
 use forge_core::{ActionSpec, Confinement, EnvironmentFile, OutputKind, WorkRequest, WorkerMount};
 use forge_diagnostics::{ForgeDiagnostic, codes};
 
-use crate::confine::Policy;
+use crate::execution::confinement::Policy;
 use crate::toolchain::ToolchainPaths;
 
 pub struct SandboxRunner {
@@ -51,7 +51,7 @@ impl SandboxRunner {
 		Self {
 			workspace: workspace.to_path_buf(),
 			out_prefix: out_dir.strip_prefix(workspace).ok().map(Path::to_path_buf),
-			isolated: crate::confine::mounts_sandbox(),
+			isolated: crate::execution::confinement::mounts_sandbox(),
 			sandbox_root,
 			exec_root,
 		}
@@ -245,10 +245,10 @@ impl SandboxRunner {
 			let dst = self.workspace.join(rel);
 			match kind {
 				OutputKind::File => {
-					crate::publish::publish_file(&src, &dst).map_err(|e| io_err("publish output", &dst, e))?
+					crate::store::publish::publish_file(&src, &dst).map_err(|e| io_err("publish output", &dst, e))?
 				}
 				OutputKind::Directory => {
-					crate::publish::publish_tree(&src, &dst).map_err(|e| io_err("publish output", &dst, e))?
+					crate::store::publish::publish_tree(&src, &dst).map_err(|e| io_err("publish output", &dst, e))?
 				}
 			}
 		}
@@ -277,24 +277,26 @@ pub fn spawn(launch: &Launch, mount: Option<&WorkerMount>, policy: &Policy) -> s
 fn spawn_once(launch: &Launch, mount: Option<&WorkerMount>, policy: &Policy) -> std::io::Result<Output> {
 	#[cfg(not(target_os = "linux"))]
 	let _ = mount;
-	match crate::confine::active().backend {
-		crate::confine::Backend::CopySandbox => spawn_plain(launch),
+	match crate::execution::confinement::active().backend {
+		crate::execution::confinement::Backend::CopySandbox => spawn_plain(launch),
 		#[cfg(target_os = "linux")]
-		crate::confine::Backend::Landlock => crate::namespace::spawn_landlocked(launch, mount, policy),
+		crate::execution::confinement::Backend::Landlock => {
+			crate::execution::confinement::namespace::spawn_landlocked(launch, mount, policy)
+		}
 		#[cfg(target_os = "linux")]
-		crate::confine::Backend::Namespaces => match mount {
-			Some(mount) => crate::namespace::spawn_mounted(launch, mount),
+		crate::execution::confinement::Backend::Namespaces => match mount {
+			Some(mount) => crate::execution::confinement::namespace::spawn_mounted(launch, mount),
 			None => spawn_plain(launch),
 		},
-		crate::confine::Backend::Seatbelt => crate::seatbelt::spawn(launch, policy),
+		crate::execution::confinement::Backend::Seatbelt => crate::execution::confinement::seatbelt::spawn(launch, policy),
 		#[cfg(target_os = "windows")]
-		crate::confine::Backend::JobObjects => crate::job_object::spawn(launch, policy),
+		crate::execution::confinement::Backend::JobObjects => crate::execution::confinement::job_object::spawn(launch, policy),
 		#[cfg(not(target_os = "linux"))]
-		crate::confine::Backend::Landlock | crate::confine::Backend::Namespaces => {
+		crate::execution::confinement::Backend::Landlock | crate::execution::confinement::Backend::Namespaces => {
 			unreachable!("landlock and namespaces are only ever detected on linux")
 		}
 		#[cfg(not(target_os = "windows"))]
-		crate::confine::Backend::JobObjects => unreachable!("job objects are only ever detected on windows"),
+		crate::execution::confinement::Backend::JobObjects => unreachable!("job objects are only ever detected on windows"),
 	}
 }
 

@@ -4,9 +4,9 @@ use std::process::Command;
 use forge_core::OutputKind;
 use forge_diagnostics::{ForgeDiagnostic, codes};
 
-use crate::builder::Engine;
-use crate::cas::Cas;
-use crate::proof::Proof;
+use crate::build::Engine;
+use crate::build::proof::Proof;
+use crate::cache::Cas;
 
 impl Engine {
 	pub fn time_travel(&self, proof_path: &Path) -> Result<(usize, usize), ForgeDiagnostic> {

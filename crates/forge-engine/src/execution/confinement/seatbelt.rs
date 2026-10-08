@@ -2,8 +2,8 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::confine::Policy;
-use crate::runner::Launch;
+use crate::execution::confinement::Policy;
+use crate::execution::runner::Launch;
 
 pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 

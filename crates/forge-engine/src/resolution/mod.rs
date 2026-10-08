@@ -1,9 +1,13 @@
+pub(crate) mod hooks;
+pub mod sources;
+pub(crate) mod transport;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
 use forge_diagnostics::ForgeDiagnostic;
 
-use crate::builder::{Engine, Prepared};
+use crate::build::{Engine, Prepared};
 
 fn validate_lock(prepared: &Prepared, lock: &forge_core::resolver::ForgeLock) -> Result<(), ForgeDiagnostic> {
 	if lock.version != 1 {
@@ -155,7 +159,7 @@ impl Engine {
 		}
 		let store = crate::store::Store::open();
 		let _lease = store.lock_shared("lease")?;
-		let store = crate::source_store::SourceStore::with_store(
+		let store = crate::resolution::sources::SourceStore::with_store(
 			&self.workspace,
 			store,
 			prepared.config.source_mirrors.clone(),
@@ -193,7 +197,7 @@ impl Engine {
 					None,
 				),
 			};
-			let fetched = store.fetch(&crate::source_store::SourcePackage {
+			let fetched = store.fetch(&crate::resolution::sources::SourcePackage {
 				name: package.name.clone(),
 				version: package.version.clone(),
 				url,
