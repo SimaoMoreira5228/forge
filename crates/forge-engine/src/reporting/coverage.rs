@@ -1,7 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use forge_core::toolchain::catalog::{CoverageBackend, CoverageCommand, CoverageFormat};
+use forge_core::{ActionSpec, OutputDeclaration};
 use forge_diagnostics::ForgeDiagnostic;
 
 use crate::toolchain::resolve_tool_path;
@@ -21,16 +22,37 @@ pub fn collect(
 	out_dir: &Path,
 	toolchains: &BTreeMap<String, ResolvedToolchain>,
 	compiler_hint: Option<&str>,
-	profile: &str,
+	specs: &[ActionSpec],
 ) -> Result<CoverageReport, ForgeDiagnostic> {
+	let compilers: BTreeSet<&str> = specs
+		.iter()
+		.filter_map(|spec| spec.toolchain_id.as_deref())
+		.filter_map(|id| id.split('@').next())
+		.filter(|name| toolchains.get(*name).is_some_and(|tool| tool.coverage.is_some()))
+		.collect();
+	if compiler_hint.is_none() && compilers.len() > 1 {
+		return Err(ForgeDiagnostic::error(
+			8,
+			"selected actions use multiple coverage backends; select targets using one backend",
+		));
+	}
+	let compiler_hint = compiler_hint.or_else(|| compilers.first().copied());
 	let backend = select_backend(toolchains, compiler_hint)
 		.ok_or_else(|| ForgeDiagnostic::error(8, "no configured toolchain declares a coverage backend"))?;
 	let work = out_dir.join("coverage");
+	if work.exists() {
+		std::fs::remove_dir_all(&work).map_err(|e| ForgeDiagnostic::io(&work, e))?;
+	}
 	std::fs::create_dir_all(&work).map_err(|e| ForgeDiagnostic::error(8, format!("create {}: {e}", work.display())))?;
 
+	let selected = declared_files(workspace, specs.iter().flat_map(|spec| &spec.outputs));
 	let mut raws = Vec::new();
-	for file in collect_extension(out_dir, &backend.raw_extension) {
-		raws.push(copy_into(&file, &work)?);
+	for file in selected
+		.iter()
+		.filter(|path| path.extension().is_some_and(|e| e == backend.raw_extension.as_str()))
+	{
+		let group = work.join(blake3::hash(file.to_string_lossy().as_bytes()).to_hex().as_str());
+		raws.push(copy_into(file, &group)?);
 	}
 	if raws.is_empty() {
 		return Err(ForgeDiagnostic::error(
@@ -39,8 +61,15 @@ pub fn collect(
 		));
 	}
 	for companion in &backend.companions {
-		for file in collect_extension(out_dir, companion) {
-			copy_into(&file, &work)?;
+		for file in selected
+			.iter()
+			.filter(|path| path.extension().is_some_and(|e| e == companion.as_str()))
+		{
+			for raw in &raws {
+				if raw.file_stem() == file.file_stem() {
+					copy_into(file, raw.parent().expect("collected raw has a parent"))?;
+				}
+			}
 		}
 	}
 
@@ -53,7 +82,14 @@ pub fn collect(
 			vec![raws.clone()]
 		};
 		let objects = if command.args.iter().any(|arg| arg == "{objects}") {
-			instrumented_objects(out_dir, profile)
+			selected
+				.iter()
+				.filter(|path| {
+					path.starts_with(out_dir.join("bin").join("coverage"))
+						|| path.starts_with(out_dir.join("test").join("coverage"))
+				})
+				.cloned()
+				.collect()
 		} else {
 			Vec::new()
 		};
@@ -82,7 +118,7 @@ pub fn collect(
 			})
 		}
 		CoverageFormat::Gcov => {
-			let files = collect_extension(workspace, "gcov");
+			let files = collect_extension(&work, "gcov");
 			let (lines_found, lines_covered) = gcov_summary(&files);
 			Ok(CoverageReport {
 				lines_found,
@@ -129,18 +165,38 @@ fn run_command(
 	work: &Path,
 	workspace: &Path,
 ) -> Result<Option<PathBuf>, ForgeDiagnostic> {
+	let raw_name = raws
+		.first()
+		.and_then(|raw| raw.file_name())
+		.unwrap_or_default()
+		.to_string_lossy();
+	let raw_dir = raws.first().and_then(|raw| raw.parent()).unwrap_or(work).to_string_lossy();
+	let expand = |template: &str| {
+		substitute(template, work, workspace)
+			.replace("{raw_name}", &raw_name)
+			.replace("{raw_dir}", &raw_dir)
+	};
 	let cwd = command
 		.cwd
 		.as_deref()
-		.map(|dir| substitute(dir, work, workspace))
+		.map(expand)
 		.map_or_else(|| workspace.to_path_buf(), PathBuf::from);
 	let args: Vec<String> = command
 		.args
 		.iter()
 		.flat_map(|arg| match arg.as_str() {
 			"{raw}" => raws.iter().map(|raw| raw.to_string_lossy().into_owned()).collect(),
-			"{objects}" => objects.iter().map(|obj| obj.to_string_lossy().into_owned()).collect(),
-			_ => vec![substitute(arg, work, workspace)],
+			"{objects}" => objects
+				.iter()
+				.flat_map(|obj| {
+					command
+						.object_flag
+						.iter()
+						.cloned()
+						.chain(std::iter::once(obj.to_string_lossy().into_owned()))
+				})
+				.collect(),
+			_ => vec![expand(arg)],
 		})
 		.collect();
 	let mut process = std::process::Command::new(tool);
@@ -157,7 +213,7 @@ fn run_command(
 	let Some(template) = &command.stdout else {
 		return Ok(None);
 	};
-	let path = PathBuf::from(substitute(template, work, workspace));
+	let path = PathBuf::from(expand(template));
 	std::fs::write(&path, &output.stdout)
 		.map_err(|e| ForgeDiagnostic::error(8, format!("write {}: {e}", path.display())))?;
 	Ok(Some(path))
@@ -177,23 +233,33 @@ fn substitute(template: &str, work: &Path, workspace: &Path) -> String {
 }
 
 fn copy_into(file: &Path, work: &Path) -> Result<PathBuf, ForgeDiagnostic> {
+	std::fs::create_dir_all(work).map_err(|e| ForgeDiagnostic::io(work, e))?;
 	let name = file.file_name().unwrap_or_default();
 	let destination = work.join(name);
 	if destination != file {
+		if destination.exists() {
+			return Err(ForgeDiagnostic::error(
+				8,
+				format!("coverage artifacts share the filename `{}`", name.to_string_lossy()),
+			));
+		}
 		std::fs::copy(file, &destination)
 			.map_err(|e| ForgeDiagnostic::error(8, format!("collect {}: {e}", file.display())))?;
 	}
 	Ok(destination)
 }
 
-fn instrumented_objects(out_dir: &Path, profile: &str) -> Vec<PathBuf> {
-	let mut objects = Vec::new();
-	for root in ["bin", "test"] {
-		for file in collect_extension(&out_dir.join(root).join(profile), "") {
-			objects.push(file);
+fn declared_files<'a>(workspace: &Path, outputs: impl Iterator<Item = &'a OutputDeclaration>) -> BTreeSet<PathBuf> {
+	let mut files = BTreeSet::new();
+	for output in outputs {
+		let path = workspace.join(&output.path);
+		if path.is_dir() {
+			files.extend(collect_extension(&path, ""));
+		} else if path.is_file() {
+			files.insert(path);
 		}
 	}
-	objects
+	files
 }
 
 fn collect_extension(dir: &Path, extension: &str) -> Vec<PathBuf> {
@@ -217,28 +283,32 @@ fn collect_into(dir: &Path, extension: &str, files: &mut Vec<PathBuf>) {
 }
 
 fn gcov_summary(files: &[PathBuf]) -> (usize, usize) {
-	let mut found = 0;
-	let mut covered = 0;
+	let mut lines = BTreeMap::<(String, u64), bool>::new();
 	for path in files {
 		let Ok(text) = std::fs::read_to_string(path) else {
 			continue;
 		};
+		let mut source = path.to_string_lossy().into_owned();
 		for line in text.lines() {
-			let Some((count, _)) = line.split_once(':') else {
+			let mut fields = line.splitn(3, ':');
+			let count = fields.next().unwrap_or_default().trim();
+			let number = fields.next().and_then(|n| n.trim().parse::<u64>().ok());
+			let contents = fields.next().unwrap_or_default();
+			if let Some(name) = contents.strip_prefix("Source:") {
+				source = name.to_string();
+				continue;
+			}
+			let Some(number) = number.filter(|n| *n > 0) else {
 				continue;
 			};
-			let count = count.trim();
 			if count.is_empty() || count == "-" {
 				continue;
 			}
-			found += 1;
-			let executed = !count.starts_with("#####") && !count.starts_with("=====");
-			if executed && count.trim_end_matches('*').parse::<u64>().is_ok_and(|value| value > 0) {
-				covered += 1;
-			}
+			let executed = count.trim_end_matches('*').parse::<u64>().is_ok_and(|value| value > 0);
+			*lines.entry((source.clone(), number)).or_default() |= executed;
 		}
 	}
-	(found, covered)
+	(lines.len(), lines.values().filter(|executed| **executed).count())
 }
 
 fn parse_lcov(text: &str, found_tag: &str, covered_tag: &str) -> (usize, usize) {
@@ -288,6 +358,7 @@ mod tests {
 			commands: vec![forge_core::toolchain::catalog::CoverageCommand {
 				tool: "fakecov".into(),
 				args: vec![],
+				object_flag: None,
 				per_raw: false,
 				stdout: Some("{work}/coverage.info".into()),
 				cwd: None,
@@ -307,7 +378,38 @@ mod tests {
 			},
 		)]);
 
-		let report = collect(&workspace, &out_dir, &toolchains, Some("fake"), "coverage").unwrap();
+		let outputs = vec![OutputDeclaration {
+			path: out_dir.join("run.raw"),
+			kind: forge_core::OutputKind::File,
+		}];
+		let files = declared_files(&workspace, outputs.iter());
+		assert_eq!(files, BTreeSet::from([out_dir.join("run.raw")]));
+		let specs = vec![ActionSpec {
+			name: "coverage".into(),
+			component: "//:coverage".into(),
+			configuration: forge_core::ConfigTransition::Target,
+			command: String::new(),
+			args: vec![],
+			inputs: vec![],
+			execution_deps: vec![],
+			outputs,
+			workdir: None,
+			is_test: true,
+			stdout: None,
+			compile_command: None,
+			environment_files: vec![],
+			argument_files: vec![],
+			env: BTreeMap::new(),
+			toolchain_ids: vec![],
+			toolchain_id: None,
+			worker: None,
+		}];
+		std::fs::write(out_dir.join("unselected.raw"), b"unselected").unwrap();
+		std::fs::create_dir_all(out_dir.join("coverage")).unwrap();
+		std::fs::write(out_dir.join("coverage/stale.raw"), b"stale").unwrap();
+		let report = collect(&workspace, &out_dir, &toolchains, Some("fake"), &specs).unwrap();
+		assert!(!out_dir.join("coverage/unselected.raw").exists());
+		assert!(!out_dir.join("coverage/stale.raw").exists());
 		assert_eq!((report.lines_found, report.lines_covered), (10, 7));
 		assert_eq!((report.functions_found, report.functions_covered), (2, 1));
 		assert!(report.lcov_path.unwrap().is_file());

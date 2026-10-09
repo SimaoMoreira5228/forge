@@ -146,7 +146,7 @@ enum DepsAction {
 
 fn main() {
 	if let Err(e) = dispatch() {
-		eprintln!("{e}");
+		eprintln!("{:?}", miette::Report::new(e));
 		std::process::exit(1);
 	}
 }

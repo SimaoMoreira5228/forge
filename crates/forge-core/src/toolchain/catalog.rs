@@ -34,6 +34,7 @@ pub struct CoverageBackend {
 pub struct CoverageCommand {
 	pub tool: String,
 	pub args: Vec<String>,
+	pub object_flag: Option<String>,
 	pub per_raw: bool,
 	pub stdout: Option<String>,
 	pub cwd: Option<String>,
@@ -124,6 +125,8 @@ struct RawCoverageCommand {
 	#[serde(default)]
 	args: Vec<String>,
 	#[serde(default)]
+	object_flag: Option<String>,
+	#[serde(default)]
 	per_raw: bool,
 	#[serde(default)]
 	stdout: Option<String>,
@@ -151,6 +154,7 @@ fn parse_coverage(coverage: Option<RawCoverage>) -> Result<Option<CoverageBacken
 			.map(|command| CoverageCommand {
 				tool: command.tool,
 				args: command.args,
+				object_flag: command.object_flag,
 				per_raw: command.per_raw,
 				stdout: command.stdout,
 				cwd: command.cwd,

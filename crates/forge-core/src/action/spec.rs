@@ -52,6 +52,7 @@ pub struct ActionSpec {
 	pub environment_files: Vec<EnvironmentFile>,
 	pub argument_files: Vec<ArgumentFile>,
 	pub env: BTreeMap<String, String>,
+	pub toolchain_ids: Vec<String>,
 	pub toolchain_id: Option<String>,
 	pub worker: Option<WorkerBinding>,
 }
@@ -107,6 +108,10 @@ impl ActionSpec {
 		for (k, v) in &self.env {
 			put(&mut h, k);
 			put(&mut h, v);
+		}
+		h.update(&(self.toolchain_ids.len() as u64).to_le_bytes());
+		for id in &self.toolchain_ids {
+			put(&mut h, id);
 		}
 		put_opt(&mut h, self.toolchain_id.as_deref());
 		if let Some(binding) = &self.worker {
@@ -165,6 +170,7 @@ mod tests {
 			environment_files: Vec::new(),
 			argument_files: Vec::new(),
 			env: BTreeMap::from([("CFLAGS".into(), "-O2".into())]),
+			toolchain_ids: Vec::new(),
 			toolchain_id: Some("clang@19.1.7".into()),
 			worker: None,
 		}

@@ -11,7 +11,6 @@ use crate::toolchain::ToolchainPaths;
 
 pub struct SandboxRunner {
 	workspace: PathBuf,
-	out_prefix: Option<PathBuf>,
 	sandbox_root: PathBuf,
 	exec_root: PathBuf,
 	isolated: bool,
@@ -50,7 +49,6 @@ impl SandboxRunner {
 		let _ = std::fs::create_dir_all(&sandbox_root);
 		Self {
 			workspace: workspace.to_path_buf(),
-			out_prefix: out_dir.strip_prefix(workspace).ok().map(Path::to_path_buf),
 			isolated: crate::execution::confinement::mounts_sandbox(),
 			sandbox_root,
 			exec_root,
@@ -81,11 +79,10 @@ impl SandboxRunner {
 						.join(", "),
 				)));
 			}
-			let hardlink = self.out_prefix.as_ref().is_some_and(|prefix| !input.starts_with(prefix));
 			if src.is_dir() {
-				link_tree(&src, &dst, hardlink)?;
+				copy_tree(&src, &dst)?;
 			} else {
-				link_in(&src, &dst, hardlink)?;
+				copy_in(&src, &dst)?;
 			}
 		}
 		for output in &spec.outputs {
@@ -132,6 +129,7 @@ impl SandboxRunner {
 	}
 
 	fn execution_for(&self, spec: &ActionSpec, sandbox: &Path, toolchains: &ToolchainPaths) -> Execution {
+		let toolchains = toolchains.scoped(&spec.toolchain_ids);
 		let (root, mount) = if self.isolated {
 			(
 				self.exec_root.clone(),
@@ -144,7 +142,7 @@ impl SandboxRunner {
 			(sandbox.to_path_buf(), None)
 		};
 		Execution {
-			launch: self.launch_for(spec, sandbox, &root, toolchains),
+			launch: self.launch_for(spec, sandbox, &root, &toolchains),
 			confinement: Confinement::new(root, toolchains.read_only.clone()),
 			mount,
 		}
@@ -395,28 +393,25 @@ fn reanchor(value: &str, marker: &str, exec_root: &Path) -> String {
 	result
 }
 
-fn link_in(src: &Path, dst: &Path, hardlink: bool) -> Result<(), ForgeDiagnostic> {
+fn copy_in(src: &Path, dst: &Path) -> Result<(), ForgeDiagnostic> {
 	if let Some(parent) = dst.parent() {
 		std::fs::create_dir_all(parent).map_err(|e| io_err("prepare", parent, e))?;
 	}
 	if dst.exists() {
 		std::fs::remove_file(dst).map_err(|e| io_err("replace input", dst, e))?;
 	}
-	if hardlink && std::fs::hard_link(src, dst).is_ok() {
-		return Ok(());
-	}
 	std::fs::copy(src, dst).map(|_| ()).map_err(|e| io_err("copy input", src, e))
 }
 
-fn link_tree(src: &Path, dst: &Path, hardlink: bool) -> Result<(), ForgeDiagnostic> {
+fn copy_tree(src: &Path, dst: &Path) -> Result<(), ForgeDiagnostic> {
 	std::fs::create_dir_all(dst).map_err(|e| io_err("create tree", dst, e))?;
 	for entry in std::fs::read_dir(src).map_err(|e| io_err("read tree", src, e))?.flatten() {
 		let from = entry.path();
 		let to = dst.join(entry.file_name());
 		if entry.file_type().map_err(|e| io_err("stat", &from, e))?.is_dir() {
-			link_tree(&from, &to, hardlink)?;
+			copy_tree(&from, &to)?;
 		} else {
-			link_in(&from, &to, hardlink)?;
+			copy_in(&from, &to)?;
 		}
 	}
 	Ok(())
@@ -468,8 +463,8 @@ mod tests {
 		let src = dir.join("source");
 		let dst = dir.join("sandbox/input");
 		std::fs::write(&src, b"archive contents").unwrap();
-		for hardlink in [true, true, false, true] {
-			link_in(&src, &dst, hardlink).unwrap();
+		for _ in 0..4 {
+			copy_in(&src, &dst).unwrap();
 			assert_eq!(std::fs::read(&src).unwrap(), b"archive contents");
 			assert_eq!(std::fs::read(&dst).unwrap(), b"archive contents");
 		}

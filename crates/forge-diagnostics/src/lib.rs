@@ -37,7 +37,7 @@ impl fmt::Display for DiagnosticCode {
 
 type RelatedNotes = Vec<(String, Option<(NamedSource<String>, SourceSpan)>)>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ForgeDiagnostic {
 	pub severity: Severity,
 	pub code: DiagnosticCode,
@@ -46,6 +46,7 @@ pub struct ForgeDiagnostic {
 	pub source: Option<NamedSource<String>>,
 	pub span: Option<SourceSpan>,
 	pub related: RelatedNotes,
+	pub diagnostics: Vec<ForgeDiagnostic>,
 }
 
 impl ForgeDiagnostic {
@@ -58,7 +59,17 @@ impl ForgeDiagnostic {
 			source: None,
 			span: None,
 			related: Vec::new(),
+			diagnostics: Vec::new(),
 		}
+	}
+
+	pub fn batch(diagnostics: Vec<Self>) -> Self {
+		let mut items = diagnostics.into_iter();
+		let mut first = items
+			.next()
+			.unwrap_or_else(|| Self::error(codes::script::PARSE_ERROR, "build failed"));
+		first.diagnostics.extend(items);
+		first
 	}
 
 	pub fn warning(code: u16, message: impl Into<String>) -> Self {
@@ -106,6 +117,14 @@ impl fmt::Display for ForgeDiagnostic {
 impl std::error::Error for ForgeDiagnostic {}
 
 impl Diagnostic for ForgeDiagnostic {
+	fn related(&self) -> Option<Box<dyn Iterator<Item = &dyn Diagnostic> + '_>> {
+		if self.diagnostics.is_empty() {
+			None
+		} else {
+			Some(Box::new(self.diagnostics.iter().map(|d| d as &dyn Diagnostic)))
+		}
+	}
+
 	fn code<'a>(&'a self) -> Option<std::boxed::Box<dyn std::fmt::Display + 'a>> {
 		Some(Box::new(format!("{}[{}]", self.severity.prefix(), self.code)))
 	}
@@ -163,20 +182,41 @@ impl DiagnosticSink {
 	}
 
 	pub fn report(&self) -> miette::Result<()> {
-		let mut out = String::new();
-		for d in &self.items {
-			out.push_str(&format!("{d}\n"));
-			if let Some(help) = &d.help {
-				out.push_str(&format!("  help: {help}\n"));
-			}
-		}
 		if self.has_errors() {
-			Err(miette::miette!("{}", out.trim_end()))
+			Err(miette::Report::new(ForgeDiagnostic::batch(self.items.clone())))
 		} else {
-			if !out.is_empty() {
-				eprint!("{out}");
+			for diagnostic in &self.items {
+				eprintln!("{:?}", miette::Report::new(diagnostic.clone()));
 			}
 			Ok(())
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn batching_keeps_each_source_and_span() {
+		let mut sink = DiagnosticSink::default();
+		for name in ["one.toml", "two.toml"] {
+			sink.push(
+				ForgeDiagnostic::error(101, "invalid syntax")
+					.with_source(
+						name, "broken
+",
+					)
+					.at(0..6),
+			);
+		}
+		let report = sink.report().unwrap_err();
+		let mut rendered = String::new();
+		miette::GraphicalReportHandler::new()
+			.render_report(&mut rendered, report.as_ref())
+			.unwrap();
+		assert!(rendered.contains("one.toml:1:1"), "{rendered}");
+		assert!(rendered.contains("two.toml:1:1"), "{rendered}");
+		assert_eq!(rendered.matches("broken").count(), 2, "{rendered}");
 	}
 }

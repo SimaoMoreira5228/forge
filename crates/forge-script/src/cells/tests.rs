@@ -395,6 +395,9 @@ fn c_cell_scopes_module_and_coverage_outputs_by_profile() {
 		}
 	});
 	hooks.workspace.read_file = Box::new(move |_| Ok(module.clone()));
+	let profile = view.session.profile.name.clone();
+	let name = view.name.clone();
+	hooks.artifact_path = Box::new(move |source, category| Ok(format!("forge-out/{category}/{profile}/{name}_{source}")));
 	let script = crate::std_cells::cell_script("c").unwrap();
 	let actions = lower(script, &plan_of(script), &view, hooks).unwrap();
 	let precompile = actions
@@ -406,10 +409,10 @@ fn c_cell_scopes_module_and_coverage_outputs_by_profile() {
 		.iter()
 		.find(|action| action.name.starts_with("run "))
 		.expect("test run");
-	assert_eq!(run.outputs, [("forge-out/profile/asan".to_string(), true)]);
+	assert_eq!(run.outputs, [("forge-out/profile/asan/math_coverage".to_string(), true)]);
 	assert_eq!(
 		run.env.get("LLVM_PROFILE_FILE").map(String::as_str),
-		Some("forge-out/profile/asan/%m.profraw")
+		Some("forge-out/profile/asan/math_coverage/%m.profraw")
 	);
 }
 

@@ -385,6 +385,7 @@ mod tests {
 			environment_files: Vec::new(),
 			argument_files: Vec::new(),
 			env: BTreeMap::new(),
+			toolchain_ids: Vec::new(),
 			toolchain_id: None,
 			worker: None,
 		}

@@ -8,6 +8,13 @@ pub fn forge_bin() -> &'static str {
 	env!("CARGO_BIN_EXE_forge")
 }
 
+pub fn diagnostic_text(log: &str) -> String {
+	log.split_whitespace()
+		.filter(|word| !matches!(*word, "│" | "|"))
+		.collect::<Vec<_>>()
+		.join(" ")
+}
+
 pub fn run_forge(dir: &Path, args: &[&str]) -> (bool, String) {
 	let out = Command::new(forge_bin())
 		.args(args)

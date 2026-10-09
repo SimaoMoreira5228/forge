@@ -75,7 +75,7 @@ fn rebuild(engine: &Engine, profile: &str, run_tests: bool, generation: usize) -
 			outcome.cache_hits,
 			outcome.test_cache_hits,
 		),
-		Err(e) => eprintln!("{e}"),
+		Err(e) => eprintln!("{:?}", miette::Report::new(e)),
 	}
 	Ok(())
 }

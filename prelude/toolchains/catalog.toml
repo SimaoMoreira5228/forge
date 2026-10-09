@@ -25,7 +25,7 @@ raw_extension = "profraw"
 format = "lcov"
 commands = [
   { tool = "llvm-profdata", args = ["merge", "{raw}", "-o", "{work}/merged.profdata"] },
-  { tool = "llvm-cov", args = ["export", "-instr-profile", "{work}/merged.profdata", "-format", "lcov", "{objects}"], stdout = "{work}/coverage.info" },
+  { tool = "llvm-cov", args = ["export", "-instr-profile", "{work}/merged.profdata", "-format", "lcov", "{objects}"], object_flag = "-object", stdout = "{work}/coverage.info" },
 ]
 
 [toolchains.gcc]
@@ -53,7 +53,7 @@ raw_extension = "gcda"
 companions = ["gcno"]
 format = "gcov"
 commands = [
-  { tool = "gcov", args = ["-o", "{work}", "{raw}"], per_raw = true, cwd = "{workspace}" },
+  { tool = "gcov", args = ["-t", "-o", "{raw_dir}", "{raw}"], per_raw = true, cwd = "{workspace}", stdout = "{raw_dir}/{raw_name}.gcov" },
 ]
 
 [toolchains.zig]

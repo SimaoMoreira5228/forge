@@ -96,6 +96,7 @@ pub fn build_action_dag(ctx: &PlanContext<'_>) -> Result<ActionDag, ForgeDiagnos
 
 impl<'a> Planner<'a> {
 	fn emit(&mut self, mut spec: ActionSpec) -> usize {
+		spec.toolchain_ids = self.ctx.toolchains.values().map(ResolvedToolchain::id).collect();
 		let unique: BTreeSet<PathBuf> = spec.inputs.iter().cloned().collect();
 		spec.inputs = unique.into_iter().collect();
 		let unique: BTreeSet<PathBuf> = spec.execution_deps.iter().cloned().collect();
@@ -365,6 +366,7 @@ impl<'a> Planner<'a> {
 			environment_files: Vec::new(),
 			argument_files: Vec::new(),
 			env: decl.env.clone(),
+			toolchain_ids: Vec::new(),
 			toolchain_id,
 			worker,
 		});
@@ -607,6 +609,7 @@ impl<'a> Planner<'a> {
 					})
 					.collect(),
 				env: action.env.clone(),
+				toolchain_ids: Vec::new(),
 				toolchain_id: action.toolchain_id.clone(),
 				worker: worker
 					.clone()

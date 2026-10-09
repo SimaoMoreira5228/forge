@@ -91,6 +91,7 @@ mod tests {
 			environment_files: Vec::new(),
 			argument_files: Vec::new(),
 			env: BTreeMap::new(),
+			toolchain_ids: Vec::new(),
 			toolchain_id: Some("rust@0123456789ab".into()),
 			worker: None,
 		}

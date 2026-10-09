@@ -7,7 +7,7 @@ mod c_workspace;
 mod forge_cli;
 
 use c_workspace::have_compiler;
-use forge_cli::{forge_bin, run_forge};
+use forge_cli::{diagnostic_text, forge_bin, run_forge};
 
 fn worker_workspace(name: &str) -> PathBuf {
 	let dir = std::env::temp_dir().join(format!("forge-iworker-{name}-{}", std::process::id()));
@@ -317,7 +317,7 @@ fn a_worker_declaration_without_a_worker_program_is_rejected() {
 
 	let (ok, log) = run_forge(&dir, &["build"]);
 	assert!(!ok, "an undeclared worker must not be silently ignored: {log}");
-	assert!(log.contains("toolchain `gcc` declares no worker"), "{log}");
+	assert!(diagnostic_text(&log).contains("toolchain `gcc` declares no worker"), "{log}");
 
 	std::fs::write(
 		dir.join("FORGE_ROOT"),
@@ -334,7 +334,10 @@ fn a_worker_declaration_without_a_worker_program_is_rejected() {
 	.unwrap();
 	let (ok, log) = run_forge(&dir, &["build"]);
 	assert!(!ok, "an undeclared variant must be rejected: {log}");
-	assert!(log.contains("does not declare worker variant `batch`"), "{log}");
+	assert!(
+		diagnostic_text(&log).contains("does not declare worker variant `batch`"),
+		"{log}"
+	);
 
 	let _ = std::fs::remove_dir_all(&dir);
 }

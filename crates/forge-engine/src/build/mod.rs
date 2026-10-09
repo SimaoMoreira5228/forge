@@ -36,6 +36,7 @@ pub struct BuildOutcome {
 	pub executed: usize,
 	pub binaries: BTreeMap<String, PathBuf>,
 	pub tests: Vec<TestResult>,
+	pub(crate) specs: Vec<ActionSpec>,
 }
 
 #[derive(Debug, Clone)]
@@ -156,7 +157,7 @@ impl Engine {
 		}
 
 		if !diagnostics.is_empty() {
-			return Err(fatal_report(diagnostics));
+			return Err(ForgeDiagnostic::batch(diagnostics));
 		}
 		Ok(Prepared {
 			config,
@@ -255,7 +256,8 @@ impl Engine {
 			ToolchainStore::load(&self.workspace, forge_script::WorkspaceConfig::load(&self.workspace)?)?.resolve_all()?;
 
 		eprintln!("coverage: collecting profiles...");
-		let report = crate::reporting::coverage::collect(&self.workspace, &out_dir, &toolchains, None, "coverage")?;
+		let report =
+			crate::reporting::coverage::collect(&self.workspace, &out_dir, &toolchains, None, &build_outcome.specs)?;
 
 		match output {
 			Some(path) if path.ends_with(".info") || path == "lcov" => match &report.lcov_path {
@@ -420,6 +422,7 @@ impl Engine {
 				}
 			}
 		}
+		outcome.specs = dag.specs;
 		Ok(outcome)
 	}
 
@@ -485,7 +488,7 @@ impl ExecContext<'_> {
 				spec.execution_deps.len()
 			);
 		}
-		let key = compose_key(spec, &input_hashes, &self.profile_fingerprint, self.toolchains);
+		let key = compose_key(spec, &input_hashes, &self.profile_fingerprint, self.toolchains)?;
 		let manifest: Vec<(String, String)> = input_hashes
 			.iter()
 			.map(|(path, hash)| (path.to_string_lossy().into_owned(), hash.clone()))
@@ -675,21 +678,36 @@ pub(crate) fn compose_key(
 	input_hashes: &BTreeMap<PathBuf, String>,
 	profile_fingerprint: &str,
 	toolchains: &BTreeMap<String, ResolvedToolchain>,
-) -> String {
-	let toolchain_digest: Option<&str> = spec
-		.toolchain_id
-		.as_ref()
-		.and_then(|id| id.split('@').next())
-		.and_then(|name| toolchains.get(name))
-		.map(|t| t.digest.as_str());
+) -> Result<String, ForgeDiagnostic> {
+	let mut tools = blake3::Hasher::new();
+	for id in &spec.toolchain_ids {
+		let name = id.split('@').next().unwrap_or(id);
+		tools.update(&(name.len() as u64).to_le_bytes());
+		tools.update(name.as_bytes());
+		let toolchain = toolchains.get(name).ok_or_else(|| {
+			ForgeDiagnostic::error(
+				codes::hermetic::TOOLCHAIN_MISMATCH,
+				format!("action `{}` declares unavailable toolchain `{name}`", spec.name),
+			)
+		})?;
+		tools.update(&(toolchain.digest.len() as u64).to_le_bytes());
+		tools.update(toolchain.digest.as_bytes());
+	}
+	for program in std::iter::once(spec.command.as_str()).chain(spec.worker.iter().map(|worker| worker.program.as_str())) {
+		let path = Path::new(program);
+		if path.is_absolute() {
+			tools.update(&hasher::hash_file(path).map_err(|e| ForgeDiagnostic::io(path, e))?);
+		}
+	}
+	let toolchain_digest = tools.finalize().to_hex().to_string();
 
-	forge_core::action::compose_cache_key(
+	Ok(forge_core::action::compose_cache_key(
 		env!("CARGO_PKG_VERSION"),
 		profile_fingerprint,
-		toolchain_digest,
+		Some(&toolchain_digest),
 		spec.fingerprint(),
 		input_hashes,
-	)
+	))
 }
 
 fn cycles_diagnostic(cycles: Vec<Vec<forge_core::Label>>) -> ForgeDiagnostic {
@@ -701,22 +719,6 @@ fn cycles_diagnostic(cycles: Vec<Vec<forge_core::Label>>) -> ForgeDiagnostic {
 		codes::graph::CYCLE_DETECTED,
 		format!("dependency cycle detected: {}", rendered.join("; ")),
 	)
-}
-
-fn fatal_report(diagnostics: Vec<ForgeDiagnostic>) -> ForgeDiagnostic {
-	let code = diagnostics.first().map(|d| d.code.0).unwrap_or(codes::script::PARSE_ERROR);
-	let mut parts: Vec<String> = Vec::new();
-	for (index, d) in diagnostics.iter().enumerate() {
-		let rendered = d.to_string();
-		if index == 0
-			&& let Some(rest) = rendered.strip_prefix(&format!("{}[{:03}] ", d.severity.prefix(), d.code.0))
-		{
-			parts.push(rest.to_string());
-			continue;
-		}
-		parts.push(rendered);
-	}
-	ForgeDiagnostic::error(code, parts.join("nn"))
 }
 
 mod selection;

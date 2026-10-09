@@ -7,7 +7,7 @@ mod forge_cli;
 mod rust_toolchain;
 mod rust_workspace;
 
-use forge_cli::run_forge;
+use forge_cli::{diagnostic_text, run_forge};
 use rust_toolchain::install_rust_toolchain;
 use rust_workspace::{build_and_run_rust, rust_workspace};
 
@@ -231,11 +231,11 @@ fn cargo_mode_requires_explicit_lock_without_creating_one() {
 	let (ok, log) = run_forge(&dir, &["build"]);
 	assert!(!ok, "missing Cargo.lock must fail: {log}");
 	assert!(
-		log.contains("cargo mode requires an explicit Cargo.lock"),
+		diagnostic_text(&log).contains("cargo mode requires an explicit Cargo.lock"),
 		"wrong diagnostic: {log}"
 	);
 	assert!(
-		log.contains("Forge does not run Cargo or solve Cargo versions"),
+		diagnostic_text(&log).contains("Forge does not run Cargo or solve Cargo versions"),
 		"missing remedy context: {log}"
 	);
 	assert_eq!(std::fs::read(dir.join("Cargo.toml")).unwrap(), manifest.as_bytes());

@@ -59,7 +59,7 @@ impl Engine {
 			let hash_inputs = spec.inputs.iter().chain(&spec.execution_deps).cloned().collect::<Vec<_>>();
 			let input_hashes = hasher::hash_inputs(&self.workspace, &hash_inputs, &hash_cache)
 				.map_err(|e| ForgeDiagnostic::error(codes::inputs::MISSING_INPUT, e.to_string()))?;
-			let current_key = crate::build::compose_key(spec, &input_hashes, &profile.fingerprint(), &toolchains);
+			let current_key = crate::build::compose_key(spec, &input_hashes, &profile.fingerprint(), &toolchains)?;
 
 			let state = match db.latest_action_key(spec.component.as_str(), spec.name.as_str()) {
 				None => ActionState::NeverBuilt,

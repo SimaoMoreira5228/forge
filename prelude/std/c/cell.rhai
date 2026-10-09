@@ -15,7 +15,7 @@ fn module_name_of(ctx, src) {
 }
 
 fn coverage_dir(ctx) {
-    `forge-out/profile/${ctx.profile.name}`
+    ctx.artifact_path("coverage", "profile")
 }
 
 fn compiler_for(ctx, src) {
@@ -356,6 +356,9 @@ fn build(ctx, plan) {
             test_outputs.push(`${coverage_dir(ctx)}/`);
             if linker_for(ctx).contains("clang") {
                 test_env["LLVM_PROFILE_FILE"] = `${coverage_dir(ctx)}/%m.profraw`;
+            } else {
+                test_env["GCOV_PREFIX"] = `FORGE_EXEC_ROOT/${coverage_dir(ctx)}`;
+                test_env["GCOV_PREFIX_STRIP"] = "0";
             }
         }
         ctx.action(#{

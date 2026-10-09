@@ -8,7 +8,7 @@ mod forge_cli;
 mod rust_toolchain;
 mod rust_workspace;
 
-use forge_cli::run_forge;
+use forge_cli::{diagnostic_text, run_forge};
 use rust_toolchain::install_rust_toolchain;
 use rust_workspace::{build_and_run_rust, rust_workspace};
 
@@ -161,7 +161,7 @@ fn missing_catalog_entry_and_ambiguous_conflicts_name_the_offending_declaration(
 	let (ok, log) = run_forge(&dir, &["build"]);
 	assert!(!ok, "an undeclared workspace dependency must fail: {log}");
 	assert!(
-		log.contains("dependency ghost inherits cell.rust.dependencies, which does not declare ghost"),
+		diagnostic_text(&log).contains("dependency ghost inherits cell.rust.dependencies, which does not declare ghost"),
 		"{log}"
 	);
 
@@ -175,7 +175,7 @@ fn missing_catalog_entry_and_ambiguous_conflicts_name_the_offending_declaration(
 		assert!(!ok, "a conflicting inherited declaration must fail: {log}");
 		let key = conflict.split_whitespace().next().unwrap();
 		assert!(
-			log.contains(&format!(
+			diagnostic_text(&log).contains(&format!(
 				"dependency answer inherits cell.rust.dependencies and also sets {key}; an inherited declaration may only add features and default-features"
 			)),
 			"{log}"

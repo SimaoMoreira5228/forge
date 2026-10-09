@@ -42,11 +42,28 @@ impl ToolchainPaths {
 			read_only: toolchains.values().map(|t| t.root.clone()).collect(),
 			roots: toolchains.values().map(|t| (t.id(), t.root.clone())).collect(),
 		};
-		paths.bin.sort();
-		paths.bin.dedup();
+		let mut seen = BTreeSet::new();
+		paths.bin.retain(|dir| seen.insert(dir.clone()));
 		paths.read_only.sort();
 		paths.read_only.dedup();
 		paths
+	}
+
+	pub fn scoped(&self, ids: &[String]) -> Self {
+		let roots: BTreeMap<String, PathBuf> = ids
+			.iter()
+			.filter_map(|id| self.roots.get(id).map(|root| (id.clone(), root.clone())))
+			.collect();
+		Self {
+			bin: self
+				.bin
+				.iter()
+				.filter(|bin| roots.values().any(|root| bin.starts_with(root)))
+				.cloned()
+				.collect(),
+			read_only: roots.values().cloned().collect(),
+			roots,
+		}
 	}
 
 	pub fn bin_refs(&self) -> Vec<&Path> {
@@ -327,8 +344,8 @@ fn directory_digest(root: &Path, bin_dirs: &[PathBuf]) -> String {
 	let mut files: Vec<PathBuf> = bin_dirs
 		.iter()
 		.flat_map(|dir| walkdir::WalkDir::new(dir).into_iter().flatten())
-		.filter(|e| e.file_type().is_file())
-		.map(|e| e.path().to_path_buf())
+		.filter(|e| e.path().is_file())
+		.map(|e| e.into_path())
 		.collect();
 	files.sort();
 	files.dedup();
@@ -336,16 +353,12 @@ fn directory_digest(root: &Path, bin_dirs: &[PathBuf]) -> String {
 		let rel = file.strip_prefix(root).unwrap_or(&file);
 		hasher.update(rel.to_string_lossy().as_bytes());
 		hasher.update(&[0]);
-		if let Ok(bytes) = hasher_digest_file(&file) {
-			hasher.update(bytes.as_slice());
+		if let Ok(bytes) = hasher::hash_file(&file) {
+			hasher.update(&bytes);
 		}
 		hasher.update(&[1]);
 	}
-	hasher.finalize().to_hex()[..24].to_string()
-}
-
-fn hasher_digest_file(path: &Path) -> std::io::Result<Vec<u8>> {
-	Ok(hasher::hash_file(path)?.to_vec())
+	hasher.finalize().to_hex().to_string()
 }
 
 #[cfg(test)]
@@ -454,6 +467,49 @@ mod tests {
 			paths.expand("FORGE_TOOLCHAIN/clang@fedcba987654/bin/clang"),
 			"/store/one/clang/bin/clang"
 		);
+	}
+
+	#[test]
+	fn action_scope_limits_path_roots_and_reference_expansion() {
+		let rust = toolchain("rust", "/store/rust", "abcdef0123456789");
+		let clang = toolchain("clang", "/store/clang", "fedcba9876543210");
+		let id = rust.id();
+		let all = ToolchainPaths::of(&BTreeMap::from([("rust".into(), rust), ("clang".into(), clang)]));
+		let scoped = all.scoped(&[id]);
+		assert_eq!(scoped.bin, vec![PathBuf::from("/store/rust")]);
+		assert_eq!(scoped.read_only, vec![PathBuf::from("/store/rust")]);
+		assert_eq!(
+			scoped.expand("FORGE_TOOLCHAIN/rust@abcdef012345/bin/rustc"),
+			"/store/rust/bin/rustc"
+		);
+		assert_eq!(
+			scoped.expand("FORGE_TOOLCHAIN/clang@fedcba987654/bin/clang"),
+			"FORGE_TOOLCHAIN/clang@fedcba987654/bin/clang"
+		);
+	}
+
+	#[test]
+	fn path_precedence_follows_toolchain_names_instead_of_installation_locations() {
+		let paths = ToolchainPaths::of(&BTreeMap::from([
+			("first".into(), toolchain("first", "/z/first", "abcdef0123456789")),
+			("second".into(), toolchain("second", "/a/second", "fedcba9876543210")),
+		]));
+		assert_eq!(paths.bin, vec![PathBuf::from("/z/first"), PathBuf::from("/a/second")]);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn a_symlinked_helper_is_fingerprinted_by_its_contents() {
+		let root = std::env::temp_dir().join(format!("forge-toolchain-link-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&root);
+		std::fs::create_dir_all(root.join("bin")).unwrap();
+		let binary = root.join("helper");
+		std::fs::write(&binary, "first").unwrap();
+		std::os::unix::fs::symlink(&binary, root.join("bin/helper")).unwrap();
+		let first = directory_digest(&root, &[root.join("bin")]);
+		std::fs::write(&binary, "second").unwrap();
+		assert_ne!(first, directory_digest(&root, &[root.join("bin")]));
+		std::fs::remove_dir_all(root).unwrap();
 	}
 
 	#[test]
