@@ -161,7 +161,7 @@ mod tests {
 		let first = cache.path(&file).unwrap();
 		let second = cache.path(&file).unwrap();
 		assert_eq!(first, second);
-		std::fs::write(&file, b"two").unwrap();
+		std::fs::write(&file, b"changed content").unwrap();
 		assert_ne!(first, cache.path(&file).unwrap());
 		let _ = std::fs::remove_dir_all(&dir);
 	}

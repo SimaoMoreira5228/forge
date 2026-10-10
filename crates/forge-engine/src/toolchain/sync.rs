@@ -11,9 +11,7 @@ use super::store::{CatalogOrigin, INSTALL_MARKER, ToolchainStore, installed_bin_
 #[derive(Debug)]
 pub enum SyncOutcome {
 	AlreadyInstalled,
-	Downloaded {
-		url: String,
-	},
+	Downloaded { url: String },
 }
 
 pub fn sync_all(store: &ToolchainStore, only: Option<&str>) -> Result<Vec<(String, SyncOutcome)>, ForgeDiagnostic> {

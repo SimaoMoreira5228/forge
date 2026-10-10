@@ -55,16 +55,9 @@ pub struct Discovery {
 
 #[derive(Debug, Clone)]
 pub enum ToolchainSelection {
-	Version {
-		version: String,
-	},
-	Url {
-		url: String,
-		sha256: Option<String>,
-	},
-	Path {
-		path: PathBuf,
-	},
+	Version { version: String },
+	Url { url: String, sha256: Option<String> },
+	Path { path: PathBuf },
 }
 
 impl WorkspaceConfig {

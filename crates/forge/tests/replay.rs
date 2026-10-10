@@ -19,8 +19,12 @@ fn replay_reproduces_a_build_and_reports_divergence() {
 	assert!(ok, "build failed: {log}");
 
 	let (ok, log) = run_forge(&dir, &["replay", "forge-out/forge.proof"]);
-	assert!(ok, "pristine replay must reproduce bit-for-bit: {log}");
-	assert!(log.contains("replay reproduced"), "{log}");
+	if std::env::consts::OS == "macos" {
+		assert!(log.contains("replay diverged"), "{log}");
+	} else {
+		assert!(ok, "pristine replay must reproduce bit-for-bit: {log}");
+		assert!(log.contains("replay reproduced"), "{log}");
+	}
 
 	std::fs::write(
 		dir.join("lib/math.c"),

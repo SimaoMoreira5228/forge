@@ -8,28 +8,14 @@ use super::component::{ComponentId, ComponentKind};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
 	Pattern(String),
-	Kind {
-		kind: String,
-		of: Box<Expr>,
-	},
-	Filter {
-		pattern: String,
-		of: Box<Expr>,
-	},
+	Kind { kind: String, of: Box<Expr> },
+	Filter { pattern: String, of: Box<Expr> },
 	Deps(Box<Expr>),
 	Rdeps(Box<Expr>),
 	Tests(Box<Expr>),
-	Affected {
-		file: String,
-	},
-	SomePath {
-		from: Box<Expr>,
-		to: Box<Expr>,
-	},
-	AllPaths {
-		from: Box<Expr>,
-		to: Box<Expr>,
-	},
+	Affected { file: String },
+	SomePath { from: Box<Expr>, to: Box<Expr> },
+	AllPaths { from: Box<Expr>, to: Box<Expr> },
 	Union(Box<Expr>, Box<Expr>),
 	Intersect(Box<Expr>, Box<Expr>),
 	Difference(Box<Expr>, Box<Expr>),

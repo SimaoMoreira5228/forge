@@ -23,6 +23,7 @@ fn emit_build_script(ctx, rustc, crate) {
     let build_output = build_output_dir(ctx, name, version);
     let build_exe = `${build_output}/script`;
     let build_args = ["--crate-type", "bin", "--crate-name", `${pkg_name}_build`, "--edition", crate["edition"], "-C", `metadata=${pkg_name}_build-${version}`, "--remap-path-prefix", "FORGE_EXEC_ROOT=", "-L", `dependency=${rust_host_deps_dir(ctx)}`] + crate["cfg"] + rust_crate_profile_args(rust_host_profile(ctx), false);
+    if ctx.platform_os == "windows" { build_args += ["-C", "debuginfo=0", "-C", "link-arg=/Brepro"]; }
     let package_files = crate["package_files"];
     let extra_inputs = crate["build_closure"];
     let build_inputs = package_files + [build_files[0]] + extra_inputs;

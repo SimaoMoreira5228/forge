@@ -25,6 +25,7 @@ pub fn spawn_landlocked(launch: &Launch, mount: Option<&WorkerMount>, policy: &P
 		None => None,
 	};
 	let mut command = base_command(launch);
+	command.current_dir(&launch.workdir);
 	unsafe {
 		command.pre_exec(move || {
 			if let Some(call) = &call {

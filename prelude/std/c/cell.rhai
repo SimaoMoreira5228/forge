@@ -218,16 +218,18 @@ fn archive_one(ctx, objs) {
     let out = ctx.lib_path(`lib${ctx.name}.a`);
     let lto = ctx.profile.lto == "thin" || ctx.profile.lto == "fat";
     let archiver = if lto { lto_archiver(ctx) } else { ar_for(ctx) };
+    let flags = if ctx.platform_os == "macos" { "rcs" } else { "rcsD" };
+    let env = if ctx.platform_os == "macos" { #{ "ZERO_AR_DATE": "1" } } else { #{} };
 
     ctx.action(#{
         name: `archive ${ctx.label}`,
         command: archiver,
-        args: ["rcsD", out] + objs,
+        args: [flags, out] + objs,
         inputs: ctx.hdrs,
         execution_deps: objs,
         outputs: [out],
         artifact: out,
-        env: #{},
+        env: env,
         toolchain_id: ctx.tool_id(),
     });
 }

@@ -15,19 +15,9 @@ const FLUSH_INPUT_ROWS: usize = 4096;
 const FLUSH_ACTION_ROWS: usize = 1024;
 
 enum ActionWrite {
-	Seen {
-		cache_key: String,
-		component: String,
-		name: String,
-		now: i64,
-	},
-	CacheHit {
-		cache_key: String,
-	},
-	Duration {
-		cache_key: String,
-		duration_ms: i64,
-	},
+	Seen { cache_key: String, component: String, name: String, now: i64 },
+	CacheHit { cache_key: String },
+	Duration { cache_key: String, duration_ms: i64 },
 }
 
 #[derive(Default)]

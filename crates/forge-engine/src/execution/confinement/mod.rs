@@ -135,8 +135,23 @@ pub fn active() -> &'static Report {
 	ACTIVE.get_or_init(detect)
 }
 
+#[cfg(target_os = "linux")]
+static NAMESPACES_AVAILABLE: OnceLock<bool> = OnceLock::new();
+
+#[cfg(target_os = "linux")]
+pub fn namespaces_available() -> bool {
+	*NAMESPACES_AVAILABLE.get_or_init(crate::execution::confinement::namespace::probe_scratch)
+}
+
 pub fn mounts_sandbox() -> bool {
-	matches!(active().backend, Backend::Namespaces | Backend::Landlock)
+	match active().backend {
+		Backend::Namespaces => true,
+		#[cfg(target_os = "linux")]
+		Backend::Landlock => namespaces_available(),
+		#[cfg(not(target_os = "linux"))]
+		Backend::Landlock => true,
+		_ => false,
+	}
 }
 
 fn detect() -> Report {
@@ -158,25 +173,33 @@ fn detect() -> Report {
 
 #[cfg(target_os = "linux")]
 fn detect_linux() -> Report {
-	if !crate::execution::confinement::namespace::probe_scratch() {
-		return Report::copy_sandbox("user and mount namespaces are unavailable on this host");
-	}
 	match crate::execution::confinement::landlock::probe() {
-		Some(abi) => Report::new(
-			Backend::Landlock,
-			true,
-			false,
-			format!(
-				"landlock ABI {abi}: reads and writes are limited to the action sandbox root, the toolchain, and the system directories"
-			),
-			"two forked probes: one entered a user and mount namespace and bind-mounted its sandbox, one applied the ruleset, wrote inside its own root, and was denied outside it",
-		),
-		None => Report::new(
+		Some(abi) => {
+			let namespaces = namespaces_available();
+			let probe = if namespaces {
+				"two forked probes: one entered a user and mount namespace and bind-mounted its sandbox, one applied the ruleset, wrote inside its own root, and was denied outside it"
+			} else {
+				"a forked probe applied the landlock ruleset, wrote inside its own root, and was denied outside it; user and mount namespaces are unavailable on this host, so there is no private mount view"
+			};
+			Report::new(
+				Backend::Landlock,
+				true,
+				false,
+				format!(
+					"landlock ABI {abi}: reads and writes are limited to the action sandbox root, the toolchain, and the system directories"
+				),
+				probe,
+			)
+		}
+		None if namespaces_available() => Report::new(
 			Backend::Namespaces,
 			false,
 			false,
 			"user and mount namespaces only: the action gets a private mount view of its sandbox and cannot observe another action, but the host filesystem stays readable",
 			"a forked child entered the namespace and bind-mounted its sandbox; this kernel has no landlock to gate paths with",
+		),
+		None => Report::copy_sandbox(
+			"user and mount namespaces are unavailable on this host and this kernel has no landlock to gate paths with",
 		),
 	}
 }
@@ -291,9 +314,14 @@ mod tests {
 	#[test]
 	fn the_decision_is_made_once_per_process() {
 		assert!(std::ptr::eq(active(), active()));
-		assert_eq!(
-			mounts_sandbox(),
-			matches!(active().backend, Backend::Namespaces | Backend::Landlock)
-		);
+		#[cfg(target_os = "linux")]
+		let expected = match active().backend {
+			Backend::Namespaces => true,
+			Backend::Landlock => super::namespaces_available(),
+			_ => false,
+		};
+		#[cfg(not(target_os = "linux"))]
+		let expected = matches!(active().backend, Backend::Namespaces | Backend::Landlock);
+		assert_eq!(mounts_sandbox(), expected);
 	}
 }

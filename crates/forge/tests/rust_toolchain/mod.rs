@@ -17,8 +17,35 @@ pub fn link_rust_toolchain(dir: &Path) -> bool {
 	#[cfg(unix)]
 	std::os::unix::fs::symlink(&source, &link).unwrap();
 	#[cfg(not(unix))]
-	std::fs::copy(&source, &link).unwrap();
+	copy_toolchain(&source, &link);
 	true
+}
+
+#[cfg(not(unix))]
+pub fn copy_toolchain(source: &Path, destination: &Path) {
+	std::fs::create_dir_all(destination).unwrap();
+	for entry in std::fs::read_dir(source).unwrap() {
+		let entry = entry.unwrap();
+		let target = destination.join(entry.file_name());
+		if entry.path().is_dir() {
+			copy_toolchain(&entry.path(), &target);
+		} else if std::fs::hard_link(entry.path(), &target).is_err() {
+			std::fs::copy(entry.path(), &target).unwrap();
+		}
+	}
+}
+
+#[cfg(all(test, not(unix)))]
+#[test]
+fn toolchain_fixture_materializes_nested_directories() {
+	let root = std::env::temp_dir().join(format!("forge-toolchain-copy-{}", std::process::id()));
+	let source = root.join("source");
+	let destination = root.join("destination");
+	std::fs::create_dir_all(source.join("bin")).unwrap();
+	std::fs::write(source.join("bin/rustc.exe"), b"compiler").unwrap();
+	copy_toolchain(&source, &destination);
+	assert_eq!(std::fs::read(destination.join("bin/rustc.exe")).unwrap(), b"compiler");
+	std::fs::remove_dir_all(root).unwrap();
 }
 
 pub fn install_rust_toolchain(dir: &Path) -> bool {

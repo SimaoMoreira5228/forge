@@ -90,11 +90,8 @@ fn link_store_toolchains(store: &Path) {
 	#[cfg(unix)]
 	std::os::unix::fs::symlink(&source, store.join("toolchains")).unwrap();
 	#[cfg(not(unix))]
-	std::fs::create_dir_all(store.join("toolchains/rust")).unwrap();
-	#[cfg(not(unix))]
-	std::fs::copy(
-		forge_engine::store::store_root().join("toolchains/rust/1.98.0"),
-		store.join("toolchains/rust/1.98.0"),
-	)
-	.unwrap();
+	rust_toolchain::copy_toolchain(
+		&forge_engine::store::store_root().join("toolchains/rust/1.98.0"),
+		&store.join("toolchains/rust/1.98.0"),
+	);
 }

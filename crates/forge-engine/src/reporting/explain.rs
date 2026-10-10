@@ -17,12 +17,7 @@ pub struct Explanation {
 pub enum ActionState {
 	NeverBuilt,
 	Fresh,
-	Stale {
-		changed: Vec<String>,
-		added: Vec<String>,
-		removed: Vec<String>,
-		reason_unknown: bool,
-	},
+	Stale { changed: Vec<String>, added: Vec<String>, removed: Vec<String>, reason_unknown: bool },
 }
 
 impl Engine {

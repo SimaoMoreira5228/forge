@@ -38,14 +38,10 @@ impl Component {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum ComponentKind {
-	Library {
-		link: LinkType,
-	},
+	Library { link: LinkType },
 	Binary,
 	Test,
-	Generic {
-		command: String,
-	},
+	Generic { command: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

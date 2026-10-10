@@ -48,26 +48,19 @@ fn segment_matches(pattern: &str, name: &str) -> bool {
 
 pub fn list_files(root: &Path) -> std::io::Result<Vec<String>> {
 	let mut out = Vec::new();
-	let mut stack = vec![PathBuf::from("")];
+	let mut stack = vec![String::new()];
 	while let Some(rel) = stack.pop() {
-		let abs = if rel.as_os_str().is_empty() {
-			root.to_path_buf()
-		} else {
-			root.join(&rel)
-		};
+		let abs = if rel.is_empty() { root.to_path_buf() } else { root.join(&rel) };
 		let Ok(entries) = std::fs::read_dir(&abs) else {
 			continue;
 		};
 		for entry in entries.flatten() {
-			let child_rel = if rel.as_os_str().is_empty() {
-				PathBuf::from(entry.file_name())
-			} else {
-				rel.join(entry.file_name())
-			};
+			let name = entry.file_name().to_string_lossy().into_owned();
+			let child = if rel.is_empty() { name } else { format!("{rel}/{name}") };
 			if entry.file_type().is_ok_and(|t| t.is_dir()) {
-				stack.push(child_rel);
+				stack.push(child);
 			} else {
-				out.push(child_rel.to_string_lossy().into_owned());
+				out.push(child);
 			}
 		}
 	}
@@ -85,13 +78,19 @@ pub fn expand_glob(root: &Path, pattern: &str) -> std::io::Result<Vec<PathBuf>> 
 		let path = root.join(pattern);
 		return Ok(path.is_file().then_some(PathBuf::from(pattern)).into_iter().collect());
 	}
-	let prefix = segments[..prefix_len].iter().collect::<PathBuf>();
+	let prefix = segments[..prefix_len].join("/");
 	let scan_root = root.join(&prefix);
 	let suffix = segments[prefix_len..].join("/");
 	Ok(list_files(&scan_root)?
 		.into_iter()
 		.filter(|rel| glob_match(&suffix, rel))
-		.map(|rel| prefix.join(rel))
+		.map(|rel| {
+			if prefix.is_empty() {
+				PathBuf::from(rel)
+			} else {
+				PathBuf::from(format!("{prefix}/{rel}"))
+			}
+		})
 		.collect())
 }
 

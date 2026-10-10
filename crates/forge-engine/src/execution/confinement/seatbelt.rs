@@ -1,5 +1,6 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::execution::confinement::Policy;
@@ -26,7 +27,9 @@ const SYSTEM_EXEC: &[&str] = &["/usr", "/System", "/Library", "/bin", "/sbin", "
 const SYSTEM_PREAMBLE: &str = "(version 1)\n\
 	(deny default)\n\
 	(allow file-read-metadata)\n\
+	(allow file-read* (literal \"/\"))\n\
 	(allow process-fork)\n\
+	(allow process-info* (target same-sandbox))\n\
 	(allow sysctl-read)\n\
 	(allow mach-lookup)\n\
 	(allow signal (target self))\n\
@@ -36,13 +39,22 @@ const DEVICE_WRITES: &str = "(allow file-write* (literal \"/dev/null\") (literal
 	(literal \"/dev/random\") (literal \"/dev/urandom\") (literal \"/dev/stdout\") \
 	(literal \"/dev/stderr\") (literal \"/dev/tty\") (regex #\"^/dev/ttys\"))\n";
 
+const XCRUN_CACHE_WRITES: &str = "(allow file-read* file-write* \
+	(regex #\"^/private/var/folders/.*/T/xcrun_db\") (regex #\"^/var/folders/.*/T/xcrun_db\"))\n";
+
 pub fn profile(policy: &Policy) -> String {
 	let mut out = String::from(SYSTEM_PREAMBLE);
 	for path in SYSTEM_READ {
 		push_path(&mut out, "file-read* file-map-executable", Path::new(path));
 	}
+	for path in apple_developer_bundles() {
+		push_path(&mut out, "file-read* file-map-executable", path);
+	}
 	for path in SYSTEM_EXEC {
 		push_path(&mut out, "process-exec*", Path::new(path));
+	}
+	for path in apple_developer_bundles() {
+		push_path(&mut out, "process-exec*", path);
 	}
 	for path in &policy.readable {
 		push_path(&mut out, "file-read* file-map-executable", path);
@@ -51,8 +63,12 @@ pub fn profile(policy: &Policy) -> String {
 	for (index, path) in policy.writable.iter().enumerate() {
 		let operation = if index == 0 { "file-read* file-write*" } else { "file-read*" };
 		push_path(&mut out, operation, path);
+		if index == 0 {
+			push_path(&mut out, "process-exec*", path);
+		}
 	}
 	out.push_str(DEVICE_WRITES);
+	out.push_str(XCRUN_CACHE_WRITES);
 	out
 }
 
@@ -60,7 +76,52 @@ fn push_path(out: &mut String, operation: &str, path: &Path) {
 	if path.as_os_str().is_empty() {
 		return;
 	}
-	out.push_str(&format!("(allow {operation} (subpath \"{}\"))\n", quote(path)));
+	let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+	out.push_str(&format!("(allow {operation} (subpath \"{}\"))\n", quote(&canonical)));
+}
+
+fn apple_developer_bundles() -> &'static [PathBuf] {
+	static BUNDLES: OnceLock<Vec<PathBuf>> = OnceLock::new();
+	BUNDLES.get_or_init(selected_developer_bundle)
+}
+
+fn selected_developer_bundle() -> Vec<PathBuf> {
+	#[cfg(not(target_os = "macos"))]
+	{
+		Vec::new()
+	}
+	#[cfg(target_os = "macos")]
+	{
+		let output = Command::new("/usr/bin/xcode-select").arg("-p").env_clear().output();
+		let Ok(output) = output else {
+			return Vec::new();
+		};
+		if !output.status.success() {
+			return Vec::new();
+		}
+		let Ok(text) = String::from_utf8(output.stdout) else {
+			return Vec::new();
+		};
+		developer_bundle(Path::new(text.trim())).into_iter().collect()
+	}
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn developer_bundle(developer_dir: &Path) -> Option<PathBuf> {
+	if developer_dir.as_os_str().is_empty() || developer_dir == Path::new("/") {
+		return None;
+	}
+	match developer_dir.parent() {
+		Some(contents) if contents.file_name().is_some_and(|name| name == "Contents") => {
+			let bundle = contents.parent()?;
+			if bundle.as_os_str().is_empty() || bundle == Path::new("/") {
+				None
+			} else {
+				Some(bundle.to_path_buf())
+			}
+		}
+		_ => Some(developer_dir.to_path_buf()),
+	}
 }
 
 fn quote(path: &Path) -> String {
@@ -120,6 +181,7 @@ pub fn probe() -> Result<(), String> {
 		.arg("/bin/sh")
 		.arg("-c")
 		.arg(&script)
+		.current_dir(&scratch)
 		.output();
 	let wrote_inside = scratch.join("inside").exists();
 	let _ = std::fs::remove_dir_all(&scratch);
@@ -133,7 +195,11 @@ pub fn probe() -> Result<(), String> {
 			"sandbox-exec probe exited with {code}: {}",
 			String::from_utf8_lossy(&output.stderr).trim()
 		)),
-		None => Err("the sandbox-exec probe was killed by a signal".into()),
+		None => Err(format!(
+			"the sandbox-exec probe was killed ({}): {}",
+			output.status,
+			String::from_utf8_lossy(&output.stderr).trim()
+		)),
 	}
 }
 
@@ -158,6 +224,46 @@ mod tests {
 		let rendered = profile(&policy());
 		assert!(rendered.starts_with("(version 1)\n(deny default)\n"), "{rendered}");
 		assert!(!rendered.contains("network"), "{rendered}");
+	}
+
+	#[test]
+	fn the_loader_can_read_the_root_directory_but_not_its_descendants() {
+		let rendered = profile(&policy());
+		assert!(rendered.contains(r#"(allow file-read* (literal "/"))"#), "{rendered}");
+		assert!(!rendered.contains(r#"(subpath "/")"#), "{rendered}");
+		assert!(!rendered.contains("(allow file-read*)"), "{rendered}");
+	}
+
+	#[test]
+	fn an_xcode_developer_dir_widens_to_its_app_bundle() {
+		assert_eq!(
+			developer_bundle(Path::new("/Applications/Xcode_26.6.app/Contents/Developer")),
+			Some(PathBuf::from("/Applications/Xcode_26.6.app"))
+		);
+		assert_eq!(
+			developer_bundle(Path::new("/Library/Developer/CommandLineTools")),
+			Some(PathBuf::from("/Library/Developer/CommandLineTools"))
+		);
+		assert_eq!(developer_bundle(Path::new("/Contents/Developer")), None);
+		assert_eq!(developer_bundle(Path::new("/")), None);
+	}
+
+	#[test]
+	fn installed_applications_stay_unreachable_except_the_selected_developer_bundle() {
+		let rendered = profile(&policy());
+		assert!(!rendered.contains(r#"(subpath "/Applications")"#), "{rendered}");
+		for bundle in apple_developer_bundles() {
+			let canonical = bundle.canonicalize().unwrap_or_else(|_| bundle.clone());
+			let quoted = quote(&canonical);
+			assert!(
+				rendered.contains(&format!(r#"file-read* file-map-executable (subpath "{quoted}")"#)),
+				"{rendered}"
+			);
+			assert!(
+				rendered.contains(&format!(r#"process-exec* (subpath "{quoted}")"#)),
+				"{rendered}"
+			);
+		}
 	}
 
 	#[test]
@@ -196,10 +302,23 @@ mod tests {
 			"{rendered}"
 		);
 		assert_eq!(
-			rendered.matches("file-read* file-write*").count(),
+			rendered.matches("(allow file-read* file-write* (subpath").count(),
 			1,
 			"only the root the action runs in is writable: {rendered}"
 		);
+		assert!(
+			rendered.contains(r#"(allow process-exec* (subpath "/ws/forge-out/exec"))"#),
+			"{rendered}"
+		);
+	}
+
+	#[test]
+	fn xcrun_may_cache_sdk_lookups_outside_the_sandbox_and_nothing_else() {
+		let rendered = profile(&policy());
+		assert!(rendered.contains("xcrun_db"), "{rendered}");
+		assert!(rendered.contains("/private/var/folders/.*/T/xcrun_db"), "{rendered}");
+		assert!(!rendered.contains(r#"(subpath "/var/folders")"#), "{rendered}");
+		assert!(!rendered.contains(r#"(subpath "/private/var/folders")"#), "{rendered}");
 	}
 
 	#[test]
@@ -210,6 +329,24 @@ mod tests {
 		});
 		assert!(rendered.contains(r#"/ws/\" (allow default) \"/"#), "{rendered}");
 		assert_eq!(rendered.matches("(deny default)").count(), 1, "{rendered}");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn profile_paths_resolve_directory_symlinks() {
+		let dir = std::env::temp_dir().join(format!("forge-seatbelt-path-{}", std::process::id()));
+		std::fs::create_dir_all(dir.join("real")).unwrap();
+		std::os::unix::fs::symlink(dir.join("real"), dir.join("alias")).unwrap();
+		let rendered = profile(&Policy {
+			writable: vec![dir.join("alias")],
+			readable: Vec::new(),
+		});
+		assert!(
+			rendered.contains(&quote(&dir.join("real").canonicalize().unwrap())),
+			"{rendered}"
+		);
+		assert!(!rendered.contains(&quote(&dir.join("alias"))), "{rendered}");
+		std::fs::remove_dir_all(dir).unwrap();
 	}
 
 	#[cfg(unix)]

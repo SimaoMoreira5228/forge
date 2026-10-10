@@ -7,13 +7,14 @@ mod forge_cli;
 use c_workspace::write_workspace;
 use forge_cli::run_forge_in_shared_store;
 
-const EXCLUDED: [&str; 8] = [
+const EXCLUDED: [&str; 9] = [
 	"target",
 	"forge-out",
 	"local",
 	".git",
 	".cargo",
 	".forge",
+	".forge-store",
 	".kilo",
 	".opencode",
 ];

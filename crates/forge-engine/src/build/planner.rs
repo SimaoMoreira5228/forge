@@ -699,17 +699,20 @@ fn tool_id(tool: &ResolvedToolchain) -> String {
 }
 
 fn lib_path(profile: &str, package: &str, filename: &str) -> PathBuf {
-	let mut path = PathBuf::from("forge-out/lib");
-	path.push(profile);
-	if !package.is_empty() {
-		path.push(package);
-	}
-	path.push(filename);
-	path
+	PathBuf::from(if package.is_empty() {
+		format!("forge-out/lib/{profile}/{filename}")
+	} else {
+		format!("forge-out/lib/{profile}/{package}/{filename}")
+	})
 }
 
 fn artifact_path(source: &Path, profile: &str, namespace: &str, category: &str) -> Result<String, String> {
 	let stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("src");
+	if source.to_string_lossy().contains('\\') {
+		return Err(format!(
+			"artifact_path requires a workspace-relative source path, got {source:?}"
+		));
+	}
 	for fragment in [profile, namespace, category, stem] {
 		if fragment.is_empty() || matches!(fragment, "." | "..") || fragment.contains(['/', '\\', ':', '\0']) {
 			return Err(format!("artifact_path requires single path components, got {fragment:?}"));
@@ -717,6 +720,10 @@ fn artifact_path(source: &Path, profile: &str, namespace: &str, category: &str) 
 	}
 	let suffix = hasher::hex(blake3::hash(source.to_string_lossy().as_bytes()).as_bytes())[..8].to_string();
 	Ok(format!("forge-out/{category}/{profile}/{namespace}_{stem}_{suffix}"))
+}
+
+fn is_absolute_like(path: &Path) -> bool {
+	path.is_absolute() || matches!(path.components().next(), Some(std::path::Component::RootDir))
 }
 
 fn depfile_inputs(workspace: &Path, depfile: &Path, toolchains: &[PathBuf]) -> Result<Vec<String>, String> {
@@ -735,12 +742,12 @@ fn depfile_inputs(workspace: &Path, depfile: &Path, toolchains: &[PathBuf]) -> R
 }
 
 fn depfile_input_path(workspace: &Path, input: &Path, toolchains: &[PathBuf]) -> Result<Option<PathBuf>, String> {
-	if input.is_absolute() && toolchains.iter().any(|root| input.starts_with(root)) {
+	if is_absolute_like(input) && toolchains.iter().any(|root| input.starts_with(root)) {
 		return Ok(None);
 	}
 	let relative = if let Ok(path) = input.strip_prefix("FORGE_EXEC_ROOT") {
 		path
-	} else if input.is_absolute() {
+	} else if is_absolute_like(input) {
 		if let Ok(path) = input.strip_prefix(workspace.join("forge-out/exec")) {
 			path
 		} else if let Ok(path) = input.strip_prefix(workspace.join("forge-out/sandbox")) {

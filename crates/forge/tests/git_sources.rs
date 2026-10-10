@@ -56,8 +56,8 @@ fn git_dependency_is_fetched_and_patch_git_redirects_it() {
 	let repo_b = root.join("b");
 	let rev_a = make_repo(&repo_a, "hello from git");
 	let rev_b = make_repo(&repo_b, "hello from patch");
-	let url_a = format!("file://{}", repo_a.display());
-	let url_b = format!("file://{}", repo_b.display());
+	let url_a = format!("file://{}", repo_a.display().to_string().replace('\\', "/"));
+	let url_b = format!("file://{}", repo_b.display().to_string().replace('\\', "/"));
 
 	let ws = root.join("ws");
 	std::fs::create_dir_all(ws.join("src")).unwrap();

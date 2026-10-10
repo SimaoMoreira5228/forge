@@ -124,12 +124,8 @@ enum CacheAction {
 #[derive(Subcommand)]
 enum ToolchainAction {
 	List,
-	Sync {
-		name: Option<String>,
-	},
-	Verify {
-		name: Option<String>,
-	},
+	Sync { name: Option<String> },
+	Verify { name: Option<String> },
 }
 
 #[derive(Subcommand)]

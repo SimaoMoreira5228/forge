@@ -166,6 +166,8 @@ impl SandboxRunner {
 		if !spec.env.contains_key("TMPDIR") {
 			env.insert("TMPDIR".into(), root.join("tmp").to_string_lossy().into_owned());
 		}
+		#[cfg(target_os = "windows")]
+		inherit_windows_host_env(&mut env, root);
 		let mut args: Vec<String> = spec.args.iter().map(|argument| expand(argument, root, toolchains)).collect();
 		args.extend(read_argument_files(sandbox, &spec.argument_files, root, toolchains));
 		Launch {
@@ -315,10 +317,137 @@ pub(crate) fn base_command(launch: &Launch) -> Command {
 
 fn toolchain_path(toolchain_bins: &[&Path]) -> String {
 	let mut dirs: Vec<PathBuf> = toolchain_bins.iter().map(|dir| dir.to_path_buf()).collect();
+	#[cfg(target_os = "windows")]
+	dirs.extend(windows_msvc_bin_dirs());
 	dirs.extend(fallback_path_dirs());
 	std::env::join_paths(dirs)
 		.map(|joined| joined.to_string_lossy().into_owned())
 		.unwrap_or_default()
+}
+
+#[cfg(target_os = "windows")]
+fn inherit_windows_host_env(env: &mut BTreeMap<String, String>, root: &Path) {
+	for (key_os, value_os) in std::env::vars_os() {
+		let Ok(key) = key_os.into_string() else { continue };
+		let Ok(value) = value_os.into_string() else { continue };
+		if key.eq_ignore_ascii_case("PATH") {
+			continue;
+		}
+		env.entry(key).or_insert(value);
+	}
+	let tmp = root.join("tmp").to_string_lossy().into_owned();
+	for key in ["TEMP", "TMP"] {
+		if !env.keys().any(|k| k.eq_ignore_ascii_case(key)) {
+			env.insert(key.into(), tmp.clone());
+		}
+	}
+}
+
+#[cfg(target_os = "windows")]
+fn windows_msvc_bin_dirs() -> Vec<PathBuf> {
+	let mut dirs = Vec::new();
+	for key in ["VCToolsInstallDir", "VCINSTALLDIR"] {
+		if let Some(dir) = std::env::var_os(key) {
+			let dir = PathBuf::from(dir);
+			for candidate in [dir.join("bin/HostX64/x64"), dir.join("bin/Hostx64/x64")] {
+				if candidate.join("link.exe").is_file() && !dirs.contains(&candidate) {
+					dirs.push(candidate);
+				}
+			}
+		}
+	}
+	if let Some(vs) = std::env::var_os("VSINSTALLDIR") {
+		for candidate in find_msvc_under(Path::new(&vs)) {
+			if !dirs.contains(&candidate) {
+				dirs.push(candidate);
+			}
+		}
+	}
+	for program_files in [
+		std::env::var_os("ProgramFiles(x86)").map(PathBuf::from),
+		std::env::var_os("ProgramFiles").map(PathBuf::from),
+	]
+	.into_iter()
+	.flatten()
+	{
+		let vswhere = program_files.join("Microsoft Visual Studio/Installer/vswhere.exe");
+		if !vswhere.is_file() {
+			continue;
+		}
+		let Ok(output) = std::process::Command::new(&vswhere)
+			.args(["-latest", "-property", "installationPath"])
+			.output()
+		else {
+			continue;
+		};
+		if !output.status.success() {
+			continue;
+		}
+		let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+		if path.is_empty() {
+			continue;
+		}
+		for candidate in find_msvc_under(Path::new(&path)) {
+			if !dirs.contains(&candidate) {
+				dirs.push(candidate);
+			}
+		}
+	}
+	for root in windows_vs_roots() {
+		for candidate in find_msvc_under(&root) {
+			if !dirs.contains(&candidate) {
+				dirs.push(candidate);
+			}
+			break;
+		}
+	}
+	dirs
+}
+
+#[cfg(target_os = "windows")]
+fn windows_vs_roots() -> Vec<PathBuf> {
+	let mut roots = Vec::new();
+	for base in [
+		std::env::var_os("ProgramFiles").map(PathBuf::from),
+		std::env::var_os("ProgramFiles(x86)").map(PathBuf::from),
+	]
+	.into_iter()
+	.flatten()
+	{
+		for year in ["2022", "2019"] {
+			for edition in ["Enterprise", "Professional", "Community", "BuildTools"] {
+				let root = base.join("Microsoft Visual Studio").join(year).join(edition);
+				if root.is_dir() {
+					roots.push(root);
+				}
+			}
+		}
+	}
+	roots
+}
+
+#[cfg(target_os = "windows")]
+fn find_msvc_under(vs_root: &Path) -> Vec<PathBuf> {
+	let mut out = Vec::new();
+	let Ok(entries) = std::fs::read_dir(vs_root.join("VC/Tools/MSVC")) else {
+		return out;
+	};
+	let mut versions: Vec<PathBuf> = entries
+		.flatten()
+		.map(|entry| entry.path())
+		.filter(|path| path.is_dir())
+		.collect();
+	versions.sort();
+	for version in versions.into_iter().rev() {
+		for host in ["HostX64/x64", "HostX64/x86", "Hostx64/x64"] {
+			let candidate = version.join(host);
+			if candidate.join("link.exe").is_file() {
+				out.push(candidate);
+				break;
+			}
+		}
+	}
+	out
 }
 
 fn short_key(cache_key: &str) -> String {
@@ -388,7 +517,7 @@ fn reanchor(value: &str, marker: &str, exec_root: &Path) -> String {
 	let mut result = String::with_capacity(value.len() + 64);
 	result.push_str(&value[..path_start]);
 	result.push_str(&exec_root.to_string_lossy());
-	result.push(std::path::MAIN_SEPARATOR);
+	result.push('/');
 	result.push_str(&value[index..]);
 	result
 }
