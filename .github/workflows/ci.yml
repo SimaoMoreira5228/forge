@@ -2,12 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [v2]
+    branches: [main]
   pull_request:
 
 env:
   FORGE_RUST_VERSION: "1.98.0"
-  FORGE_NIGHTLY: nightly-2025-12-05
+  FORGE_NIGHTLY: nightly
 
   FORGE_STORE_DIR: ${{ github.workspace }}/.forge-store
 
@@ -18,9 +18,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust ${{ env.FORGE_RUST_VERSION }} and pinned nightly
+      - name: Install Rust ${{ env.FORGE_RUST_VERSION }} and latest nightly
         run: |
-          rustup toolchain install "$FORGE_RUST_VERSION" --profile minimal --no-self-update
+          rustup toolchain install "$FORGE_RUST_VERSION" --profile minimal --component clippy --no-self-update
           rustup toolchain install "$FORGE_NIGHTLY" --profile minimal --component rustfmt --no-self-update
           rustup default "$FORGE_RUST_VERSION"
 
@@ -34,6 +34,11 @@ jobs:
 
       - name: clippy
         run: cargo clippy --all-features --all-targets -- -D warnings
+
+      - name: install coverage tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends clang llvm
 
       - name: warm the Forge store with the pinned toolchains
         run: cargo run --release -p forge -- toolchains sync
@@ -69,6 +74,11 @@ jobs:
           rustup target add x86_64-unknown-freebsd
           rustup target add x86_64-unknown-netbsd
           rustup target add x86_64-apple-darwin
+
+      - name: install cross-compilation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends gcc-mingw-w64-x86-64 clang llvm
 
       - name: windows-gnu
         run: cargo check --workspace --all-features --all-targets --target x86_64-pc-windows-gnu
@@ -123,6 +133,14 @@ jobs:
           rustup toolchain install "$FORGE_RUST_VERSION" --profile minimal --no-self-update
           rustup default "$FORGE_RUST_VERSION"
 
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.FORGE_STORE_DIR }}
+          key: forge-store-${{ runner.os }}-${{ env.FORGE_RUST_VERSION }}-${{ hashFiles('FORGE_ROOT', 'prelude/toolchains/catalog.toml') }}
+
+      - name: warm the Forge store with the pinned toolchains
+        run: cargo run -p forge -- toolchains sync
+
       - name: build Forge with Forge
         env:
           FORGE_SELF_HOST: "1"
@@ -171,6 +189,22 @@ jobs:
 
       - name: build
         run: cargo build --workspace --all-features
+
+      - name: check confinement
+        run: cargo test -p forge --test confinement
+
+      - name: confinement crash diagnostics
+        if: failure()
+        run: |
+          /usr/bin/log show --last 5m --style compact --predicate 'process == "sandboxd"' || true
+          python3 - <<'PY'
+          from pathlib import Path
+          for directory in [Path.home() / "Library/Logs/DiagnosticReports", Path("/Library/Logs/DiagnosticReports")]:
+              for report in sorted(directory.glob("*.ips")):
+                  if report.name.startswith(("sh-", "sandbox-exec-", "bash-")):
+                      print(report.name)
+                      print(report.read_text(errors="replace"))
+          PY
 
       - name: warm the Forge store with the pinned Rust toolchain
         run: cargo run -p forge -- toolchains sync rust
