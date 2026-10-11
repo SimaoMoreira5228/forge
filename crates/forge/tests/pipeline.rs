@@ -416,8 +416,13 @@ fn fmt_normalizes_and_is_idempotent() {
 	assert!(formatted.contains("srcs = [\"main.c\"]"), "{formatted}");
 	assert!(formatted.contains("deps = [\"x\"]"), "{formatted}");
 
+	std::fs::write(dir.join("FORGE.rhai"), "let x=1;\n").unwrap();
+	let (ok_rhai, log_rhai) = run_forge(&dir, &["fmt"]);
+	assert!(ok_rhai, "fmt failed: {log_rhai}");
+	assert_eq!(std::fs::read_to_string(dir.join("FORGE.rhai")).unwrap(), "let x = 1;\n");
+
 	let (_, log2) = run_forge(&dir, &["fmt"]);
-	assert!(log2.contains("all FORGE.toml files formatted"), "{log2}");
+	assert!(log2.contains("all files formatted"), "{log2}");
 
 	std::fs::write(dir.join("FORGE.toml"), "[binary.app]\nsrcs     =      [\"main.c\"]\n").unwrap();
 	let (ok3, log3) = run_forge(&dir, &["fmt", "--check"]);

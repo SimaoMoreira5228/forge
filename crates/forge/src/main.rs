@@ -428,7 +428,7 @@ fn dispatch() -> Result<(), ForgeDiagnostic> {
 			let config = forge_script::WorkspaceConfig::load(&workspace)?;
 			let changed = forge_script::fmt::fmt_workspace(&workspace, &config.discovery, check)?;
 			if changed.is_empty() {
-				println!("all FORGE.toml files formatted");
+				println!("all files formatted");
 			} else {
 				for path in &changed {
 					if check {

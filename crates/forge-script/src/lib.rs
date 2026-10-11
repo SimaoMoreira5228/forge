@@ -5,7 +5,11 @@ pub mod document;
 pub mod glob;
 pub mod parser;
 pub mod register;
+pub mod rhai_fmt;
+pub mod rhai_layout;
 pub mod rhai_rt;
+pub mod rhai_spacing;
+pub mod rhai_tokens;
 pub mod std_cells;
 pub mod workspace;
 
