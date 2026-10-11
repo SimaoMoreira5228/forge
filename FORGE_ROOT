@@ -17,5 +17,9 @@ version = "1.98.0"
 from = "version"
 version = "14"
 
+[toolchains.go]
+from = "version"
+version = "1.27.1"
+
 [build]
 max_cache_size = "8GB"

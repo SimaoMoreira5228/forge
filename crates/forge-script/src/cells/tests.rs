@@ -12,6 +12,8 @@ fn hooks() -> CellHooks {
 		bin: Box::new(|name| format!("/tools/bin/{name}")),
 		tool_bin: Box::new(|name| format!("/tools/bin/{name}")),
 		toolchain_dir: Box::new(|name| format!("/tools/{name}")),
+		toolchain_glob: Box::new(|_, _| Ok(vec![])),
+		toolchain_read: Box::new(|_, _| Err("not implemented in tests".into())),
 		tool_id: Box::new(|| "gcc@abc123".into()),
 	}
 }
@@ -27,6 +29,179 @@ fn session() -> CellSession {
 		},
 		..Default::default()
 	}
+}
+
+#[test]
+fn go_cell_compiles_and_links_a_binary_without_imports() {
+	let script = crate::std_cells::cell_script("go").expect("go cell is embedded");
+	let mut view = component();
+	view.label = "//:app".into();
+	view.name = "app".into();
+	view.kind = "binary".into();
+	view.srcs = vec!["src/main.go".into()];
+	view.hdrs = vec![];
+	let mut session = session();
+	session.platform_os = "linux".into();
+	session.platform_arch = "x86_64".into();
+	let planned = plan(script, &session, hooks().workspace).unwrap();
+	view.session = session.clone();
+	let hooks = CellHooks {
+		workspace: WorkspaceHooks {
+			read_file: Box::new(|path| {
+				if path == "src/main.go" {
+					Ok("package main\n\nfunc main() {}\n".into())
+				} else {
+					Err(format!("missing {path}"))
+				}
+			}),
+			glob: Box::new(|_| Ok(vec![])),
+		},
+		artifact_path: Box::new(|src, category| Ok(format!("forge-out/{category}/{src}"))),
+		depfile_inputs: Box::new(|_| Ok(vec![])),
+		lib_path: Box::new(|filename| format!("forge-out/lib/debug/app/{filename}")),
+		bin: Box::new(|name| format!("/tools/bin/{name}")),
+		tool_bin: Box::new(|_| String::new()),
+		toolchain_dir: Box::new(|name| format!("/tools/{name}")),
+		toolchain_glob: Box::new(|_, pattern| {
+			if pattern.contains("runtime") {
+				Ok(vec!["go/src/runtime/a.go".to_string()])
+			} else {
+				Ok(vec![])
+			}
+		}),
+		toolchain_read: Box::new(|_, _| Err("not implemented in tests".into())),
+		tool_id: Box::new(|| "go@abc123".into()),
+	};
+	let actions = lower(script, &planned, &view, hooks).unwrap();
+	assert_eq!(actions.len(), 2);
+	assert_eq!(actions[0].name, "go compile main");
+	assert_eq!(actions[0].command, "/tools/bin/go");
+	assert!(actions[0].args.contains(&"-p".to_string()));
+	assert!(actions[0].args.contains(&"main".to_string()));
+	assert_eq!(actions[1].name, "go link forge-out/bin/debug/app");
+	assert_eq!(actions[1].command, "/tools/bin/go");
+}
+
+#[test]
+fn go_cell_builds_stdlib_closure_with_importcfgs() {
+	let script = crate::std_cells::cell_script("go").expect("go cell is embedded");
+	let mut view = component();
+	view.label = "//:greet".into();
+	view.name = "greet".into();
+	view.kind = "library".into();
+	view.srcs = vec!["lib/greet.go".into()];
+	view.hdrs = vec![];
+	let mut session = session();
+	session.platform_os = "linux".into();
+	session.platform_arch = "x86_64".into();
+	let planned = plan(script, &session, hooks().workspace).unwrap();
+	view.session = session.clone();
+	let std_source = |path: &str| match path {
+		"go/src/fmt/fmt.go" => Ok("package fmt\n\nimport \"errors\"\n".to_string()),
+		"go/src/errors/errors.go" => Ok("package errors\n".to_string()),
+		_ => Err(format!("missing {path}")),
+	};
+	let std_hits = |pattern: &str| match pattern {
+		"go/src/runtime/*.go" => Ok(vec!["go/src/runtime/a.go".to_string()]),
+		"go/src/fmt/*.go" => Ok(vec!["go/src/fmt/fmt.go".to_string()]),
+		"go/src/errors/*.go" => Ok(vec!["go/src/errors/errors.go".to_string()]),
+		_ => Ok(vec![]),
+	};
+	let hooks = CellHooks {
+		workspace: WorkspaceHooks {
+			read_file: Box::new(|path| {
+				if path == "lib/greet.go" {
+					Ok("package greet\n\nimport \"fmt\"\n".into())
+				} else {
+					Err(format!("missing {path}"))
+				}
+			}),
+			glob: Box::new(|_| Ok(vec![])),
+		},
+		artifact_path: Box::new(|src, category| Ok(format!("forge-out/{category}/{src}"))),
+		depfile_inputs: Box::new(|_| Ok(vec![])),
+		lib_path: Box::new(|filename| format!("forge-out/lib/debug/greet/{filename}")),
+		bin: Box::new(|name| format!("/tools/bin/{name}")),
+		tool_bin: Box::new(|_| String::new()),
+		toolchain_dir: Box::new(|name| format!("/tools/{name}")),
+		toolchain_glob: Box::new(move |_, pattern| std_hits(pattern)),
+		toolchain_read: Box::new(move |_, path| std_source(path)),
+		tool_id: Box::new(|| "go@abc123".into()),
+	};
+	let actions = lower(script, &planned, &view, hooks).unwrap();
+	let names: Vec<&str> = actions.iter().map(|action| action.name.as_str()).collect();
+	assert!(names.contains(&"go compile fmt"), "{names:?}");
+	assert!(names.contains(&"go compile errors"), "{names:?}");
+	assert!(names.contains(&"go compile greet"), "{names:?}");
+	let lib = actions.iter().find(|action| action.name == "go compile greet").unwrap();
+	assert_eq!(lib.outputs, vec![("forge-out/lib/debug/greet/libgreet.a".to_string(), false)]);
+	assert_eq!(lib.artifact.as_deref(), Some("forge-out/lib/debug/greet/libgreet.a"));
+	let fmt = actions.iter().find(|action| action.name == "go compile fmt").unwrap();
+	let fmt_cfg = fmt.writes.values().next().expect("importcfg write");
+	assert!(fmt_cfg.contains("packagefile errors="), "{fmt_cfg}");
+}
+
+#[test]
+fn go_cell_builds_external_test_with_generated_main() {
+	let script = crate::std_cells::cell_script("go").expect("go cell is embedded");
+	let mut view = component();
+	view.label = "//:greet_test".into();
+	view.name = "greet_test".into();
+	view.kind = "test".into();
+	view.srcs = vec!["lib/greet_test.go".into()];
+	view.hdrs = vec![];
+	view.dep_artifacts = vec![("greet".into(), "forge-out/lib/debug/libgreet.a".into())];
+	let mut session = session();
+	session.platform_os = "linux".into();
+	session.platform_arch = "x86_64".into();
+	let mut packages = toml::Table::new();
+	packages.insert("greet".into(), toml::Value::String("example.com/go-native/greet".into()));
+	let mut cell_config = toml::Table::new();
+	cell_config.insert("packages".into(), toml::Value::Table(packages));
+	session.cell_config = cell_config;
+	let planned = plan(script, &session, hooks().workspace).unwrap();
+	view.session = session.clone();
+	let hooks = CellHooks {
+		workspace: WorkspaceHooks {
+			read_file: Box::new(|path| {
+				if path == "lib/greet_test.go" {
+					Ok("package greet_test\n\nimport \"example.com/go-native/greet\"\n\nfunc TestAnswer() {}\n".into())
+				} else {
+					Err(format!("missing {path}"))
+				}
+			}),
+			glob: Box::new(|_| Ok(vec![])),
+		},
+		artifact_path: Box::new(|src, category| Ok(format!("forge-out/{category}/{src}"))),
+		depfile_inputs: Box::new(|_| Ok(vec![])),
+		lib_path: Box::new(|filename| format!("forge-out/lib/debug/{filename}")),
+		bin: Box::new(|name| format!("/tools/bin/{name}")),
+		tool_bin: Box::new(|_| String::new()),
+		toolchain_dir: Box::new(|name| format!("/tools/{name}")),
+		toolchain_glob: Box::new(|_, pattern| {
+			if pattern.contains("runtime") {
+				Ok(vec!["go/src/runtime/a.go".to_string()])
+			} else {
+				Ok(vec![])
+			}
+		}),
+		toolchain_read: Box::new(|_, _| Err("not implemented in tests".into())),
+		tool_id: Box::new(|| "go@abc123".into()),
+	};
+	let actions = lower(script, &planned, &view, hooks).unwrap();
+	let names: Vec<&str> = actions.iter().map(|action| action.name.as_str()).collect();
+	assert!(names.contains(&"go compile main"), "{names:?}");
+	assert!(names.contains(&"go compile example.com/go-native/greet_test"), "{names:?}");
+	let main = actions.iter().find(|action| action.name == "go compile main").unwrap();
+	assert!(main.inputs.is_empty(), "{:?}", main.inputs);
+	assert!(
+		main.writes.contains_key("forge-out/test/debug/greet_test.main.go"),
+		"{:?}",
+		main.writes.keys().collect::<Vec<_>>()
+	);
+	let main_src = &main.writes["forge-out/test/debug/greet_test.main.go"];
+	assert!(main_src.contains("testimport0"), "{main_src}");
+	assert!(main_src.contains("TestAnswer"), "{main_src}");
 }
 
 fn component() -> ComponentView {

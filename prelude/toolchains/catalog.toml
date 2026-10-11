@@ -139,6 +139,21 @@ url = "https://static.rust-lang.org/dist/rust-{version}-x86_64-pc-windows-msvc.t
 [toolchains.rust.targets.windows-aarch64]
 url = "https://static.rust-lang.org/dist/rust-{version}-aarch64-pc-windows-msvc.tar.gz"
 
+[toolchains.go]
+default_version = "1.27.1"
+
+[toolchains.go.targets.linux-x86_64]
+url = "https://go.dev/dl/go{version}.linux-amd64.tar.gz"
+
+[toolchains.go.targets.linux-aarch64]
+url = "https://go.dev/dl/go{version}.linux-arm64.tar.gz"
+
+[toolchains.go.targets.darwin-x86_64]
+url = "https://go.dev/dl/go{version}.darwin-amd64.tar.gz"
+
+[toolchains.go.targets.darwin-aarch64]
+url = "https://go.dev/dl/go{version}.darwin-arm64.tar.gz"
+
 [toolchains.lcov]
 default_version = "2.1"
 
