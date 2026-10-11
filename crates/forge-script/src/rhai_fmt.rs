@@ -250,4 +250,22 @@ mod tests {
 			assert_eq!(canonical(&once).unwrap(), once, "not idempotent: {text:?}");
 		}
 	}
+
+	#[test]
+	fn prelude_corpus_is_canonical() {
+		let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prelude");
+		let mut stack = vec![root];
+		while let Some(top) = stack.pop() {
+			for entry in std::fs::read_dir(&top).unwrap() {
+				let entry = entry.unwrap();
+				let path = entry.path();
+				if entry.file_type().unwrap().is_dir() {
+					stack.push(path);
+				} else if path.extension().is_some_and(|ext| ext == "rhai") {
+					let text = std::fs::read_to_string(&path).unwrap();
+					assert_eq!(canonical(&text).unwrap(), text, "not canonical: {}", path.display());
+				}
+			}
+		}
+	}
 }

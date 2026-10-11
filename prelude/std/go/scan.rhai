@@ -1,4 +1,4 @@
-fn code_lines(text) {
+fn code_lines(text) { 
 	let out = [];
 	let in_comment = false;
 	for raw in text.split("\n") {
@@ -100,7 +100,7 @@ fn scan_imports(text) {
 fn has_cgo_import(text) {
 	if !text.contains(`"C"`) {
 		return false;
-	}	for line in code_lines(text) {
+	} for line in code_lines(text) {
 		let t = line;
 		t.trim();
 		if t.starts_with("import ") && last_quoted(t) == "C" {
@@ -194,7 +194,25 @@ fn build_tag_value(ctx, cgo_on, tag) {
 	if tag == "windows" || tag == "linux" || tag == "darwin" {
 		return goos_of(ctx.platform_os) == tag;
 	}
-	if ["386", "amd64", "amd64p32", "arm", "arm64", "loong64", "mips", "mipsle", "mips64", "mips64le", "ppc64", "ppc64le", "riscv", "riscv64", "s390x", "sparc64", "wasm"].contains(tag) {
+	if [
+		"386",
+		"amd64",
+		"amd64p32",
+		"arm",
+		"arm64",
+		"loong64",
+		"mips",
+		"mipsle",
+		"mips64",
+		"mips64le",
+		"ppc64",
+		"ppc64le",
+		"riscv",
+		"riscv64",
+		"s390x",
+		"sparc64",
+		"wasm"
+	].contains(tag) {
 		return goarch_of(ctx.platform_arch) == tag;
 	}
 	if tag.starts_with("goexperiment.") {
@@ -358,8 +376,44 @@ fn name_excluded(ctx, filename) {
 	} else if stem.ends_with(".h") {
 		stem = stem.sub_string(0, stem.len() - 2);
 	}
-	let gooses = ["aix", "android", "darwin", "dragonfly", "freebsd", "hurd", "illumos", "ios", "js", "linux", "netbsd", "openbsd", "plan9", "solaris", "wasip1", "windows", "zos"];
-	let goarches = ["386", "amd64", "amd64p32", "arm", "arm64", "loong64", "mips", "mipsle", "mips64", "mips64le", "ppc64", "ppc64le", "riscv", "riscv64", "s390x", "sparc64", "wasm"];
+	let gooses = [
+		"aix",
+		"android",
+		"darwin",
+		"dragonfly",
+		"freebsd",
+		"hurd",
+		"illumos",
+		"ios",
+		"js",
+		"linux",
+		"netbsd",
+		"openbsd",
+		"plan9",
+		"solaris",
+		"wasip1",
+		"windows",
+		"zos"
+	];
+	let goarches = [
+		"386",
+		"amd64",
+		"amd64p32",
+		"arm",
+		"arm64",
+		"loong64",
+		"mips",
+		"mipsle",
+		"mips64",
+		"mips64le",
+		"ppc64",
+		"ppc64le",
+		"riscv",
+		"riscv64",
+		"s390x",
+		"sparc64",
+		"wasm"
+	];
 	let parts = stem.split("_");
 	let n = parts.len();
 	if n > 1 && goarches.contains(parts[n - 1]) {

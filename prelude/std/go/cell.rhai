@@ -42,8 +42,8 @@ fn c_compiler(ctx) {
 
 fn import_of(ctx, name) {
 	let cell_config = ctx["cell_config"];
-	let table = if cell_config == () { () } else { cell_config["packages"] };
-	if table != () && table.type_of() == "map" && table[name] != () {
+	let table = if cell_config ==() { () } else { cell_config["packages"] };
+	if table !=() && table.type_of() == "map" && table[name] !=() {
 		return table[name];
 	}
 	name
@@ -135,16 +135,16 @@ fn emit_cgo(ctx, driver, opts) {
 	}
 	cgo_args += ["-trimpath", "FORGE_EXEC_ROOT=>"] + opts["cgo_files"];
 	ctx.action(#{
-		name: `go cgo ${importpath}`,
-		command: driver,
-		args: cgo_args,
-		inputs: opts["inputs"],
-		execution_deps: [],
-		outputs: [`${gen}/`],
-		env: env,
-		toolchain_id: ctx.tool_id(),
-		writes: #{},
-	});
+			name: `go cgo ${importpath}`,
+			command: driver,
+			args: cgo_args,
+			inputs: opts["inputs"],
+			execution_deps: [],
+			outputs: [`${gen}/`],
+			env: env,
+			toolchain_id: ctx.tool_id(),
+			writes: #{},
+		});
 	let cobjs = [];
 	let main_obj = "";
 	let pairs = [];
@@ -185,33 +185,32 @@ fn emit_cgo(ctx, driver, opts) {
 		link_inputs = [main_obj] + cobjs;
 	}
 	ctx.action(#{
-		name: `go cgo link ${importpath}`,
-		command: cc,
-		args: link_args,
-		inputs: link_inputs,
-		execution_deps: [main_obj] + cobjs + [gen],
-		outputs: [dynobj],
-		env: base_env(ctx, true),
-		toolchain_id: ctx.tool_id(),
-		writes: #{},
-	});
+			name: `go cgo link ${importpath}`,
+			command: cc,
+			args: link_args,
+			inputs: link_inputs,
+			execution_deps: [main_obj] + cobjs + [gen],
+			outputs: [dynobj],
+			env: base_env(ctx, true),
+			toolchain_id: ctx.tool_id(),
+			writes: #{},
+		});
 	let import_go = `${gen}/_cgo_import.go`;
-	let dyn_args = ["tool", "cgo", "-dynpackage", basename(importpath),
-		"-dynimport", dynobj, "-dynout", import_go];
+	let dyn_args = ["tool", "cgo", "-dynpackage", basename(importpath), "-dynimport", dynobj, "-dynout", import_go];
 	if opts["dynlinker"] {
 		dyn_args.push("-dynlinker");
 	}
 	ctx.action(#{
-		name: `go cgo dynimport ${importpath}`,
-		command: driver,
-		args: dyn_args,
-		inputs: [],
-		execution_deps: [dynobj],
-		outputs: [import_go],
-		env: base_env(ctx, true),
-		toolchain_id: ctx.tool_id(),
-		writes: #{},
-	});
+			name: `go cgo dynimport ${importpath}`,
+			command: driver,
+			args: dyn_args,
+			inputs: [],
+			execution_deps: [dynobj],
+			outputs: [import_go],
+			env: base_env(ctx, true),
+			toolchain_id: ctx.tool_id(),
+			writes: #{},
+		});
 	#{ gen: gen, objects: cobjs, import_go: import_go }
 }
 
@@ -236,16 +235,16 @@ fn package_build(ctx, driver, importpath, parts, std, out, artifact) {
 	if parts["c"].len() > 0 && cgo_files.len() == 0 {
 		throw `package ${ctx.label} has C sources but no cgo import`;
 	}
-	let cgo = ();
+	let cgo =();
 	if cgo_files.len() > 0 {
 		cgo = emit_cgo(ctx, driver, #{
-			importpath: importpath, cgo_files: cgo_files, c_files: parts["c"],
-			gen: `${out}.gen`, out: out, inputs: cgo_files, is_std: false,
-			no_runtime_cgo: false, no_syscall: false, dynlinker: false, lpthread: false,
-		});
+				importpath: importpath, cgo_files: cgo_files, c_files: parts["c"],
+				gen: `${out}.gen`, out: out, inputs: cgo_files, is_std: false,
+				no_runtime_cgo: false, no_syscall: false, dynlinker: false, lpthread: false,
+			});
 	}
 	let gos = plain_go;
-	if cgo != () {
+	if cgo !=() {
 		gos.push(`${cgo["gen"]}/_cgo_gotypes.go`);
 		for file in cgo_files {
 			let stem = basename(file);
@@ -264,11 +263,11 @@ fn package_build(ctx, driver, importpath, parts, std, out, artifact) {
 	for entry in entries {
 		deps.push(entry[1]);
 	}
-	if cgo != () {
+	if cgo !=() {
 		deps.push(cgo["gen"]);
 		deps.push(cgo["import_go"]);
 	}
-	let needs_pack = parts["asm"].len() > 0 || (cgo != () && cgo["objects"].len() > 0);
+	let needs_pack = parts["asm"].len() > 0 || (cgo !=() && cgo["objects"].len() > 0);
 	let asmhdr = if needs_pack { `${out}.goasm/go_asm.h` } else { "" };
 	let asm = #{ symabis: "", objects: [] };
 	if parts["asm"].len() > 0 {
@@ -276,26 +275,26 @@ fn package_build(ctx, driver, importpath, parts, std, out, artifact) {
 		deps.push(asm["symabis"]);
 	}
 	emit_compile(ctx, driver, #{
-		importpath: importpath, srcs: gos,
-		cfg_text: importcfg_text(entries), cfg_path: `${out}.importcfg`,
-		out: out, is_std: false, inputs: plain_go + parts["headers"], exec_deps: deps,
-		cgo_on: cgo != (), complete: !needs_pack,
-		symabis: asm["symabis"], asmhdr: asmhdr,
-		artifact: if needs_pack { "" } else { artifact },
-	});
+			importpath: importpath, srcs: gos,
+			cfg_text: importcfg_text(entries), cfg_path: `${out}.importcfg`,
+			out: out, is_std: false, inputs: plain_go + parts["headers"], exec_deps: deps,
+			cgo_on: cgo !=(), complete: !needs_pack,
+			symabis: asm["symabis"], asmhdr: asmhdr,
+			artifact: if needs_pack { "" } else { artifact },
+		});
 	if needs_pack {
 		let order = [];
 		for obj in asm["objects"] {
 			order.push(obj);
 		}
-		if cgo != () {
+		if cgo !=() {
 			for obj in cgo["objects"] {
 				order.push(obj);
 			}
 		}
 		emit_pack(ctx, driver, out, order, asmhdr, artifact);
 	}
-	#{ archive: out, cgo: cgo != () }
+	#{ archive: out, cgo: cgo !=() }
 }
 
 fn testmain_text(aliases) {
@@ -405,11 +404,11 @@ fn build_test(ctx, driver, std, cgo_ready) {
 			}
 		}
 		emit_compile(ctx, driver, #{
-			importpath: target, srcs: lib_files + internal[target],
-			cfg_text: importcfg_text(entries), cfg_path: `${archive}.importcfg`,
-			out: archive, is_std: false, inputs: lib_files + internal[target], exec_deps: archives_of(entries),
-			cgo_on: false, complete: true, symabis: "", asmhdr: "", artifact: "",
-		});
+				importpath: target, srcs: lib_files + internal[target],
+				cfg_text: importcfg_text(entries), cfg_path: `${archive}.importcfg`,
+				out: archive, is_std: false, inputs: lib_files + internal[target], exec_deps: archives_of(entries),
+				cgo_on: false, complete: true, symabis: "", asmhdr: "", artifact: "",
+			});
 		archives[target] = archive;
 	}
 	for lib in internal_order {
@@ -433,11 +432,11 @@ fn build_test(ctx, driver, std, cgo_ready) {
 		}
 		entries.push([lib, archives[lib]]);
 		emit_compile(ctx, driver, #{
-			importpath: `${lib}_test`, srcs: external[lib],
-			cfg_text: importcfg_text(entries), cfg_path: `${archive}.importcfg`,
-			out: archive, is_std: false, inputs: external[lib], exec_deps: archives_of(entries),
-			cgo_on: false, complete: true, symabis: "", asmhdr: "", artifact: "",
-		});
+				importpath: `${lib}_test`, srcs: external[lib],
+				cfg_text: importcfg_text(entries), cfg_path: `${archive}.importcfg`,
+				out: archive, is_std: false, inputs: external[lib], exec_deps: archives_of(entries),
+				cgo_on: false, complete: true, symabis: "", asmhdr: "", artifact: "",
+			});
 		mains.push([`${lib}_test`, archive, external[lib]]);
 	}
 	for lib in internal_order {
@@ -482,18 +481,18 @@ fn build_test(ctx, driver, std, cgo_ready) {
 	writes[main_src] = testmain_text(aliases);
 	writes[`${main_archive}.importcfg`] = importcfg_text(entries);
 	ctx.action(#{
-		name: `go compile main`,
-		command: driver,
-		args: ["tool", "compile", "-p", "main", "-importcfg", `${main_archive}.importcfg`,
+			name: `go compile main`,
+			command: driver,
+			args: ["tool", "compile", "-p", "main", "-importcfg", `${main_archive}.importcfg`,
 			"-trimpath", "FORGE_EXEC_ROOT=>", "-buildid=", "-pack", "-nolocalimports",
 			"-complete", "-o", main_archive, main_src],
-		inputs: [],
-		execution_deps: archives_of(entries),
-		outputs: [main_archive],
-		env: base_env(ctx, false),
-		toolchain_id: ctx.tool_id(),
-		writes: writes,
-	});
+			inputs: [],
+			execution_deps: archives_of(entries),
+			outputs: [main_archive],
+			env: base_env(ctx, false),
+			toolchain_id: ctx.tool_id(),
+			writes: writes,
+		});
 	let link_archives = [main_archive];
 	for dep in ctx.dep_artifacts {
 		link_archives.push(dep[1]);
@@ -505,18 +504,28 @@ fn build_test(ctx, driver, std, cgo_ready) {
 		link_archives.push(archive_path);
 	}
 	let exe = `forge-out/test/${ctx.profile.name}/${ctx.name}`;
-	link_go(ctx, driver, main_archive, link_archives, [], importcfg_text(entries), `${exe}.importcfg`, exe, cgo_ready);
+	link_go(
+		ctx,
+		driver,
+		main_archive,
+		link_archives,
+		[],
+		importcfg_text(entries),
+		`${exe}.importcfg`,
+		exe,
+		cgo_ready
+	);
 	ctx.action(#{
-		name: `run ${ctx.label}`,
-		command: exe,
-		args: ctx.run_args,
-		inputs: ctx.data,
-		execution_deps: [exe],
-		outputs: [],
-		is_test: true,
-		env: ctx.env,
-		toolchain_id: "",
-	});
+			name: `run ${ctx.label}`,
+			command: exe,
+			args: ctx.run_args,
+			inputs: ctx.data,
+			execution_deps: [exe],
+			outputs: [],
+			is_test: true,
+			env: ctx.env,
+			toolchain_id: "",
+		});
 }
 
 fn archives_of(entries) {
@@ -545,16 +554,16 @@ fn link_go(ctx, driver, main_archive, archives, objects, cfg_text, cfg_path, exe
 		}
 	}
 	ctx.action(#{
-		name: `go link ${exe}`,
-		command: driver,
-		args: args,
-		inputs: [],
-		execution_deps: all,
-		outputs: [exe],
-		env: base_env(ctx, cgo_on),
-		toolchain_id: ctx.tool_id(),
-		writes: writes_for(cfg_path, cfg_text),
-	});
+			name: `go link ${exe}`,
+			command: driver,
+			args: args,
+			inputs: [],
+			execution_deps: all,
+			outputs: [exe],
+			env: base_env(ctx, cgo_on),
+			toolchain_id: ctx.tool_id(),
+			writes: writes_for(cfg_path, cfg_text),
+		});
 }
 
 fn writes_for(path, content) {
@@ -592,7 +601,17 @@ fn build_binary(ctx, driver, importpath, std, cgo_ready) {
 	for archive_path in std["archives"] {
 		link_archives.push(archive_path);
 	}
-	link_go(ctx, driver, archive, link_archives, [], importcfg_text(entries), `${exe}.importcfg`, exe, cgo_ready);
+	link_go(
+		ctx,
+		driver,
+		archive,
+		link_archives,
+		[],
+		importcfg_text(entries),
+		`${exe}.importcfg`,
+		exe,
+		cgo_ready
+	);
 }
 
 fn plan(ctx) { #{} }
@@ -671,17 +690,17 @@ fn build_gccgo(ctx, parts) {
 			args.push(file);
 		}
 		ctx.action(#{
-			name: `gccgo ${ctx.label}`,
-			command: driver,
-			args: args,
-			inputs: parts["gofiles"],
-			execution_deps: [],
-			outputs: [out],
-			artifact: out,
-			env: base_env(ctx, false),
-			toolchain_id: ctx.tool_id(),
-			writes: #{},
-		});
+				name: `gccgo ${ctx.label}`,
+				command: driver,
+				args: args,
+				inputs: parts["gofiles"],
+				execution_deps: [],
+				outputs: [out],
+				artifact: out,
+				env: base_env(ctx, false),
+				toolchain_id: ctx.tool_id(),
+				writes: #{},
+			});
 		return;
 	}
 	throw `gccgo backend supports libraries only`;

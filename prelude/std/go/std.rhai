@@ -128,16 +128,16 @@ fn emit_asm(ctx, driver, importpath, files, out, include_dirs, asmhdr, is_std) {
 		sym_inputs = files;
 	}
 	ctx.action(#{
-		name: `go asm ${importpath}`,
-		command: driver,
-		args: sym_args,
-		inputs: sym_inputs,
-		execution_deps: [],
-		outputs: [symabis],
-		env: base_env(ctx, false),
-		toolchain_id: ctx.tool_id(),
-		writes: sym_writes,
-	});
+			name: `go asm ${importpath}`,
+			command: driver,
+			args: sym_args,
+			inputs: sym_inputs,
+			execution_deps: [],
+			outputs: [symabis],
+			env: base_env(ctx, false),
+			toolchain_id: ctx.tool_id(),
+			writes: sym_writes,
+		});
 	let objects = [];
 	for file in files {
 		let obj = `${out}.${basename(file)}.o`;
@@ -157,18 +157,26 @@ fn emit_asm(ctx, driver, importpath, files, out, include_dirs, asmhdr, is_std) {
 		if !is_std {
 			obj_inputs = [file];
 		}
-		obj_args += ["-D", `GOOS_${goos_of(ctx.platform_os)}`, "-D", `GOARCH_${goarch_of(ctx.platform_arch)}`, "-o", obj, file];
+		obj_args += [
+			"-D",
+			`GOOS_${goos_of(ctx.platform_os)}`,
+			"-D",
+			`GOARCH_${goarch_of(ctx.platform_arch)}`,
+			"-o",
+			obj,
+			file
+		];
 		ctx.action(#{
-			name: `go asm ${importpath} ${basename(file)}`,
-			command: driver,
-			args: obj_args,
-			inputs: obj_inputs,
-			execution_deps: obj_deps,
-			outputs: [obj],
-			env: base_env(ctx, false),
-			toolchain_id: ctx.tool_id(),
-			writes: #{},
-		});
+				name: `go asm ${importpath} ${basename(file)}`,
+				command: driver,
+				args: obj_args,
+				inputs: obj_inputs,
+				execution_deps: obj_deps,
+				outputs: [obj],
+				env: base_env(ctx, false),
+				toolchain_id: ctx.tool_id(),
+				writes: #{},
+			});
 		objects.push(obj);
 	}
 	#{ symabis: symabis, objects: objects }
@@ -182,16 +190,16 @@ fn emit_cc(ctx, cc, name, src, obj, include_dirs, cgo_on, inputs, exec_deps) {
 	}
 	args += ["-o", obj, src];
 	ctx.action(#{
-		name: name,
-		command: cc,
-		args: args,
-		inputs: inputs,
-		execution_deps: exec_deps,
-		outputs: [obj],
-		env: base_env(ctx, cgo_on),
-		toolchain_id: ctx.tool_id(),
-		writes: #{},
-	});
+			name: name,
+			command: cc,
+			args: args,
+			inputs: inputs,
+			execution_deps: exec_deps,
+			outputs: [obj],
+			env: base_env(ctx, cgo_on),
+			toolchain_id: ctx.tool_id(),
+			writes: #{},
+		});
 	obj
 }
 
@@ -276,12 +284,12 @@ fn std_closure(ctx, layout, roots, cgo_on) {
 			continue;
 		}
 		if !closure.contains(root) {
-			closure[root] = ();
+			closure[root] =();
 			queue.push(root);
 		}
 	}
 	if cgo_on && !closure.contains("runtime/cgo") {
-		closure["runtime/cgo"] = ();
+		closure["runtime/cgo"] =();
 		queue.push("runtime/cgo");
 	}
 	while queue.len() > 0 {
@@ -299,7 +307,7 @@ fn std_closure(ctx, layout, roots, cgo_on) {
 				continue;
 			}
 			if !closure.contains(imp) {
-				closure[imp] = ();
+				closure[imp] =();
 				queue.push(imp);
 			}
 		}
@@ -309,7 +317,7 @@ fn std_closure(ctx, layout, roots, cgo_on) {
 
 fn emit_std(ctx, plan, layout, closure) {
 	let driver = go_driver(ctx);
-	let cc = ();
+	let cc =();
 	let tag = `go std ${goos_of(ctx.platform_os)} ${goarch_of(ctx.platform_arch)} ${ctx.profile.name}`;
 	let cfg = #{};
 	let archives = [];
@@ -343,16 +351,16 @@ fn emit_std(ctx, plan, layout, closure) {
 			deps.push(asm["symabis"]);
 		}
 		let cobjs = [];
-		let cgo = ();
+		let cgo =();
 		if members["cgofiles"].len() > 0 {
 			let special = importpath == "runtime/cgo";
 			cgo = emit_cgo(ctx, driver, #{
-				importpath: importpath, cgo_files: members["cgofiles"], c_files: members["c"],
-				gen: `${out}.gen`, out: out, inputs: [], is_std: true,
-				no_runtime_cgo: special, no_syscall: special, dynlinker: special, lpthread: special,
-			});
+					importpath: importpath, cgo_files: members["cgofiles"], c_files: members["c"],
+					gen: `${out}.gen`, out: out, inputs: [], is_std: true,
+					no_runtime_cgo: special, no_syscall: special, dynlinker: special, lpthread: special,
+				});
 		} else if members["c"].len() > 0 {
-			if cc == () {
+			if cc ==() {
 				cc = c_compiler(ctx);
 			}
 			let pkgdir = `${layout["root"]}/${layout["rel"]}/${importpath}`;
@@ -362,7 +370,7 @@ fn emit_std(ctx, plan, layout, closure) {
 			}
 		}
 		let gos = members["files"];
-		if cgo != () {
+		if cgo !=() {
 			gos.push(`${cgo["gen"]}/_cgo_gotypes.go`);
 			for file in members["cgofiles"] {
 				let stem = basename(file);
@@ -373,12 +381,12 @@ fn emit_std(ctx, plan, layout, closure) {
 			deps.push(cgo["import_go"]);
 		}
 		emit_compile(ctx, driver, #{
-			importpath: importpath, srcs: gos,
-			cfg_text: importcfg_text(entries), cfg_path: `${out}.importcfg`,
-			out: out, is_std: true, inputs: [], exec_deps: deps,
-			cgo_on: cgo != (), complete: !needs_pack && !linknamed_std(importpath),
-			symabis: asm["symabis"], asmhdr: asmhdr, artifact: "",
-		});
+				importpath: importpath, srcs: gos,
+				cfg_text: importcfg_text(entries), cfg_path: `${out}.importcfg`,
+				out: out, is_std: true, inputs: [], exec_deps: deps,
+				cgo_on: cgo !=(), complete: !needs_pack && !linknamed_std(importpath),
+				symabis: asm["symabis"], asmhdr: asmhdr, artifact: "",
+			});
 		if needs_pack {
 			let order = [];
 			for obj in asm["objects"] {
@@ -387,7 +395,7 @@ fn emit_std(ctx, plan, layout, closure) {
 			for obj in cobjs {
 				order.push(obj);
 			}
-			if cgo != () {
+			if cgo !=() {
 				for obj in cgo["objects"] {
 					order.push(obj);
 				}
