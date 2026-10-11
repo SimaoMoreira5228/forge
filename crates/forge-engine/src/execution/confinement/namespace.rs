@@ -24,12 +24,15 @@ pub fn spawn_landlocked(launch: &Launch, mount: Option<&WorkerMount>, policy: &P
 		Some(mount) => Some(call_for(launch, mount)?),
 		None => None,
 	};
+	let workdir = CString::new(launch.workdir.as_os_str().as_encoded_bytes())
+		.map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
 	let mut command = base_command(launch);
-	command.current_dir(&launch.workdir);
 	unsafe {
 		command.pre_exec(move || {
 			if let Some(call) = &call {
 				call.apply()?;
+			} else if unsafe { libc::chdir(workdir.as_ptr()) } != 0 {
+				return Err(std::io::Error::last_os_error());
 			}
 			match &rules {
 				Some(rules) => rules.apply(),

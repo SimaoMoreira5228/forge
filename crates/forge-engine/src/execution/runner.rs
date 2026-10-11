@@ -667,4 +667,54 @@ mod tests {
 		assert_eq!(parsed, vec![("include".to_string(), "/out/include".to_string())]);
 		assert_eq!(metadata_env_name(&file.key_prefix, &parsed[0].0), "DEP_AWS_LC_0_45_0_INCLUDE");
 	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn landlocked_spawn_reaches_a_subdirectory_workdir() {
+		use forge_core::ConfigTransition;
+
+		if !matches!(
+			crate::execution::confinement::active().backend,
+			crate::execution::confinement::Backend::Landlock
+		) {
+			eprintln!("skipping: the landlock backend is not active on this host");
+			return;
+		}
+		let dir = std::env::temp_dir().join(format!("forge-subdir-workdir-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		std::fs::create_dir_all(dir.join("work")).unwrap();
+		std::fs::write(dir.join("work/f.txt"), b"data").unwrap();
+		let runner = SandboxRunner::new(&dir, &dir.join("forge-out"));
+		let toolchains = ToolchainPaths::default();
+		let spec = ActionSpec {
+			name: "subdir workdir probe".into(),
+			component: "//:probe".into(),
+			configuration: ConfigTransition::Target,
+			command: "/bin/sh".into(),
+			args: vec!["-c".into(), "pwd".into()],
+			inputs: vec![PathBuf::from("work/f.txt")],
+			execution_deps: Vec::new(),
+			outputs: Vec::new(),
+			workdir: Some(PathBuf::from("work")),
+			is_test: false,
+			stdout: None,
+			compile_command: None,
+			environment_files: Vec::new(),
+			argument_files: Vec::new(),
+			env: BTreeMap::new(),
+			toolchain_ids: Vec::new(),
+			toolchain_id: None,
+			worker: None,
+			writes: Default::default(),
+		};
+		let sandbox = runner.prepare("probe-key", &spec).unwrap();
+		let report = runner.execute(&spec, &sandbox, &toolchains);
+		assert!(report.success, "launch failed: {}", report.stderr_tail);
+		assert!(
+			report.stdout_tail.trim_end().ends_with("/work"),
+			"wrong cwd: {:?}",
+			report.stdout_tail
+		);
+		let _ = std::fs::remove_dir_all(dir);
+	}
 }
