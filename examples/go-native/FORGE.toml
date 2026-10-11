@@ -1,0 +1,15 @@
+[library.greet]
+visibility = "public"
+srcs = ["lib/greet.go"]
+
+[library.mathc]
+visibility = "public"
+srcs = ["lib/mathc.go"]
+
+[binary.app]
+deps = ["greet", "mathc"]
+srcs = ["src/main.go"]
+
+[test.greet_test]
+deps = ["greet"]
+srcs = ["lib/greet_test.go"]

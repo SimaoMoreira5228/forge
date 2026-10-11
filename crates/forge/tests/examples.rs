@@ -2,9 +2,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod forge_cli;
+mod go_toolchain;
 mod rust_toolchain;
 
 use forge_cli::run_forge;
+use go_toolchain::link_go_toolchain;
 use rust_toolchain::link_rust_toolchain;
 
 fn copy_tree(source: &Path, destination: &Path) {
@@ -55,6 +57,44 @@ fn example(name: &str, variant: &str) -> PathBuf {
 	copy_tree(&source, &dir);
 	install_toolchain_link(&dir);
 	dir
+}
+
+fn go_example(name: &str, variant: &str) -> Option<PathBuf> {
+	let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+		.parent()
+		.unwrap()
+		.parent()
+		.unwrap()
+		.join("examples")
+		.join(name);
+	let dir = std::env::temp_dir().join(format!("forge-example-{name}-{variant}-{}", std::process::id()));
+	let _ = std::fs::remove_dir_all(&dir);
+	copy_tree(&source, &dir);
+	if !link_go_toolchain(&dir) {
+		std::fs::remove_dir_all(&dir).unwrap();
+		return None;
+	}
+	Some(dir)
+}
+
+fn snapshot_sources(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+	let mut files = Vec::new();
+	let mut stack = vec![dir.to_path_buf()];
+	while let Some(top) = stack.pop() {
+		for entry in std::fs::read_dir(&top).unwrap() {
+			let entry = entry.unwrap();
+			let path = entry.path();
+			if entry.file_type().unwrap().is_dir() {
+				if path.file_name().unwrap() != "forge-out" && path.file_name().unwrap() != ".forge" {
+					stack.push(path);
+				}
+			} else if path.extension().is_some_and(|ext| ext == "go") {
+				files.push((path.clone(), std::fs::read(&path).unwrap()));
+			}
+		}
+	}
+	files.sort();
+	files
 }
 
 fn dependencies_synced(dir: &Path) -> bool {
@@ -190,5 +230,31 @@ fn rust_cargo_example_imports_cargo_files_and_runs_without_cargo() {
 	assert_eq!(std::fs::read_to_string(dir.join("Cargo.toml")).unwrap(), manifest);
 	assert_eq!(std::fs::read_to_string(dir.join("Cargo.lock")).unwrap(), lock);
 	assert!(!dir.join("target").exists());
+	std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn go_native_example_builds_runs_and_tests_with_cgo() {
+	let Some(dir) = go_example("go-native", "build") else {
+		eprintln!("skipping: go 1.27.1 and clang 23.1.2 toolchains are not installed");
+		return;
+	};
+	let before = snapshot_sources(&dir);
+
+	let (ok, log) = run_forge(&dir, &["build"]);
+	assert!(ok, "go-native build failed: {log}");
+	assert!(dir.join("forge-out/bin/debug/app").is_file(), "{log}");
+	assert!(dir.join("forge-out/lib/debug/libgreet.a").is_file(), "{log}");
+	assert!(dir.join("forge-out/lib/debug/libmathc.a").is_file(), "{log}");
+
+	let (ok, log) = run_forge(&dir, &["run", "app"]);
+	assert!(ok, "go-native run failed: {log}");
+	assert!(log.contains("greet: 42") && log.contains("cgo: 42"), "{log}");
+
+	let (ok, log) = run_forge(&dir, &["test"]);
+	assert!(ok, "go-native test failed: {log}");
+	assert!(log.contains("1 executed") || log.contains("passed"), "{log}");
+
+	assert_eq!(snapshot_sources(&dir), before, "build must not modify sources");
 	std::fs::remove_dir_all(&dir).unwrap();
 }

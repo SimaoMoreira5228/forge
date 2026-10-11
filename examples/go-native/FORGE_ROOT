@@ -1,0 +1,17 @@
+[project]
+name = "go-native"
+
+[discovery]
+include = ["."]
+
+[toolchains.go]
+from = "version"
+version = "1.27.1"
+
+[toolchains.clang]
+from = "version"
+version = "23.1.2"
+
+[cell.go.packages]
+greet = "example.com/go-native/greet"
+mathc = "example.com/go-native/mathc"

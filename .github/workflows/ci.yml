@@ -116,6 +116,10 @@ jobs:
       - name: warm the Forge store with the pinned toolchains
         run: cargo run --release -p forge -- toolchains sync
 
+      - name: warm the Forge store with the Go example toolchains
+        run: cargo run --release -p forge -- toolchains sync
+        working-directory: examples/go-native
+
       - name: examples against a live registry
         env:
           FORGE_EXAMPLE_DEPS: "1"
@@ -208,6 +212,9 @@ jobs:
 
       - name: warm the Forge store with the pinned Rust toolchain
         run: cargo run -p forge -- toolchains sync rust
+
+      - name: warm the Forge store with the pinned Go toolchain
+        run: cargo run -p forge -- toolchains sync go
 
       - name: test
         run: cargo test --workspace --all-features
