@@ -101,6 +101,7 @@ mod tests {
 			toolchain_ids: Vec::new(),
 			toolchain_id: None,
 			worker: None,
+			writes: Default::default(),
 		}
 	}
 

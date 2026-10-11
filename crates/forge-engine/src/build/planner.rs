@@ -369,6 +369,7 @@ impl<'a> Planner<'a> {
 			toolchain_ids: Vec::new(),
 			toolchain_id,
 			worker,
+			writes: BTreeMap::new(),
 		});
 		Ok(())
 	}
@@ -434,6 +435,11 @@ impl<'a> Planner<'a> {
 		let tool_digest = tool_id(&tool);
 		let all_toolchains = self.ctx.toolchains.clone();
 		let dir_toolchains = all_toolchains.clone();
+		let read_roots: BTreeMap<String, PathBuf> = all_toolchains
+			.iter()
+			.map(|(name, tool)| (name.clone(), tool.root.clone()))
+			.collect();
+		let glob_roots = read_roots.clone();
 
 		let hooks = CellHooks {
 			workspace: self.workspace_hooks(),
@@ -460,6 +466,18 @@ impl<'a> Planner<'a> {
 					.get(toolchain)
 					.map(|tool| format!("{}/{}", crate::toolchain::TOOLCHAIN_TOKEN, tool.id()))
 					.unwrap_or_default()
+			}),
+			toolchain_glob: Box::new(move |toolchain, pattern| {
+				let root = glob_roots
+					.get(toolchain)
+					.ok_or_else(|| format!("unknown toolchain `{toolchain}`"))?;
+				forge_script::glob::toolchain_glob(root, pattern)
+			}),
+			toolchain_read: Box::new(move |toolchain, path| {
+				let root = read_roots
+					.get(toolchain)
+					.ok_or_else(|| format!("unknown toolchain `{toolchain}`"))?;
+				forge_script::glob::toolchain_read(root, path)
 			}),
 			tool_id: Box::new(move || tool_digest.clone()),
 		};
@@ -611,6 +629,7 @@ impl<'a> Planner<'a> {
 				env: action.env.clone(),
 				toolchain_ids: Vec::new(),
 				toolchain_id: action.toolchain_id.clone(),
+				writes: action.writes.clone(),
 				worker: worker
 					.clone()
 					.filter(|_| action.toolchain_id.as_ref().is_some_and(|id| !id.is_empty())),

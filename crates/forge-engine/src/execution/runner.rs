@@ -61,6 +61,9 @@ impl SandboxRunner {
 		std::fs::create_dir_all(&dir).map_err(|e| io_err("create sandbox", &dir, e))?;
 		std::fs::create_dir_all(dir.join("tmp")).map_err(|e| io_err("create sandbox tmp", &dir, e))?;
 		for input in spec.inputs.iter().chain(&spec.execution_deps) {
+			if input.to_str().is_some_and(|path| spec.writes.contains_key(path)) {
+				continue;
+			}
 			let src = self.workspace.join(input);
 			let dst = dir.join(input);
 			if !src.is_file() && !src.is_dir() {
@@ -92,6 +95,13 @@ impl SandboxRunner {
 				dir.join(output.path.parent().unwrap_or_else(|| Path::new("")))
 			};
 			std::fs::create_dir_all(&path).map_err(|e| io_err("prepare outputs", &path, e))?;
+		}
+		for (path, content) in &spec.writes {
+			let dst = dir.join(path);
+			if let Some(parent) = dst.parent() {
+				std::fs::create_dir_all(parent).map_err(|e| io_err("prepare", parent, e))?;
+			}
+			std::fs::write(&dst, content).map_err(|e| io_err("write generated input", &dst, e))?;
 		}
 		Ok(dir)
 	}

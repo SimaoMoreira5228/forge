@@ -94,9 +94,44 @@ pub fn expand_glob(root: &Path, pattern: &str) -> std::io::Result<Vec<PathBuf>> 
 		.collect())
 }
 
+pub fn toolchain_glob(root: &Path, pattern: &str) -> Result<Vec<String>, String> {
+	if Path::new(pattern).is_absolute() || pattern.split('/').any(|s| s == "..") {
+		return Err(format!("toolchain glob must stay inside the toolchain: {pattern}"));
+	}
+	expand_glob(root, pattern)
+		.map(|hits| hits.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
+		.map_err(|e| e.to_string())
+}
+
+pub fn toolchain_read(root: &Path, path: &str) -> Result<String, String> {
+	let rel = Path::new(path);
+	if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+		return Err(format!("toolchain read must stay inside the toolchain: {path}"));
+	}
+	std::fs::read_to_string(root.join(rel)).map_err(|e| format!("cannot read {}: {e}", root.join(rel).display()))
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn toolchain_paths_stay_inside_their_root() {
+		let tmp = std::env::temp_dir().join(format!("forge-toolchain-glob-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&tmp);
+		std::fs::create_dir_all(tmp.join("src/runtime")).unwrap();
+		std::fs::write(tmp.join("src/runtime/a.go"), "package runtime\n").unwrap();
+		assert_eq!(
+			toolchain_glob(&tmp, "src/runtime/*.go").unwrap(),
+			vec!["src/runtime/a.go".to_string()]
+		);
+		assert!(toolchain_glob(&tmp, "/abs/*.go").is_err());
+		assert!(toolchain_glob(&tmp, "src/../escape").is_err());
+		assert!(toolchain_read(&tmp, "src/runtime/a.go").unwrap().contains("package runtime"));
+		assert!(toolchain_read(&tmp, "/abs").is_err());
+		assert!(toolchain_read(&tmp, "../escape").is_err());
+		let _ = std::fs::remove_dir_all(&tmp);
+	}
 
 	#[test]
 	fn single_star_stays_in_segment() {

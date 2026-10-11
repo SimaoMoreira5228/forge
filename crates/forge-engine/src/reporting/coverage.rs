@@ -403,6 +403,7 @@ mod tests {
 			toolchain_ids: vec![],
 			toolchain_id: None,
 			worker: None,
+			writes: BTreeMap::new(),
 		}];
 		std::fs::write(out_dir.join("unselected.raw"), b"unselected").unwrap();
 		std::fs::create_dir_all(out_dir.join("coverage")).unwrap();

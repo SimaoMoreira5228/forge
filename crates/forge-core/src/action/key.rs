@@ -121,6 +121,7 @@ mod discrimination {
 			toolchain_ids: Vec::new(),
 			toolchain_id: Some("rust@0123456789ab".into()),
 			worker: None,
+			writes: Default::default(),
 		}
 	}
 

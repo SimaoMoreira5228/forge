@@ -23,6 +23,7 @@ pub struct ActionDecl {
 	pub argument_files: Vec<(String, String, String, Option<String>)>,
 	pub env: BTreeMap<String, String>,
 	pub toolchain_id: Option<String>,
+	pub writes: BTreeMap<String, String>,
 }
 
 type PathBufArg = String;
@@ -105,6 +106,8 @@ impl From<&forge_core::Profile> for ProfileView {
 type ArtifactPath = Box<dyn Fn(&str, &str) -> Result<String, String>>;
 type FileReader = Box<dyn Fn(&str) -> Result<String, String>>;
 type Globber = Box<dyn Fn(&str) -> Result<Vec<String>, String>>;
+type ToolchainGlob = Box<dyn Fn(&str, &str) -> Result<Vec<String>, String>>;
+type ToolchainReader = Box<dyn Fn(&str, &str) -> Result<String, String>>;
 
 const CLAIMED_SECTION: &str = "forge-claimed";
 
@@ -121,6 +124,8 @@ pub struct CellHooks {
 	pub bin: Box<dyn Fn(&str) -> String>,
 	pub tool_bin: Box<dyn Fn(&str) -> String>,
 	pub toolchain_dir: Box<dyn Fn(&str) -> String>,
+	pub toolchain_glob: ToolchainGlob,
+	pub toolchain_read: ToolchainReader,
 	pub tool_id: Box<dyn Fn() -> String>,
 }
 
@@ -300,6 +305,8 @@ fn register_component(engine: &mut rhai::Engine, hooks: CellHooks) {
 		bin,
 		tool_bin,
 		toolchain_dir,
+		toolchain_glob,
+		toolchain_read,
 		tool_id,
 	} = hooks;
 	register_workspace(engine, workspace);
@@ -309,6 +316,20 @@ fn register_component(engine: &mut rhai::Engine, hooks: CellHooks) {
 	engine.register_fn("toolchain_dir", move |_ctx: &mut Map, name: &str| -> String {
 		toolchain_dir(name)
 	});
+	engine.register_fn(
+		"toolchain_glob",
+		move |_ctx: &mut Map, name: &str, pattern: &str| -> Result<rhai::Array, Box<EvalAltResult>> {
+			toolchain_glob(name, pattern)
+				.map(|hits| hits.into_iter().map(Dynamic::from).collect())
+				.map_err(|e| e.into())
+		},
+	);
+	engine.register_fn(
+		"toolchain_read",
+		move |_ctx: &mut Map, name: &str, path: &str| -> Result<String, Box<EvalAltResult>> {
+			toolchain_read(name, path).map_err(|e| e.into())
+		},
+	);
 	engine.register_fn("tool_id", move |_ctx: &mut Map| -> String { tool_id() });
 	engine.register_fn(
 		"lib_path",
@@ -506,6 +527,18 @@ fn parse_action(spec: Map) -> Result<ActionDecl, Box<EvalAltResult>> {
 		Some(v) if v.is_string() => Some(v.clone().into_string().expect("checked string")),
 		_ => None,
 	};
+	let mut writes = BTreeMap::new();
+	if let Some(v) = spec.get("writes") {
+		let map = v.clone().try_cast::<Map>().ok_or("`writes` expects a map")?;
+		for (k, value) in map {
+			writes.insert(
+				k.to_string(),
+				value
+					.into_string()
+					.map_err(|_| format!("`writes` value `{k}` must be a string"))?,
+			);
+		}
+	}
 	let configuration = match spec.get("configuration") {
 		None => forge_core::ConfigTransition::Target,
 		Some(v) if v.is_string() => {
@@ -611,6 +644,7 @@ fn parse_action(spec: Map) -> Result<ActionDecl, Box<EvalAltResult>> {
 		argument_files,
 		env,
 		toolchain_id,
+		writes,
 	})
 }
 

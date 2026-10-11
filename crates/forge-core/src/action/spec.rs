@@ -55,6 +55,7 @@ pub struct ActionSpec {
 	pub toolchain_ids: Vec<String>,
 	pub toolchain_id: Option<String>,
 	pub worker: Option<WorkerBinding>,
+	pub writes: BTreeMap<String, String>,
 }
 
 impl ActionSpec {
@@ -108,6 +109,10 @@ impl ActionSpec {
 		for (k, v) in &self.env {
 			put(&mut h, k);
 			put(&mut h, v);
+		}
+		for (path, content) in &self.writes {
+			put(&mut h, path);
+			put(&mut h, content);
 		}
 		h.update(&(self.toolchain_ids.len() as u64).to_le_bytes());
 		for id in &self.toolchain_ids {
@@ -173,6 +178,7 @@ mod tests {
 			toolchain_ids: Vec::new(),
 			toolchain_id: Some("clang@19.1.7".into()),
 			worker: None,
+			writes: BTreeMap::new(),
 		}
 	}
 
